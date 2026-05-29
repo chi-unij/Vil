@@ -1,0 +1,41 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build outputs
+build/
+out/
+bin/
+obj/
+x64/
+x86/
+Debug/
+Release/
+RelWithDebInfo/
+MinSizeRel/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+
+# Runtime logs and captures
+*.log
+*.dmp
+*.rdc
+
+# Local OS files
+Thumbs.db
+Desktop.ini
+
+# Editor caches
+.vscode/
+.idea/
+
+# Local agent settings
+.claude/settings.local.json
