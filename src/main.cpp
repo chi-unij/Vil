@@ -24,6 +24,7 @@
 #include "engine/Scene.h"
 #include "engine/SceneEditor.h"
 #include "game/PlayerAnimationPreview.h"
+#include "game/TitleScreen.h"
 
 #include <algorithm>
 #include <array>
@@ -363,8 +364,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     bool prevEsc = false;
 
     // ---- Editor/Game mode toggle (Milestone 4 Phase 0) ----
-    enum class AppMode { Editor, Game };
-    AppMode appMode = AppMode::Editor;
+    enum class AppMode { Title, Game, Editor };
+    AppMode appMode = AppMode::Title;
+    bool requestQuit = false;
+    TitleScreen titleScreen;
     Scene editorScene;
     SceneEditor sceneEditor;
     StageData editStage; // Grid editor stage data (Phase 5).
@@ -466,7 +469,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       const bool uiWantsMouse = imgui.WantCaptureMouse();
 
       // Camera input routing — mode-dependent (Phase 6).
-      const bool isPlaying = false; // ゲームロジック未実装。プレイ中フラグは新ゲーム実装時に再導入
+      const bool isPlaying = appMode == AppMode::Game;
 
       // プレイ中以外でスクロールを消費する（プレイ中は将来のゲームロジック側で扱う想定）。
       if (!isPlaying) {
@@ -593,7 +596,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
           sparkEmitter.Update(static_cast<double>(dt));
       }
 
-      playerPreview.Update(dt);
+      if (appMode == AppMode::Game || appMode == AppMode::Editor)
+        playerPreview.Update(dt);
 
       // FPS + debug title update.
       fpsTimer += dt;
@@ -610,6 +614,26 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         ss << L"DX12 Tutorial 12 | FPS: " << fpsValue << L" | Cam: (" << p.x
            << L", " << p.y << L", " << p.z << L")";
         window.SetTitle(ss.str());
+      }
+
+      if (appMode == AppMode::Title) {
+        switch (titleScreen.Draw(static_cast<int>(window.Width()),
+                                 static_cast<int>(window.Height()))) {
+        case TitleScreen::Action::Start:
+          appMode = AppMode::Game;
+          break;
+        case TitleScreen::Action::Settings:
+          showSettings = true;
+          break;
+        case TitleScreen::Action::Quit:
+          requestQuit = true;
+          break;
+        case TitleScreen::Action::Editor:
+          appMode = AppMode::Editor;
+          break;
+        case TitleScreen::Action::None:
+          break;
+        }
       }
 
       // ---- Settings window (Phase 12.6) ----
@@ -638,60 +662,62 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       }
 
       // ---- ImGui debug windows ----
-      imgui.DrawDebugWindow(cam, fpsValue, dt);
-      ImGui::SetNextWindowCollapsed(true, ImGuiCond_FirstUseEver);
-      ImGui::Begin("Sky");
-      ImGui::SliderFloat("Exposure", &skyExposure, 0.01f, 8.0f, "%.2f",
-                         ImGuiSliderFlags_Logarithmic);
-      ImGui::End();
+      if (appMode == AppMode::Editor) {
+        imgui.DrawDebugWindow(cam, fpsValue, dt);
+        ImGui::SetNextWindowCollapsed(true, ImGuiCond_FirstUseEver);
+        ImGui::Begin("Sky");
+        ImGui::SliderFloat("Exposure", &skyExposure, 0.01f, 8.0f, "%.2f",
+                           ImGuiSliderFlags_Logarithmic);
+        ImGui::End();
 
-      playerPreview.DrawDebugUi();
+        playerPreview.DrawDebugUi();
 
-      ImGui::SetNextWindowCollapsed(true, ImGuiCond_FirstUseEver);
-      ImGui::Begin("Particles");
-      ImGui::Checkbox("Enable All", &particlesEnabled);
-      ImGui::Separator();
+        ImGui::SetNextWindowCollapsed(true, ImGuiCond_FirstUseEver);
+        ImGui::Begin("Particles");
+        ImGui::Checkbox("Enable All", &particlesEnabled);
+        ImGui::Separator();
 
-      if (ImGui::CollapsingHeader("Fire (cursor)", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Fire Enable", &fireEnabled);
-        ImGui::SliderFloat("Cursor depth", &particleDepth, 1.0f, 30.0f, "%.1f");
-        ImGui::Text("Alive: %zu", fireEmitter.GetCount());
-        if (ImGui::Button(fireEmitter.isEmmit() ? "Stop Fire" : "Start Fire")) {
-          fireEmitter.Emmit(!fireEmitter.isEmmit());
+        if (ImGui::CollapsingHeader("Fire (cursor)", ImGuiTreeNodeFlags_DefaultOpen)) {
+          ImGui::Checkbox("Fire Enable", &fireEnabled);
+          ImGui::SliderFloat("Cursor depth", &particleDepth, 1.0f, 30.0f, "%.1f");
+          ImGui::Text("Alive: %zu", fireEmitter.GetCount());
+          if (ImGui::Button(fireEmitter.isEmmit() ? "Stop Fire" : "Start Fire")) {
+            fireEmitter.Emmit(!fireEmitter.isEmmit());
+          }
         }
-      }
 
-      if (ImGui::CollapsingHeader("Smoke", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Smoke Enable", &smokeEnabled);
-        ImGui::Text("Alive: %zu", smokeEmitter.GetCount());
-        if (ImGui::Button(smokeEmitter.isEmmit() ? "Stop Smoke" : "Start Smoke")) {
-          smokeEmitter.Emmit(!smokeEmitter.isEmmit());
+        if (ImGui::CollapsingHeader("Smoke", ImGuiTreeNodeFlags_DefaultOpen)) {
+          ImGui::Checkbox("Smoke Enable", &smokeEnabled);
+          ImGui::Text("Alive: %zu", smokeEmitter.GetCount());
+          if (ImGui::Button(smokeEmitter.isEmmit() ? "Stop Smoke" : "Start Smoke")) {
+            smokeEmitter.Emmit(!smokeEmitter.isEmmit());
+          }
+          static float smokeX = -3.0f, smokeY = 0.0f, smokeZ = 3.0f;
+          bool smokePosDirty = false;
+          smokePosDirty |= ImGui::SliderFloat("Smoke X", &smokeX, -20.0f, 20.0f, "%.1f");
+          smokePosDirty |= ImGui::SliderFloat("Smoke Y", &smokeY, -5.0f, 20.0f, "%.1f");
+          smokePosDirty |= ImGui::SliderFloat("Smoke Z", &smokeZ, -20.0f, 20.0f, "%.1f");
+          if (smokePosDirty)
+            smokeEmitter.SetPosition(DirectX::XMVectorSet(smokeX, smokeY, smokeZ, 0.0f));
         }
-        static float smokeX = -3.0f, smokeY = 0.0f, smokeZ = 3.0f;
-        bool smokePosDirty = false;
-        smokePosDirty |= ImGui::SliderFloat("Smoke X", &smokeX, -20.0f, 20.0f, "%.1f");
-        smokePosDirty |= ImGui::SliderFloat("Smoke Y", &smokeY, -5.0f, 20.0f, "%.1f");
-        smokePosDirty |= ImGui::SliderFloat("Smoke Z", &smokeZ, -20.0f, 20.0f, "%.1f");
-        if (smokePosDirty)
-          smokeEmitter.SetPosition(DirectX::XMVectorSet(smokeX, smokeY, smokeZ, 0.0f));
-      }
 
-      if (ImGui::CollapsingHeader("Sparks", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Spark Enable", &sparkEnabled);
-        ImGui::Text("Alive: %zu", sparkEmitter.GetCount());
-        if (ImGui::Button(sparkEmitter.isEmmit() ? "Stop Sparks" : "Start Sparks")) {
-          sparkEmitter.Emmit(!sparkEmitter.isEmmit());
+        if (ImGui::CollapsingHeader("Sparks", ImGuiTreeNodeFlags_DefaultOpen)) {
+          ImGui::Checkbox("Spark Enable", &sparkEnabled);
+          ImGui::Text("Alive: %zu", sparkEmitter.GetCount());
+          if (ImGui::Button(sparkEmitter.isEmmit() ? "Stop Sparks" : "Start Sparks")) {
+            sparkEmitter.Emmit(!sparkEmitter.isEmmit());
+          }
+          static float sparkX = 3.0f, sparkY = 0.0f, sparkZ = 3.0f;
+          bool sparkPosDirty = false;
+          sparkPosDirty |= ImGui::SliderFloat("Spark X", &sparkX, -20.0f, 20.0f, "%.1f");
+          sparkPosDirty |= ImGui::SliderFloat("Spark Y", &sparkY, -5.0f, 20.0f, "%.1f");
+          sparkPosDirty |= ImGui::SliderFloat("Spark Z", &sparkZ, -20.0f, 20.0f, "%.1f");
+          if (sparkPosDirty)
+            sparkEmitter.SetPosition(DirectX::XMVectorSet(sparkX, sparkY, sparkZ, 0.0f));
         }
-        static float sparkX = 3.0f, sparkY = 0.0f, sparkZ = 3.0f;
-        bool sparkPosDirty = false;
-        sparkPosDirty |= ImGui::SliderFloat("Spark X", &sparkX, -20.0f, 20.0f, "%.1f");
-        sparkPosDirty |= ImGui::SliderFloat("Spark Y", &sparkY, -5.0f, 20.0f, "%.1f");
-        sparkPosDirty |= ImGui::SliderFloat("Spark Z", &sparkZ, -20.0f, 20.0f, "%.1f");
-        if (sparkPosDirty)
-          sparkEmitter.SetPosition(DirectX::XMVectorSet(sparkX, sparkY, sparkZ, 0.0f));
-      }
 
-      ImGui::End();
+        ImGui::End();
+      }
 
       // SSAO, Post Processing, and Cascaded Shadows panels moved to SceneEditor (Phase 4).
 
@@ -759,7 +785,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       }
 
       // ---- Editor / Scene-Play レイヤー更新（ゲームモードは未実装のため除外） ----
-      if (scenePlayMode) {
+      if (appMode == AppMode::Title) {
+        frame.exposure = 0.95f;
+        frame.bloomIntensity = 0.35f;
+      } else if (appMode == AppMode::Game) {
+        playerPreview.BuildFrame(frame);
+      } else if (scenePlayMode) {
         // Scene play mode (Phase 8): build frame data but skip editor UI.
         editorScene.BuildFrameData(frame);
       } else {
@@ -774,10 +805,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         }
       }
 
-      playerPreview.BuildFrame(frame);
-
       // Mode indicator overlay.
-      {
+      if (appMode == AppMode::Editor) {
         ImGui::SetNextWindowPos(ImVec2(10, static_cast<float>(window.Height()) - 30.0f));
         ImGui::Begin("##ModeIndicator", nullptr,
             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
@@ -857,6 +886,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
 
       // Store current VP as "previous" for next frame's motion blur.
       cam.UpdatePrevViewProj();
+
+      if (requestQuit)
+        PostQuitMessage(0);
     }
 
     // ---- Shutdown (reverse init order) ----

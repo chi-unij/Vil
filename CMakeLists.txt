@@ -176,6 +176,8 @@ add_executable(SoloAssignment WIN32
     # 新ゲームコード配置先（空。実装はここから始める）
     src/game/PlayerAnimationPreview.h
     src/game/PlayerAnimationPreview.cpp
+    src/game/TitleScreen.h
+    src/game/TitleScreen.cpp
 )
 
 # ---- コンパイル定義 ----
