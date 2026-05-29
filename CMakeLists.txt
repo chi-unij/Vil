@@ -174,7 +174,8 @@ add_executable(SoloAssignment WIN32
     src/gridgame/GridEditorCommands.h
 
     # 新ゲームコード配置先（空。実装はここから始める）
-    # src/game/...
+    src/game/PlayerAnimationPreview.h
+    src/game/PlayerAnimationPreview.cpp
 )
 
 # ---- コンパイル定義 ----
@@ -205,6 +206,7 @@ target_link_libraries(SoloAssignment PRIVATE
 
 # ---- インクルードパス ----
 target_include_directories(SoloAssignment PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
     ${tinyexr_SOURCE_DIR}
     ${tinyexr_SOURCE_DIR}/deps/miniz
     ${tinygltf_SOURCE_DIR}

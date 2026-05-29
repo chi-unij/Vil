@@ -23,6 +23,7 @@
 #include "gridgame/StageData.h"
 #include "engine/Scene.h"
 #include "engine/SceneEditor.h"
+#include "game/PlayerAnimationPreview.h"
 
 #include <algorithm>
 #include <array>
@@ -298,6 +299,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     // Wire IBL descriptors to the mesh renderer + DxContext (for deferred lighting).
     dx.GetMeshRenderer().SetIBLDescriptors(iblGenerator.IBLTableGpuBase());
     dx.SetIblTableGpu(iblGenerator.IBLTableGpuBase());
+
+    // CHI-35: Player / Idle / Walk / Run クリップ確認用プレビュー。
+    PlayerAnimationPreview playerPreview;
+    playerPreview.Initialize(dx);
 
     // Initialize particle system.
     dx.InitParticleRenderer();
@@ -588,6 +593,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
           sparkEmitter.Update(static_cast<double>(dt));
       }
 
+      playerPreview.Update(dt);
+
       // FPS + debug title update.
       fpsTimer += dt;
       fpsFrames += 1;
@@ -637,6 +644,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       ImGui::SliderFloat("Exposure", &skyExposure, 0.01f, 8.0f, "%.2f",
                          ImGuiSliderFlags_Logarithmic);
       ImGui::End();
+
+      playerPreview.DrawDebugUi();
 
       ImGui::SetNextWindowCollapsed(true, ImGuiCond_FirstUseEver);
       ImGui::Begin("Particles");
@@ -764,6 +773,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
           sceneEditor.BuildStageViewportItems(editStage, frame);
         }
       }
+
+      playerPreview.BuildFrame(frame);
 
       // Mode indicator overlay.
       {
