@@ -11,6 +11,9 @@
 class OverworldScene {
 public:
   static constexpr float kFloorSizeMeters = 60.0f;
+  static constexpr float kPlayableHalfExtentMeters = 24.0f;
+  static constexpr float kCastleWallHalfExtentMeters = 25.5f;
+  static constexpr float kCastleGateHalfWidthMeters = 4.0f;
 
   void Initialize(DxContext &dx);
   void BuildFrame(FrameData &frame) const;
@@ -39,6 +42,9 @@ private:
   StageModel *FindOrLoadModel(DxContext &dx, const std::string &path);
 
   uint32_t m_floorMeshId = UINT32_MAX;
+  uint32_t m_castleWallMeshId = UINT32_MAX;
+  uint32_t m_castleMerlonMeshId = UINT32_MAX;
+  uint32_t m_castleTowerMeshId = UINT32_MAX;
   std::vector<StageObject> m_stageObjects;
   std::vector<StageModel> m_stageModels;
   std::string m_placementPath = "Assets/scenes/overworld_placements.json";

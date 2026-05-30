@@ -104,12 +104,74 @@ void OverworldScene::Initialize(DxContext &dx) {
   floorMaterial.pomMaxLayers = 20.0f;
 
   m_floorMeshId = dx.CreateMeshResources(floorMesh, images, floorMaterial);
-  m_ready = (m_floorMeshId != UINT32_MAX);
+  const LoadedMesh castleWallMesh = ProceduralMesh::CreateCube(1.0f);
+
+  LoadedImage wallBaseColor;
+  LoadedImage wallNormal;
+  LoadedImage wallRoughness;
+  LoadedImage wallAo;
+  LoadedImage wallHeight;
+  LoadedImage wallMetalRough;
+
+  MaterialImages wallImages{};
+  if (LoadTexture(
+          "Assets/textures/Castle_wall/textures/seaworn_stone_tiles_diff_2k.png",
+          wallBaseColor))
+    wallImages.baseColor = &wallBaseColor;
+  if (LoadTexture(
+          "Assets/textures/Castle_wall/textures/seaworn_stone_tiles_nor_dx_2k.png",
+          wallNormal))
+    wallImages.normal = &wallNormal;
+  if (LoadTexture(
+          "Assets/textures/Castle_wall/textures/seaworn_stone_tiles_ao_2k.png",
+          wallAo))
+    wallImages.ao = &wallAo;
+  if (LoadTexture(
+          "Assets/textures/Castle_wall/textures/seaworn_stone_tiles_disp_2k.png",
+          wallHeight))
+    wallImages.height = &wallHeight;
+  if (LoadTexture(
+          "Assets/textures/Castle_wall/textures/seaworn_stone_tiles_rough_2k.png",
+          wallRoughness)) {
+    wallMetalRough = BuildMetalRoughFromRoughness(wallRoughness);
+    wallImages.metalRough = &wallMetalRough;
+  }
+
+  Material castleWallMaterial{};
+  castleWallMaterial.baseColorFactor = {1.0f, 1.0f, 1.0f, 1.0f};
+  castleWallMaterial.metallicFactor = 0.0f;
+  castleWallMaterial.roughnessFactor = 0.82f;
+  castleWallMaterial.uvTiling = {18.0f, 3.0f};
+  castleWallMaterial.pomEnabled = true;
+  castleWallMaterial.heightScale = 0.032f;
+  castleWallMaterial.pomMinLayers = 12.0f;
+  castleWallMaterial.pomMaxLayers = 28.0f;
+
+  m_castleWallMeshId =
+      dx.CreateMeshResources(castleWallMesh, wallImages, castleWallMaterial);
+  Material castleMerlonMaterial = castleWallMaterial;
+  castleMerlonMaterial.uvTiling = {0.55f, 0.6f};
+  castleMerlonMaterial.heightScale = 0.02f;
+
+  Material castleTowerMaterial = castleWallMaterial;
+  castleTowerMaterial.uvTiling = {0.65f, 3.6f};
+  castleTowerMaterial.heightScale = 0.026f;
+
+  m_castleMerlonMeshId =
+      dx.CreateMeshResources(castleWallMesh, wallImages, castleMerlonMaterial);
+  m_castleTowerMeshId =
+      dx.CreateMeshResources(castleWallMesh, wallImages, castleTowerMaterial);
+  m_ready =
+      (m_floorMeshId != UINT32_MAX && m_castleWallMeshId != UINT32_MAX &&
+       m_castleMerlonMeshId != UINT32_MAX &&
+       m_castleTowerMeshId != UINT32_MAX);
 
   if (m_ready) {
-    OutputDebugStringA("[OverworldScene] 60m x 60m floor initialized.\n");
+    OutputDebugStringA(
+        "[OverworldScene] 60m x 60m floor and castle walls initialized.\n");
   } else {
-    OutputDebugStringA("[OverworldScene] FAILED: floor mesh was not created.\n");
+    OutputDebugStringA(
+        "[OverworldScene] FAILED: floor or castle wall mesh was not created.\n");
   }
 
   ReloadPlacements(dx);
@@ -121,6 +183,86 @@ void OverworldScene::BuildFrame(FrameData &frame) const {
 
   const XMMATRIX floorWorld = XMMatrixTranslation(0.0f, 0.0f, 0.0f);
   frame.opaqueItems.push_back({m_floorMeshId, floorWorld});
+
+  constexpr float wallThickness = 0.7f;
+  constexpr float wallHeight = 4.8f;
+  constexpr float wallY = wallHeight * 0.5f;
+  constexpr float wallLength = kCastleWallHalfExtentMeters * 2.0f;
+  constexpr float gateGapWidth = kCastleGateHalfWidthMeters * 2.0f;
+  constexpr float northWallSegmentLength = (wallLength - gateGapWidth) * 0.5f;
+  constexpr float northWallSegmentCenterX =
+      kCastleGateHalfWidthMeters + northWallSegmentLength * 0.5f;
+
+  const XMMATRIX southWall =
+      XMMatrixScaling(wallLength, wallHeight, wallThickness) *
+      XMMatrixTranslation(0.0f, wallY, -kCastleWallHalfExtentMeters);
+  const XMMATRIX eastWall =
+      XMMatrixScaling(wallThickness, wallHeight, wallLength) *
+      XMMatrixTranslation(kCastleWallHalfExtentMeters, wallY, 0.0f);
+  const XMMATRIX westWall =
+      XMMatrixScaling(wallThickness, wallHeight, wallLength) *
+      XMMatrixTranslation(-kCastleWallHalfExtentMeters, wallY, 0.0f);
+  const XMMATRIX northWallLeft =
+      XMMatrixScaling(northWallSegmentLength, wallHeight, wallThickness) *
+      XMMatrixTranslation(-northWallSegmentCenterX, wallY,
+                          kCastleWallHalfExtentMeters);
+  const XMMATRIX northWallRight =
+      XMMatrixScaling(northWallSegmentLength, wallHeight, wallThickness) *
+      XMMatrixTranslation(northWallSegmentCenterX, wallY,
+                          kCastleWallHalfExtentMeters);
+
+  frame.opaqueItems.push_back({m_castleWallMeshId, southWall});
+  frame.opaqueItems.push_back({m_castleWallMeshId, eastWall});
+  frame.opaqueItems.push_back({m_castleWallMeshId, westWall});
+  frame.opaqueItems.push_back({m_castleWallMeshId, northWallLeft});
+  frame.opaqueItems.push_back({m_castleWallMeshId, northWallRight});
+
+  constexpr float merlonWidth = 1.4f;
+  constexpr float merlonHeight = 0.9f;
+  constexpr float merlonDepth = 1.05f;
+  constexpr float merlonSpacing = 3.2f;
+  constexpr float merlonY = wallHeight + merlonHeight * 0.5f;
+  constexpr float towerSize = 1.8f;
+  constexpr float towerHeight = 5.8f;
+  constexpr float towerY = towerHeight * 0.5f;
+
+  auto pushCastleBlock = [&frame](uint32_t meshId, float sx, float sy, float sz,
+                                  float x, float y, float z) {
+    frame.opaqueItems.push_back(
+        {meshId, XMMatrixScaling(sx, sy, sz) * XMMatrixTranslation(x, y, z)});
+  };
+
+  for (float x = -kCastleWallHalfExtentMeters + merlonSpacing;
+       x <= kCastleWallHalfExtentMeters - merlonSpacing; x += merlonSpacing) {
+    pushCastleBlock(m_castleMerlonMeshId, merlonWidth, merlonHeight,
+                    merlonDepth, x, merlonY, -kCastleWallHalfExtentMeters);
+
+    if (std::abs(x) > kCastleGateHalfWidthMeters + merlonWidth) {
+      pushCastleBlock(m_castleMerlonMeshId, merlonWidth, merlonHeight,
+                      merlonDepth, x, merlonY, kCastleWallHalfExtentMeters);
+    }
+  }
+
+  for (float z = -kCastleWallHalfExtentMeters + merlonSpacing;
+       z <= kCastleWallHalfExtentMeters - merlonSpacing; z += merlonSpacing) {
+    pushCastleBlock(m_castleMerlonMeshId, merlonDepth, merlonHeight,
+                    merlonWidth, -kCastleWallHalfExtentMeters, merlonY, z);
+    pushCastleBlock(m_castleMerlonMeshId, merlonDepth, merlonHeight,
+                    merlonWidth, kCastleWallHalfExtentMeters, merlonY, z);
+  }
+
+  pushCastleBlock(m_castleTowerMeshId, towerSize, towerHeight, towerSize,
+                  -kCastleWallHalfExtentMeters, towerY,
+                  -kCastleWallHalfExtentMeters);
+  pushCastleBlock(m_castleTowerMeshId, towerSize, towerHeight, towerSize,
+                  kCastleWallHalfExtentMeters, towerY,
+                  -kCastleWallHalfExtentMeters);
+  pushCastleBlock(m_castleTowerMeshId, towerSize, towerHeight, towerSize,
+                  -kCastleWallHalfExtentMeters, towerY,
+                  kCastleWallHalfExtentMeters);
+  pushCastleBlock(m_castleTowerMeshId, towerSize, towerHeight, towerSize,
+                  kCastleWallHalfExtentMeters, towerY,
+                  kCastleWallHalfExtentMeters);
 
   for (const StageObject &object : m_stageObjects) {
     const XMMATRIX world =

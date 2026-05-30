@@ -29,6 +29,9 @@ CTestTestfile.cmake
 *.dmp
 *.rdc
 
+# Local project assets
+Assets/
+
 # Local OS files
 Thumbs.db
 Desktop.ini
