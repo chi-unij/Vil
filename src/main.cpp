@@ -23,6 +23,7 @@
 #include "gridgame/StageData.h"
 #include "engine/Scene.h"
 #include "engine/SceneEditor.h"
+#include "game/OverworldScene.h"
 #include "game/PlayerAnimationPreview.h"
 #include "game/TitleScreen.h"
 
@@ -304,6 +305,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     // CHI-35: Player / Idle / Walk / Run クリップ確認用プレビュー。
     PlayerAnimationPreview playerPreview;
     playerPreview.Initialize(dx);
+    OverworldScene overworldScene;
+    overworldScene.Initialize(dx);
 
     // Initialize particle system.
     dx.InitParticleRenderer();
@@ -362,6 +365,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     // Settings UI (Phase 12.6)
     bool showSettings = false;
     bool prevEsc = false;
+    bool gameFreeCameraEnabled = false;
 
     // ---- Editor/Game mode toggle (Milestone 4 Phase 0) ----
     enum class AppMode { Title, Game, Editor };
@@ -382,6 +386,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
 
     // Shader hot-reload (Phase 8).
     bool prevF9 = false;
+    bool prevF10 = false;
     std::string g_shaderReloadErrors;
     float g_shaderReloadTimer = 0.0f;
     static constexpr float kShaderMsgOkDuration = 3.0f;
@@ -456,6 +461,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         prevF9 = f9Now;
       }
 
+      // ---- F10: Overworld 配置 JSON の再読み込み ----
+      {
+        const bool f10Now = input.IsKeyDown(VK_F10);
+        if (f10Now && !prevF10 && appMode == AppMode::Game)
+          overworldScene.ReloadPlacements(dx);
+        prevF10 = f10Now;
+      }
+
       // ---- 設定パネルのトグル（ImGui がキーボードを掴んでいない時のみ ESC で開閉） ----
       if (!imgui.WantCaptureKeyboard()) {
         const bool escNow = input.IsKeyDown(VK_ESCAPE);
@@ -471,8 +484,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       // Camera input routing — mode-dependent (Phase 6).
       const bool isPlaying = appMode == AppMode::Game;
 
-      // プレイ中以外でスクロールを消費する（プレイ中は将来のゲームロジック側で扱う想定）。
-      if (!isPlaying) {
+      // ゲーム中は通常カメラを固定し、設定で有効化した時だけデバッグ用フリーカメラを動かす。
+      if (isPlaying && gameFreeCameraEnabled) {
+        float scroll = input.ConsumeScrollDelta();
+        auto md = input.ConsumeMouseDelta();
+        const bool wantMouseLook = !uiWantsMouse && input.IsKeyDown(VK_RBUTTON);
+        if (wantMouseLook)
+          cam.AddYawPitch(md.dx * cam.LookSpeed(), -md.dy * cam.LookSpeed());
+        cam.Update(dt, input, wantMouseLook);
+        if (!uiWantsMouse)
+          cam.ApplyScrollZoom(scroll);
+      } else if (!isPlaying) {
+        // プレイ中以外でスクロールを消費する（プレイ中は将来のゲームロジック側で扱う想定）。
         float scroll = input.ConsumeScrollDelta();
         auto md = input.ConsumeMouseDelta();
 
@@ -621,6 +644,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
                                  static_cast<int>(window.Height()))) {
         case TitleScreen::Action::Start:
           appMode = AppMode::Game;
+          cam.SetPosition(0.0f, 4.0f, -8.0f);
+          cam.SetYawPitch(0.0f, -0.28f);
+          cam.SetLens(DirectX::XM_PIDIV4,
+                      static_cast<float>(window.Width()) /
+                          static_cast<float>(window.Height()),
+                      0.1f, 1000.0f);
           break;
         case TitleScreen::Action::Settings:
           showSettings = true;
@@ -658,6 +687,41 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
           window.SetWindowedResolution(1280, 720);
         }
 
+        if (appMode == AppMode::Game) {
+          ImGui::Separator();
+          ImGui::Text("Camera");
+          if (ImGui::Checkbox("Free Camera / No Clip", &gameFreeCameraEnabled) &&
+              gameFreeCameraEnabled) {
+            cam.SetMode(CameraMode::FreeFly);
+          }
+          float freeCamSpeed = cam.MoveSpeed();
+          if (ImGui::SliderFloat("Free Camera Speed", &freeCamSpeed, 1.0f,
+                                 30.0f, "%.1f")) {
+            cam.SetMoveSpeed(freeCamSpeed);
+          }
+          ImGui::Separator();
+          ImGui::Text("Overworld");
+          if (ImGui::Button("Reload Placements")) {
+            overworldScene.ReloadPlacements(dx);
+          }
+          ImGui::Text("File: %s", overworldScene.PlacementPath().c_str());
+        }
+
+        ImGui::End();
+      }
+
+      if (appMode == AppMode::Game) {
+        const DirectX::XMFLOAT3 cameraPos = cam.GetPosition();
+        ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(260.0f, 0.0f), ImGuiCond_FirstUseEver);
+        ImGui::Begin("Camera Position");
+        ImGui::Text("X: %.2f", cameraPos.x);
+        ImGui::Text("Y: %.2f", cameraPos.y);
+        ImGui::Text("Z: %.2f", cameraPos.z);
+        ImGui::Separator();
+        ImGui::Text("Placement: {%.2ff, %.2ff, %.2ff}",
+                    cameraPos.x, cameraPos.y, cameraPos.z);
+        ImGui::Text("Objects: %zu", overworldScene.ObjectCount());
         ImGui::End();
       }
 
@@ -789,6 +853,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         frame.exposure = 0.95f;
         frame.bloomIntensity = 0.35f;
       } else if (appMode == AppMode::Game) {
+        overworldScene.BuildFrame(frame);
         playerPreview.BuildFrame(frame);
       } else if (scenePlayMode) {
         // Scene play mode (Phase 8): build frame data but skip editor UI.

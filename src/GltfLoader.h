@@ -80,6 +80,33 @@ struct MaterialImages {
   float emissiveFactor[3] = {0.0f, 0.0f, 0.0f};
 };
 
+// Static glTF mesh part with owned texture images.
+// One part maps to one primitive/material pair so stage models can keep UV textures.
+struct LoadedMeshPart {
+  LoadedMesh mesh;
+  LoadedImage baseColorImage;
+  LoadedImage normalImage;
+  LoadedImage metalRoughImage;
+  LoadedImage aoImage;
+  LoadedImage emissiveImage;
+  LoadedImage heightImage;
+  Material material;
+
+  MaterialImages GetMaterialImages() const {
+    MaterialImages mat;
+    if (!baseColorImage.pixels.empty()) mat.baseColor = &baseColorImage;
+    if (!normalImage.pixels.empty()) mat.normal = &normalImage;
+    if (!metalRoughImage.pixels.empty()) mat.metalRough = &metalRoughImage;
+    if (!aoImage.pixels.empty()) mat.ao = &aoImage;
+    if (!emissiveImage.pixels.empty()) mat.emissive = &emissiveImage;
+    if (!heightImage.pixels.empty()) mat.height = &heightImage;
+    mat.emissiveFactor[0] = material.emissiveFactor.x;
+    mat.emissiveFactor[1] = material.emissiveFactor.y;
+    mat.emissiveFactor[2] = material.emissiveFactor.z;
+    return mat;
+  }
+};
+
 // Load any image file (PNG/JPG/BMP/TGA) into a LoadedImage via stb_image.
 bool LoadImageFile(const std::string &path, LoadedImage &outImage);
 
@@ -89,6 +116,9 @@ bool LoadImageFile(const std::string &path, LoadedImage &outImage);
 bool LoadAnimationFile(const std::string &path,
                        const Skeleton &targetSkeleton,
                        std::vector<AnimationClip> &outClips);
+
+bool LoadStaticModelParts(const std::string &path,
+                          std::vector<LoadedMeshPart> &outParts);
 
 class GltfLoader {
 public:

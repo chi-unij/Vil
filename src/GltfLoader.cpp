@@ -1,7 +1,9 @@
 #include "GltfLoader.h"
 #include "AnimationPlayer.h" // kMaxBones
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <functional>
 #include <iostream>
 #include <stdexcept>
 #include <unordered_map>
@@ -17,6 +19,125 @@
 #include "tiny_gltf.h"
 
 using namespace DirectX;
+
+using GltfMatrix = std::array<double, 16>;
+
+static GltfMatrix GltfIdentityMatrix() {
+  return {1.0, 0.0, 0.0, 0.0,
+          0.0, 1.0, 0.0, 0.0,
+          0.0, 0.0, 1.0, 0.0,
+          0.0, 0.0, 0.0, 1.0};
+}
+
+static GltfMatrix GltfMul(const GltfMatrix &a, const GltfMatrix &b) {
+  GltfMatrix out{};
+  for (int col = 0; col < 4; ++col) {
+    for (int row = 0; row < 4; ++row) {
+      double v = 0.0;
+      for (int k = 0; k < 4; ++k)
+        v += a[k * 4 + row] * b[col * 4 + k];
+      out[col * 4 + row] = v;
+    }
+  }
+  return out;
+}
+
+static GltfMatrix GltfTranslationMatrix(double x, double y, double z) {
+  GltfMatrix m = GltfIdentityMatrix();
+  m[12] = x;
+  m[13] = y;
+  m[14] = z;
+  return m;
+}
+
+static GltfMatrix GltfScaleMatrix(double x, double y, double z) {
+  GltfMatrix m = GltfIdentityMatrix();
+  m[0] = x;
+  m[5] = y;
+  m[10] = z;
+  return m;
+}
+
+static GltfMatrix GltfRotationMatrix(double x, double y, double z, double w) {
+  const double xx = x * x;
+  const double yy = y * y;
+  const double zz = z * z;
+  const double xy = x * y;
+  const double xz = x * z;
+  const double yz = y * z;
+  const double wx = w * x;
+  const double wy = w * y;
+  const double wz = w * z;
+
+  GltfMatrix m = GltfIdentityMatrix();
+  m[0] = 1.0 - 2.0 * (yy + zz);
+  m[1] = 2.0 * (xy + wz);
+  m[2] = 2.0 * (xz - wy);
+  m[4] = 2.0 * (xy - wz);
+  m[5] = 1.0 - 2.0 * (xx + zz);
+  m[6] = 2.0 * (yz + wx);
+  m[8] = 2.0 * (xz + wy);
+  m[9] = 2.0 * (yz - wx);
+  m[10] = 1.0 - 2.0 * (xx + yy);
+  return m;
+}
+
+static GltfMatrix GltfNodeLocalMatrix(const tinygltf::Node &node) {
+  if (node.matrix.size() == 16) {
+    GltfMatrix m{};
+    for (int i = 0; i < 16; ++i)
+      m[i] = node.matrix[i];
+    return m;
+  }
+
+  GltfMatrix t = GltfIdentityMatrix();
+  GltfMatrix r = GltfIdentityMatrix();
+  GltfMatrix s = GltfIdentityMatrix();
+  if (node.translation.size() == 3)
+    t = GltfTranslationMatrix(node.translation[0], node.translation[1],
+                              node.translation[2]);
+  if (node.rotation.size() == 4)
+    r = GltfRotationMatrix(node.rotation[0], node.rotation[1],
+                           node.rotation[2], node.rotation[3]);
+  if (node.scale.size() == 3)
+    s = GltfScaleMatrix(node.scale[0], node.scale[1], node.scale[2]);
+  return GltfMul(t, GltfMul(r, s));
+}
+
+static void GltfTransformPoint(const GltfMatrix &m, const float in[3],
+                               float out[3]) {
+  const double x = in[0];
+  const double y = in[1];
+  const double z = in[2];
+  out[0] = static_cast<float>(m[0] * x + m[4] * y + m[8] * z + m[12]);
+  out[1] = static_cast<float>(m[1] * x + m[5] * y + m[9] * z + m[13]);
+  out[2] = static_cast<float>(m[2] * x + m[6] * y + m[10] * z + m[14]);
+}
+
+static void GltfTransformVector(const GltfMatrix &m, const float in[3],
+                                float out[3]) {
+  const double x = in[0];
+  const double y = in[1];
+  const double z = in[2];
+  out[0] = static_cast<float>(m[0] * x + m[4] * y + m[8] * z);
+  out[1] = static_cast<float>(m[1] * x + m[5] * y + m[9] * z);
+  out[2] = static_cast<float>(m[2] * x + m[6] * y + m[10] * z);
+}
+
+static void NormalizeFloat3(float v[3]) {
+  const float len = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+  if (len <= 0.000001f)
+    return;
+  v[0] /= len;
+  v[1] /= len;
+  v[2] /= len;
+}
+
+static double GltfDeterminant3x3(const GltfMatrix &m) {
+  return m[0] * (m[5] * m[10] - m[9] * m[6]) -
+         m[4] * (m[1] * m[10] - m[9] * m[2]) +
+         m[8] * (m[1] * m[6] - m[5] * m[2]);
+}
 
 static bool GetAccessorFloatData(const tinygltf::Model &model,
                                  const tinygltf::Accessor &acc,
@@ -296,6 +417,56 @@ static LoadedImage ExtractTextureImage(const tinygltf::Model &model,
   if (srcImg < 0 || srcImg >= static_cast<int>(model.images.size()))
     return result;
   return ConvertToRgba(model.images[srcImg]);
+}
+
+static void ApplyMaterialToPart(const tinygltf::Model &model, int materialIndex,
+                                LoadedMeshPart &part) {
+  part.material = {};
+
+  if (materialIndex < 0 ||
+      materialIndex >= static_cast<int>(model.materials.size())) {
+    if (!model.images.empty()) {
+      part.baseColorImage = ConvertToRgba(model.images[0]);
+      part.material.hasBaseColor = !part.baseColorImage.pixels.empty();
+    }
+    return;
+  }
+
+  const auto &mat = model.materials[materialIndex];
+
+  const int bcTexIndex = mat.pbrMetallicRoughness.baseColorTexture.index;
+  part.baseColorImage = ExtractTextureImage(model, bcTexIndex);
+  if (part.baseColorImage.pixels.empty() && !model.images.empty())
+    part.baseColorImage = ConvertToRgba(model.images[0]);
+
+  part.normalImage = ExtractTextureImage(model, mat.normalTexture.index);
+  part.metalRoughImage = ExtractTextureImage(
+      model, mat.pbrMetallicRoughness.metallicRoughnessTexture.index);
+  part.aoImage = ExtractTextureImage(model, mat.occlusionTexture.index);
+  part.emissiveImage = ExtractTextureImage(model, mat.emissiveTexture.index);
+
+  const auto &bcf = mat.pbrMetallicRoughness.baseColorFactor;
+  if (bcf.size() >= 4) {
+    part.material.baseColorFactor = {
+        static_cast<float>(bcf[0]), static_cast<float>(bcf[1]),
+        static_cast<float>(bcf[2]), static_cast<float>(bcf[3])};
+  }
+  part.material.metallicFactor =
+      static_cast<float>(mat.pbrMetallicRoughness.metallicFactor);
+  part.material.roughnessFactor =
+      static_cast<float>(mat.pbrMetallicRoughness.roughnessFactor);
+  if (mat.emissiveFactor.size() >= 3) {
+    part.material.emissiveFactor = {
+        static_cast<float>(mat.emissiveFactor[0]),
+        static_cast<float>(mat.emissiveFactor[1]),
+        static_cast<float>(mat.emissiveFactor[2])};
+  }
+
+  part.material.hasBaseColor = !part.baseColorImage.pixels.empty();
+  part.material.hasNormal = !part.normalImage.pixels.empty();
+  part.material.hasMetalRough = !part.metalRoughImage.pixels.empty();
+  part.material.hasAO = !part.aoImage.pixels.empty();
+  part.material.hasEmissive = !part.emissiveImage.pixels.empty();
 }
 
 // ============================================================================
@@ -908,6 +1079,209 @@ bool LoadImageFile(const std::string &path, LoadedImage &outImage) {
   outImage.pixels.assign(data, data + static_cast<size_t>(w) * h * 4);
   stbi_image_free(data);
   return true;
+}
+
+bool LoadStaticModelParts(const std::string &path,
+                          std::vector<LoadedMeshPart> &outParts) {
+  outParts.clear();
+
+  tinygltf::Model model;
+  tinygltf::TinyGLTF loader;
+  std::string err;
+  std::string warn;
+
+  std::string ext;
+  auto dot = path.rfind('.');
+  if (dot != std::string::npos) {
+    ext = path.substr(dot);
+    for (auto &c : ext)
+      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+
+  const bool isBinary = (ext == ".glb" || ext == ".vrm");
+  const bool ret = isBinary
+                       ? loader.LoadBinaryFromFile(&model, &err, &warn, path)
+                       : loader.LoadASCIIFromFile(&model, &err, &warn, path);
+
+  if (!warn.empty())
+    std::cout << "WARN: " << warn << std::endl;
+  if (!err.empty())
+    std::cerr << "ERR: " << err << std::endl;
+  if (!ret || model.meshes.empty()) {
+    std::cerr << "Failed to parse static glTF: " << path << std::endl;
+    return false;
+  }
+
+  auto appendMeshParts = [&](int meshIndex, const GltfMatrix &nodeWorld) {
+    if (meshIndex < 0 || meshIndex >= static_cast<int>(model.meshes.size()))
+      return;
+
+    const auto &srcMesh = model.meshes[meshIndex];
+    const bool flipsWinding = GltfDeterminant3x3(nodeWorld) < 0.0;
+
+    for (const auto &prim : srcMesh.primitives) {
+      if (prim.mode != TINYGLTF_MODE_TRIANGLES)
+        continue;
+      if (prim.attributes.find("POSITION") == prim.attributes.end())
+        continue;
+      if (prim.indices < 0 ||
+          prim.indices >= static_cast<int>(model.accessors.size()))
+        continue;
+
+      const int posIdx = prim.attributes.at("POSITION");
+      if (posIdx < 0 || posIdx >= static_cast<int>(model.accessors.size()))
+        continue;
+
+      const auto &posAcc = model.accessors[posIdx];
+      const float *posData = nullptr;
+      size_t posStride = 0;
+      if (!GetAccessorFloatData(model, posAcc, TINYGLTF_TYPE_VEC3, posData,
+                                posStride))
+        continue;
+
+      const float *normData = nullptr;
+      size_t normStride = 0;
+      if (prim.attributes.find("NORMAL") != prim.attributes.end()) {
+        const int ni = prim.attributes.at("NORMAL");
+        if (ni >= 0 && ni < static_cast<int>(model.accessors.size()))
+          GetAccessorFloatData(model, model.accessors[ni], TINYGLTF_TYPE_VEC3,
+                               normData, normStride);
+      }
+
+      const float *uvData = nullptr;
+      size_t uvStride = 0;
+      if (prim.attributes.find("TEXCOORD_0") != prim.attributes.end()) {
+        const int ui = prim.attributes.at("TEXCOORD_0");
+        if (ui >= 0 && ui < static_cast<int>(model.accessors.size()))
+          GetAccessorFloatData(model, model.accessors[ui], TINYGLTF_TYPE_VEC2,
+                               uvData, uvStride);
+      }
+
+      const float *tanData = nullptr;
+      size_t tanStride = 0;
+      bool hasTangents = false;
+      if (prim.attributes.find("TANGENT") != prim.attributes.end()) {
+        const int ti = prim.attributes.at("TANGENT");
+        if (ti >= 0 && ti < static_cast<int>(model.accessors.size())) {
+          hasTangents =
+              GetAccessorFloatData(model, model.accessors[ti],
+                                   TINYGLTF_TYPE_VEC4, tanData, tanStride);
+        }
+      }
+
+      const auto &idxAcc = model.accessors[prim.indices];
+      const uint8_t *idxBytes = nullptr;
+      size_t idxStride = 0;
+      size_t idxElemBytes = 0;
+      if (!GetAccessorIndexData(model, idxAcc, idxBytes, idxStride,
+                                idxElemBytes))
+        continue;
+
+      LoadedMeshPart part;
+      part.mesh.vertices.resize(posAcc.count);
+
+      for (size_t i = 0; i < posAcc.count; ++i) {
+        auto &v = part.mesh.vertices[i];
+        const float *p = reinterpret_cast<const float *>(
+            reinterpret_cast<const uint8_t *>(posData) + i * posStride);
+        GltfTransformPoint(nodeWorld, p, v.pos);
+
+        if (normData) {
+          const float *n = reinterpret_cast<const float *>(
+              reinterpret_cast<const uint8_t *>(normData) + i * normStride);
+          GltfTransformVector(nodeWorld, n, v.normal);
+          NormalizeFloat3(v.normal);
+        } else {
+          v.normal[0] = 0.0f;
+          v.normal[1] = 1.0f;
+          v.normal[2] = 0.0f;
+        }
+
+        if (uvData) {
+          const float *uv = reinterpret_cast<const float *>(
+              reinterpret_cast<const uint8_t *>(uvData) + i * uvStride);
+          v.uv[0] = uv[0];
+          v.uv[1] = uv[1];
+        } else {
+          v.uv[0] = 0.0f;
+          v.uv[1] = 0.0f;
+        }
+
+        if (hasTangents && tanData) {
+          const float *t = reinterpret_cast<const float *>(
+              reinterpret_cast<const uint8_t *>(tanData) + i * tanStride);
+          float tangent[3] = {t[0], t[1], t[2]};
+          GltfTransformVector(nodeWorld, tangent, v.tangent);
+          NormalizeFloat3(v.tangent);
+          v.tangent[3] = flipsWinding ? -t[3] : t[3];
+        } else {
+          v.tangent[0] = 1.0f;
+          v.tangent[1] = 0.0f;
+          v.tangent[2] = 0.0f;
+          v.tangent[3] = 1.0f;
+        }
+
+        v.boneIndices[0] = v.boneIndices[1] = v.boneIndices[2] =
+            v.boneIndices[3] = 0;
+        v.boneWeights[0] = v.boneWeights[1] = v.boneWeights[2] =
+            v.boneWeights[3] = 0.0f;
+      }
+
+      part.mesh.indices.reserve(idxAcc.count);
+      for (size_t i = 0; i < idxAcc.count; ++i) {
+        const uint8_t *e = idxBytes + i * idxStride;
+        uint32_t idx = 0;
+        if (idxElemBytes == 1)
+          idx = *e;
+        else if (idxElemBytes == 2)
+          idx = *reinterpret_cast<const uint16_t *>(e);
+        else if (idxElemBytes == 4)
+          idx = *reinterpret_cast<const uint32_t *>(e);
+        part.mesh.indices.push_back(idx);
+      }
+      if (flipsWinding) {
+        for (size_t i = 0; i + 2 < part.mesh.indices.size(); i += 3)
+          std::swap(part.mesh.indices[i + 1], part.mesh.indices[i + 2]);
+      }
+
+      if (!hasTangents)
+        ComputeTangents(part.mesh);
+      ApplyMaterialToPart(model, prim.material, part);
+
+      if (!part.mesh.vertices.empty() && !part.mesh.indices.empty())
+        outParts.push_back(std::move(part));
+    }
+  };
+
+  std::function<void(int, const GltfMatrix &)> traverseNode =
+      [&](int nodeIndex, const GltfMatrix &parentWorld) {
+        if (nodeIndex < 0 || nodeIndex >= static_cast<int>(model.nodes.size()))
+          return;
+
+        const auto &node = model.nodes[nodeIndex];
+        const GltfMatrix world =
+            GltfMul(parentWorld, GltfNodeLocalMatrix(node));
+        if (node.mesh >= 0)
+          appendMeshParts(node.mesh, world);
+
+        for (int child : node.children)
+          traverseNode(child, world);
+      };
+
+  if (!model.scenes.empty()) {
+    int sceneIndex = model.defaultScene >= 0 ? model.defaultScene : 0;
+    if (sceneIndex >= static_cast<int>(model.scenes.size()))
+      sceneIndex = 0;
+    for (int nodeIndex : model.scenes[sceneIndex].nodes)
+      traverseNode(nodeIndex, GltfIdentityMatrix());
+  } else {
+    for (int i = 0; i < static_cast<int>(model.nodes.size()); ++i)
+      traverseNode(i, GltfIdentityMatrix());
+  }
+
+  std::cout << "Static glTF parts: " << outParts.size() << " from " << path
+            << "\n";
+  return !outParts.empty();
 }
 
 // ============================================================================

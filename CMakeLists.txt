@@ -174,6 +174,8 @@ add_executable(SoloAssignment WIN32
     src/gridgame/GridEditorCommands.h
 
     # 新ゲームコード配置先（空。実装はここから始める）
+    src/game/OverworldScene.h
+    src/game/OverworldScene.cpp
     src/game/PlayerAnimationPreview.h
     src/game/PlayerAnimationPreview.cpp
     src/game/TitleScreen.h
