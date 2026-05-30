@@ -11,9 +11,9 @@ The project reuses the DirectX 12 engine foundation developed in the previous po
 - **Phase**: M7 Feature Iteration / Week 1
 - **Alpha deadline**: 2026-06-19
 - **Current milestone goal**: complete all P0 features before alpha feature lock
-- **Latest implemented task**: CHI-35 Player animation preview
+- **Latest implemented task**: Overworld castle wall blockout and local-only asset policy
 
-CHI-35 currently loads the player VRM model and provides an ImGui preview window for Idle / Walk / Run animation checks. `Walk.glb` is not available yet, so the preview temporarily uses `Push.glb` as the Walk fallback.
+現在の Overworld は 60m x 60m の床を基準に、外周を procedural cube の城壁で囲んでいる。北側中央には boss entrance / castle door 用の門穴を残している。城壁本体、城垛、角塔には local `Assets/textures/Castle_wall/` の stone PBR texture を適用している。
 
 ## Game Concept
 
@@ -96,7 +96,7 @@ Note: building the whole solution with no target may try to build external depen
 
 ```text
 Solo_Assignment/
-  Assets/                 Runtime assets: models, animations, textures, HDRI
+  Assets/                 Local-only runtime assets: models, animations, textures, HDRI
   docs/                   Project planning, concept lock, handoff notes
     handoff/              Session handoff documents
     section/              Locked concept and milestone plans
@@ -135,12 +135,23 @@ Solo_Assignment/
 
 ## Asset Notes
 
-Some assets are larger than GitHub's recommended file size. Future asset-heavy work may move to Git LFS.
+`Assets/` はローカル専用で、Git 管理対象外。`.gitignore` で `Assets/` を除外している。
 
-Current known large files:
+理由:
 
-- `Assets/GlTF/NPC.fbx`
-- `Assets/GlTF/Player.fbx`
+- モデル、texture、HDRI が大きくなりやすい。
+- この制作は基本的に Chihiro のローカル環境で進める。
+- GitHub には code / shaders / docs / planning / handoff を置き、runtime assets はローカル配置で管理する。
+
+新しく clone した環境では、`Assets/` を別途ローカルに配置する必要がある。現時点で code が参照している主な asset path:
+
+- `Assets/scenes/overworld_placements.json`
+- `Assets/textures/Floor_png/`
+- `Assets/textures/Castle_wall/`
+- `Assets/models/MyFirstChar.vrm`
+- `Assets/models/animations/`
+- `Assets/models/japanese_shrine/`
+- `Assets/models/psx_japanese_house/`
 
 ## Reference Project Policy
 
