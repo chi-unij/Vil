@@ -4,10 +4,13 @@
 #include "DxContext.h"
 #include "RenderPass.h"
 
+#include <DirectXMath.h>
 #include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
+
+class Input;
 
 // CHI-35: プレイヤーモデルと Idle / Walk / Run クリップの確認用。
 // 本番の PlayerController / Animation State Machine は CHI-38 で接続する。
@@ -21,10 +24,12 @@ public:
 
   void Initialize(DxContext &dx);
   void Update(float dt);
+  void Update(float dt, const Input &input, float playableHalfExtentMeters);
   void BuildFrame(FrameData &frame) const;
   void DrawDebugUi();
 
   bool IsReady() const { return m_ready; }
+  DirectX::XMFLOAT3 Position() const { return m_previewPosition; }
 
 private:
   struct PreviewClip {
@@ -53,6 +58,7 @@ private:
   float m_animTime = 0.0f;
   float m_previewYaw = 3.14159265f;
   float m_previewScale = 1.0f;
+  DirectX::XMFLOAT3 m_previewPosition = {0.0f, 0.0f, 0.0f};
   bool m_autoCycle = false;
   float m_cycleTimer = 0.0f;
 };

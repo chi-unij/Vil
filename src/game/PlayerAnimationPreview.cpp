@@ -1,6 +1,7 @@
 #include "game/PlayerAnimationPreview.h"
 
 #include "GltfLoader.h"
+#include "Input.h"
 #include "MeshRenderer.h"
 
 #include <DirectXMath.h>
@@ -107,6 +108,56 @@ void PlayerAnimationPreview::Update(float dt) {
     m_dx->GetMeshRenderer().SetBonePalette(m_meshId, palette);
 }
 
+void PlayerAnimationPreview::Update(float dt, const Input &input,
+                                    float playableHalfExtentMeters) {
+  if (!m_ready) {
+    Update(dt);
+    return;
+  }
+
+  float moveX = 0.0f;
+  float moveZ = 0.0f;
+  if (input.IsKeyDown('W') || input.IsKeyDown(VK_UP))
+    moveZ += 1.0f;
+  if (input.IsKeyDown('S') || input.IsKeyDown(VK_DOWN))
+    moveZ -= 1.0f;
+  if (input.IsKeyDown('D') || input.IsKeyDown(VK_RIGHT))
+    moveX += 1.0f;
+  if (input.IsKeyDown('A') || input.IsKeyDown(VK_LEFT))
+    moveX -= 1.0f;
+
+  moveX += input.LeftStickX();
+  moveZ += input.LeftStickY();
+
+  const float moveLenSq = moveX * moveX + moveZ * moveZ;
+  const bool isMoving = moveLenSq > 0.0001f;
+  if (isMoving) {
+    const float invLen = 1.0f / std::sqrt(moveLenSq);
+    moveX *= invLen;
+    moveZ *= invLen;
+
+    const bool running = input.IsKeyDown(VK_SHIFT) ||
+                         input.IsGamepadButtonDown(XINPUT_GAMEPAD_A);
+    const float moveSpeed = running ? 6.0f : 3.2f;
+    m_previewPosition.x += moveX * moveSpeed * dt;
+    m_previewPosition.z += moveZ * moveSpeed * dt;
+
+    m_previewPosition.x =
+        std::clamp(m_previewPosition.x, -playableHalfExtentMeters,
+                   playableHalfExtentMeters);
+    m_previewPosition.z =
+        std::clamp(m_previewPosition.z, -playableHalfExtentMeters,
+                   playableHalfExtentMeters);
+
+    m_previewYaw = std::atan2(moveX, moveZ);
+    m_activeSlot = running ? ClipSlot::Run : ClipSlot::Walk;
+  } else if (!m_autoCycle) {
+    m_activeSlot = ClipSlot::Idle;
+  }
+
+  Update(dt);
+}
+
 void PlayerAnimationPreview::BuildFrame(FrameData &frame) const {
   if (!m_ready)
     return;
@@ -114,11 +165,11 @@ void PlayerAnimationPreview::BuildFrame(FrameData &frame) const {
   const XMMATRIX world =
       XMMatrixScaling(m_previewScale, m_previewScale, m_previewScale) *
       XMMatrixRotationY(m_previewYaw) *
-      XMMatrixTranslation(0.0f, 0.01f, 0.0f);
+      XMMatrixTranslation(m_previewPosition.x, 0.01f, m_previewPosition.z);
   frame.opaqueItems.push_back({m_meshId, world});
 
   GPUPointLight light{};
-  light.position = {0.0f, 1.1f, -1.5f};
+  light.position = {m_previewPosition.x, 1.1f, m_previewPosition.z - 1.5f};
   light.range = 4.0f;
   light.color = {0.9f, 0.8f, 0.65f};
   light.intensity = 1.6f;

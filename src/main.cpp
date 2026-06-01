@@ -38,6 +38,13 @@
 #include <imgui.h>
 
 static volatile LONG g_startupStage = 0;
+static DxContext *g_crashDxContext = nullptr;
+
+static void TraceAppEvent(const char *message) {
+  std::ofstream f("app_trace_log.txt", std::ios::out | std::ios::app);
+  if (f)
+    f << message << "\n";
+}
 
 static const char *StartupStageName(LONG s) {
   switch (s) {
@@ -59,6 +66,40 @@ static const char *StartupStageName(LONG s) {
 }
 
 static void SetStartupStage(LONG s) { InterlockedExchange(&g_startupStage, s); }
+
+static void ApplySceneGlobalsToFrame(const Scene &scene, FrameData &frame) {
+  const auto &light = scene.LightSettings();
+  frame.lighting.lightDir = light.lightDir;
+  frame.lighting.lightIntensity = light.lightIntensity;
+  frame.lighting.lightColor = light.lightColor;
+
+  const auto &shadow = scene.ShadowSettings();
+  frame.shadowsEnabled = shadow.shadowsEnabled;
+  frame.shadowBias = shadow.shadowBias;
+  frame.shadowStrength = shadow.shadowStrength;
+  frame.ssaoEnabled = shadow.ssaoEnabled;
+  frame.ssaoRadius = shadow.ssaoRadius;
+  frame.ssaoBias = shadow.ssaoBias;
+  frame.ssaoPower = shadow.ssaoPower;
+  frame.ssaoKernelSize = shadow.ssaoKernelSize;
+  frame.ssaoStrength = shadow.ssaoStrength;
+
+  const auto &post = scene.PostProcessSettings();
+  frame.exposure = post.exposure;
+  frame.bloomEnabled = post.bloomEnabled;
+  frame.bloomThreshold = post.bloomThreshold;
+  frame.bloomIntensity = post.bloomIntensity;
+  frame.taaEnabled = post.taaEnabled;
+  frame.taaBlendFactor = post.taaBlendFactor;
+  frame.fxaaEnabled = post.fxaaEnabled;
+  frame.motionBlurEnabled = post.motionBlurEnabled;
+  frame.motionBlurStrength = post.motionBlurStrength;
+  frame.motionBlurSamples = post.motionBlurSamples;
+  frame.dofEnabled = post.dofEnabled;
+  frame.dofFocalDistance = post.dofFocalDistance;
+  frame.dofFocalRange = post.dofFocalRange;
+  frame.dofMaxBlur = post.dofMaxBlur;
+}
 
 static void TryWriteSymbolizedStack(std::ostream &out, void **frames,
                                     USHORT frameCount) {
@@ -98,19 +139,20 @@ static void TryWriteSymbolizedStack(std::ostream &out, void **frames,
 }
 
 struct AppResizeContext {
-  DxContext *dx = nullptr;
   Camera *cam = nullptr;
+  bool pendingResize = false;
+  uint32_t width = 0;
+  uint32_t height = 0;
 };
 
 static void OnResize(uint32_t w, uint32_t h, void *userData) {
   auto *ctx = reinterpret_cast<AppResizeContext *>(userData);
-  if (ctx && ctx->dx)
-    ctx->dx->Resize(w, h);
-  if (ctx && ctx->cam && h != 0) {
-    const float aspect = static_cast<float>(w) / static_cast<float>(h);
-    // Preserve current FOV/near/far when resizing (Phase 6).
-    ctx->cam->SetLens(ctx->cam->FovY(), aspect, ctx->cam->NearZ(), ctx->cam->FarZ());
-  }
+  if (!ctx || w == 0 || h == 0)
+    return;
+
+  ctx->pendingResize = true;
+  ctx->width = w;
+  ctx->height = h;
 }
 
 static LONG WINAPI UnhandledExceptionHandler(_EXCEPTION_POINTERS *ep) {
@@ -143,6 +185,11 @@ static LONG WINAPI UnhandledExceptionHandler(_EXCEPTION_POINTERS *ep) {
       }
       if (modPath[0] != '\0')
         f << "Module: " << modPath << "\n";
+      if (g_crashDxContext) {
+        f << "\n";
+        g_crashDxContext->DumpDebugMessages(f);
+        f << "\n";
+      }
       f << "Stack (symbolized):\n";
       TryWriteSymbolizedStack(f, frames, frameCount);
     }
@@ -261,6 +308,11 @@ static DirectX::XMMATRIX ComputeCascadeViewProj(
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
   try {
+    {
+      std::ofstream f("app_trace_log.txt", std::ios::out | std::ios::trunc);
+      if (f)
+        f << "app start\n";
+    }
     SetUnhandledExceptionFilter(UnhandledExceptionHandler);
 
     Win32Window window;
@@ -268,6 +320,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     window.Create(L"DX12 Tutorial 12", 1920, 1080);
 
     DxContext dx;
+    g_crashDxContext = &dx;
     SetStartupStage(20);
     dx.Initialize(window.Handle(), window.Width(), window.Height(), true);
 
@@ -279,7 +332,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
                     static_cast<float>(window.Height()),
                 0.1f, 1000.0f);
 
-    AppResizeContext resizeCtx{&dx, &cam};
+    AppResizeContext resizeCtx{&cam};
     window.SetResizeCallback(&OnResize, &resizeCtx);
     SetStartupStage(30);
     window.Show(nCmdShow);
@@ -391,9 +444,27 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     float g_shaderReloadTimer = 0.0f;
     static constexpr float kShaderMsgOkDuration = 3.0f;
     static constexpr float kShaderMsgErrDuration = 10.0f;
+    int gameTraceFramesRemaining = 12;
 
     SetStartupStage(70);
     while (window.PumpMessages()) {
+      if (resizeCtx.pendingResize) {
+        resizeCtx.pendingResize = false;
+        const uint32_t resizeW = resizeCtx.width;
+        const uint32_t resizeH = resizeCtx.height;
+        if (resizeW != dx.Width() || resizeH != dx.Height()) {
+          TraceAppEvent("resize: dx.Resize begin");
+          dx.Resize(resizeW, resizeH);
+          TraceAppEvent("resize: dx.Resize end");
+        }
+        if (resizeH != 0) {
+          const float aspect =
+              static_cast<float>(resizeW) / static_cast<float>(resizeH);
+          // Preserve current FOV/near/far when resizing.
+          cam.SetLens(cam.FovY(), aspect, cam.NearZ(), cam.FarZ());
+        }
+      }
+
       auto now = clock::now();
       float dt = std::chrono::duration<float>(now - prev).count();
       prev = now;
@@ -480,6 +551,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       imgui.BeginFrame(dt);
 
       const bool uiWantsMouse = imgui.WantCaptureMouse();
+      const bool uiWantsKeyboard = imgui.WantCaptureKeyboard();
 
       // Camera input routing — mode-dependent (Phase 6).
       const bool isPlaying = appMode == AppMode::Game;
@@ -619,8 +691,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
           sparkEmitter.Update(static_cast<double>(dt));
       }
 
-      if (appMode == AppMode::Game || appMode == AppMode::Editor)
+      if (appMode == AppMode::Game && !uiWantsKeyboard &&
+          !gameFreeCameraEnabled) {
+        playerPreview.Update(dt, input,
+                             OverworldScene::kPlayableHalfExtentMeters);
+        const DirectX::XMFLOAT3 playerPos = playerPreview.Position();
+        cam.SetPosition(playerPos.x, 4.0f, playerPos.z - 8.0f);
+        cam.SetYawPitch(0.0f, -0.28f);
+      } else if (appMode == AppMode::Game || appMode == AppMode::Editor) {
         playerPreview.Update(dt);
+      }
 
       // FPS + debug title update.
       fpsTimer += dt;
@@ -643,6 +723,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         switch (titleScreen.Draw(static_cast<int>(window.Width()),
                                  static_cast<int>(window.Height()))) {
         case TitleScreen::Action::Start:
+          TraceAppEvent("title action: start");
           appMode = AppMode::Game;
           cam.SetPosition(0.0f, 4.0f, -8.0f);
           cam.SetYawPitch(0.0f, -0.28f);
@@ -652,12 +733,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
                       0.1f, 1000.0f);
           break;
         case TitleScreen::Action::Settings:
+          TraceAppEvent("title action: settings");
           showSettings = true;
           break;
         case TitleScreen::Action::Quit:
+          TraceAppEvent("title action: quit");
           requestQuit = true;
           break;
         case TitleScreen::Action::Editor:
+          TraceAppEvent("title action: editor");
           appMode = AppMode::Editor;
           break;
         case TitleScreen::Action::None:
@@ -825,6 +909,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       frame.clearColor[2] = b;
       frame.clearColor[3] = 1.0f;
       frame.particlesEnabled = true;
+      ApplySceneGlobalsToFrame(editorScene, frame);
       // ゲームロジック未実装のため、エミッタは常に有効化条件のみで追加する。
       if (particlesEnabled && fireEnabled)
         frame.emitters.push_back(&fireEmitter);
@@ -925,24 +1010,68 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       frame.lighting.cascadeDebug = shadowCfg.csmDebugCascades ? 1.0f : 0.0f;
 
       // ---- Execute render passes (Phase 8 + Phase 9 + Phase 12.1) ----
+      const bool traceGameFrame =
+          appMode == AppMode::Game && gameTraceFramesRemaining > 0;
+      if (traceGameFrame) {
+        TraceAppEvent("game frame: begin");
+        --gameTraceFramesRemaining;
+      }
+      if (traceGameFrame)
+        TraceAppEvent("pass: BeginFrame");
       dx.BeginFrame();
+      if (traceGameFrame)
+        TraceAppEvent("pass: Shadow");
       shadowPass.Execute(dx, frame);
+      if (traceGameFrame)
+        TraceAppEvent("pass: Sky");
       skyPass.Execute(dx, frame);
+      if (traceGameFrame)
+        TraceAppEvent("pass: GBuffer");
       gbufferPass.Execute(dx, frame);
+      if (traceGameFrame)
+        TraceAppEvent("pass: DeferredLighting");
       deferredLightingPass.Execute(dx, frame);
+      if (traceGameFrame)
+        TraceAppEvent("pass: Grid");
       gridPass.Execute(dx, frame);
+      if (traceGameFrame)
+        TraceAppEvent("pass: Transparent");
       transparentPass.Execute(dx, frame);
+      if (traceGameFrame)
+        TraceAppEvent("pass: Highlight");
       highlightPass.Execute(dx, frame);
+      if (traceGameFrame)
+        TraceAppEvent("pass: SSAO");
       ssaoPass.Execute(dx, frame);
+      if (traceGameFrame)
+        TraceAppEvent("pass: VelocityGen");
       velocityGenPass.Execute(dx, frame);  // moved before TAA (Phase 10.4)
+      if (traceGameFrame)
+        TraceAppEvent("pass: TAA");
       taaPass.Execute(dx, frame);          // TAA resolve (Phase 10.4)
+      if (traceGameFrame)
+        TraceAppEvent("pass: Bloom");
       bloomPass.Execute(dx, frame);
+      if (traceGameFrame)
+        TraceAppEvent("pass: Tonemap");
       tonemapPass.Execute(dx, frame);
+      if (traceGameFrame)
+        TraceAppEvent("pass: DOF");
       dofPass.Execute(dx, frame);
+      if (traceGameFrame)
+        TraceAppEvent("pass: MotionBlur");
       motionBlurPass.Execute(dx, frame);
+      if (traceGameFrame)
+        TraceAppEvent("pass: FXAA");
       fxaaPass.Execute(dx, frame);
+      if (traceGameFrame)
+        TraceAppEvent("pass: UI");
       uiPass.Execute(dx, frame);
+      if (traceGameFrame)
+        TraceAppEvent("pass: EndFrame");
       dx.EndFrame();
+      if (traceGameFrame)
+        TraceAppEvent("game frame: end");
 
       // Swap TAA ping-pong so next frame reads our output as history.
       if (editorScene.PostProcessSettings().taaEnabled) {
@@ -952,6 +1081,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       // Store current VP as "previous" for next frame's motion blur.
       cam.UpdatePrevViewProj();
 
+      if (requestQuit)
+        TraceAppEvent("requestQuit: PostQuitMessage");
       if (requestQuit)
         PostQuitMessage(0);
     }
@@ -965,11 +1096,26 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     gridRenderer.Reset();
     imgui.Shutdown(window);
     dx.Shutdown();
+    g_crashDxContext = nullptr;
   } catch (const std::exception &e) {
+    {
+      std::ofstream f("fatal_log.txt", std::ios::out | std::ios::trunc);
+      if (f)
+        f << "std::exception: " << e.what() << "\n";
+      if (g_crashDxContext)
+        g_crashDxContext->DumpDebugMessages(f);
+    }
     MessageBoxA(nullptr, e.what(), "Error",
                 MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SYSTEMMODAL);
     return -1;
   } catch (...) {
+    {
+      std::ofstream f("fatal_log.txt", std::ios::out | std::ios::trunc);
+      if (f)
+        f << "unknown exception\n";
+      if (g_crashDxContext)
+        g_crashDxContext->DumpDebugMessages(f);
+    }
     MessageBoxA(nullptr, "Unknown error occurred", "Error",
                 MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SYSTEMMODAL);
     return -1;

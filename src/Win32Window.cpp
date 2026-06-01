@@ -299,11 +299,14 @@ LRESULT Win32Window::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
     }
     case WM_SIZE:
     {
+        const uint32_t oldWidth = m_width;
+        const uint32_t oldHeight = m_height;
         m_width = LOWORD(lParam);
         m_height = HIWORD(lParam);
         m_minimized = (wParam == SIZE_MINIMIZED);
 
-        if (!m_minimized && m_resizeCb)
+        if (!m_minimized && m_resizeCb &&
+            (m_width != oldWidth || m_height != oldHeight))
             m_resizeCb(m_width, m_height, m_resizeUserData);
         return 0;
     }

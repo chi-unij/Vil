@@ -185,7 +185,6 @@ std::string MeshRenderer::ReloadShaders(DxContext &dx) {
       pso.PS = {nullptr, 0};
       D3D12_BLEND_DESC blend{};
       blend.RenderTarget[0].BlendEnable = FALSE;
-      blend.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
       pso.BlendState = blend;
       pso.SampleMask = UINT_MAX;
       D3D12_RASTERIZER_DESC rast{};
@@ -715,7 +714,6 @@ void MeshRenderer::CreateShadowPipelineOnce(DxContext &dx) {
 
   D3D12_BLEND_DESC blend{};
   blend.RenderTarget[0].BlendEnable = FALSE;
-  blend.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
   pso.BlendState = blend;
   pso.SampleMask = UINT_MAX;
 
@@ -810,6 +808,7 @@ void MeshRenderer::CreateTextureResource(DxContext &dx,
                     D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
                     IID_PPV_ARGS(&outTex)),
                 "Create Texture failed");
+  outTex->SetName(L"MeshRenderer.Texture");
 
   // 2. Upload Buffer
   UINT64 uploadBufferSize = 0;
@@ -836,6 +835,7 @@ void MeshRenderer::CreateTextureResource(DxContext &dx,
                     D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
                     IID_PPV_ARGS(&outUpload)),
                 "Create Texture Upload buffer failed");
+  outUpload->SetName(L"MeshRenderer.TextureUpload");
 
   // 3. Copy Data (row-by-row)
   void *mappedTex = nullptr;
@@ -921,6 +921,7 @@ uint32_t MeshRenderer::CreateMeshResources(DxContext &dx, const LoadedMesh &mesh
                     D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
                     IID_PPV_ARGS(&gpu.vb)),
                 "Create Mesh VB failed");
+  gpu.vb->SetName(L"MeshRenderer.VertexBuffer");
 
   void *mapped = nullptr;
   gpu.vb->Map(0, nullptr, &mapped);
@@ -945,6 +946,7 @@ uint32_t MeshRenderer::CreateMeshResources(DxContext &dx, const LoadedMesh &mesh
                     D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
                     IID_PPV_ARGS(&gpu.ib)),
                 "Create Mesh IB failed");
+  gpu.ib->SetName(L"MeshRenderer.IndexBuffer");
 
   gpu.ib->Map(0, nullptr, &mapped);
   memcpy(mapped, mesh.indices.data(), ibSize);

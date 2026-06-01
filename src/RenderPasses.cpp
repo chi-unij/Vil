@@ -52,14 +52,17 @@ void ShadowPass::Execute(DxContext &dx, const FrameData &frame) {
     return;
 
   auto batches = BuildBatches(frame.opaqueItems);
-  for (uint32_t c = 0; c < frame.cascadeCount; ++c) {
+  const uint32_t cascadeCount =
+      std::min({frame.cascadeCount, m_shadow.CascadeCount(), kMaxCascades});
+  for (uint32_t c = 0; c < cascadeCount; ++c) {
     m_shadow.BeginCascade(dx, c);
     for (const auto &batch : batches) {
       m_mesh.DrawMeshShadowInstanced(dx, batch.meshId, batch.worldMatrices,
                                      frame.cascadeLightViewProj[c]);
     }
   }
-  m_shadow.EndAllCascades(dx);
+  if (cascadeCount > 0)
+    m_shadow.EndAllCascades(dx);
 }
 
 // ============================================================================
@@ -89,7 +92,8 @@ void OpaquePass::Execute(DxContext &dx, const FrameData &frame) {
   // Build shadow params from FrameData + ShadowMap state (CSM).
   MeshShadowParams shadowParams{};
   if (frame.shadowsEnabled) {
-    shadowParams.cascadeCount = frame.cascadeCount;
+    shadowParams.cascadeCount =
+        std::min({frame.cascadeCount, m_shadow.CascadeCount(), kMaxCascades});
     shadowParams.lightViewProj = frame.cascadeLightViewProj;
     shadowParams.splitDistances = frame.cascadeSplitDistances;
     const uint32_t smSize = m_shadow.Size();
@@ -385,7 +389,9 @@ void DeferredLightingPass::Execute(DxContext &dx, const FrameData &frame) {
   cb.lightColor = {frame.lighting.lightColor.x, frame.lighting.lightColor.y,
                    frame.lighting.lightColor.z, frame.lighting.iblIntensity};
 
-  for (uint32_t c = 0; c < frame.cascadeCount && c < kMaxCascades; ++c)
+  const uint32_t cascadeCount =
+      std::min({frame.cascadeCount, m_shadow.CascadeCount(), kMaxCascades});
+  for (uint32_t c = 0; c < cascadeCount; ++c)
     DirectX::XMStoreFloat4x4(&cb.cascadeLightViewProj[c],
                               DirectX::XMMatrixTranspose(frame.cascadeLightViewProj[c]));
 
@@ -395,7 +401,7 @@ void DeferredLightingPass::Execute(DxContext &dx, const FrameData &frame) {
     cb.cascadeSplits = {frame.cascadeSplitDistances[0],
                         frame.cascadeSplitDistances[1],
                         frame.cascadeSplitDistances[2],
-                        static_cast<float>(frame.cascadeCount)};
+                        static_cast<float>(cascadeCount)};
   }
   cb.cascadeDebug = {frame.lighting.cascadeDebug, 0.0f, 0.0f, 0.0f};
   cb.lightCounts = {static_cast<float>(frame.pointLights.size()),
@@ -434,7 +440,7 @@ void DeferredLightingPass::Execute(DxContext &dx, const FrameData &frame) {
   // Bind root parameters.
   cmd->SetGraphicsRootConstantBufferView(0, cbGpu);
   cmd->SetGraphicsRootDescriptorTable(1, dx.GBufferTableSrvGpu()); // t0-t4
-  if (frame.shadowsEnabled && m_shadow.Size() > 0)
+  if (frame.shadowsEnabled && m_shadow.Size() > 0 && cascadeCount > 0)
     cmd->SetGraphicsRootDescriptorTable(2, m_shadow.SrvGpu());     // t5
   auto iblGpu = dx.IblTableGpu();
   if (iblGpu.ptr != 0)

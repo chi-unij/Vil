@@ -13,13 +13,21 @@
 #include "ShadowMap.h"
 
 #include <cstring>
+#include <ostream>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 using Microsoft::WRL::ComPtr;
 
 static UINT Align256(UINT size) { return (size + 255u) & ~255u; }
 
-static constexpr uint32_t kFrameConstantsBytes = 2 * 1024 * 1024; // 2MB per frame
+static constexpr uint32_t kFrameConstantsBytes = 32 * 1024 * 1024; // 32MB per frame
+
+static void SetDebugName(ID3D12Object *object, const wchar_t *name) {
+  if (object)
+    object->SetName(name);
+}
 
 static void EnableDebugLayerIfRequested(bool enable) {
   if (!enable)
@@ -64,6 +72,64 @@ void DxContext::Initialize(HWND hwnd, uint32_t width, uint32_t height,
 
   // Eagerly create rendering modules (GPU init happens later).
   m_meshRenderer = std::make_unique<MeshRenderer>();
+}
+
+void DxContext::DumpDebugMessages(std::ostream &out) const {
+  out << std::dec;
+  if (!m_device)
+    return;
+
+  ComPtr<ID3D12InfoQueue> infoQueue;
+  if (FAILED(m_device.As(&infoQueue)) || !infoQueue)
+    return;
+
+  const uint64_t messageCount =
+      infoQueue->GetNumStoredMessagesAllowedByRetrievalFilter();
+  out << "D3D12 InfoQueue messages: " << messageCount << "\n";
+
+  auto dumpMessage = [&](uint64_t i, const D3D12_MESSAGE &message) {
+    out << "  [" << i << "] severity=" << static_cast<int>(message.Severity)
+        << " id=" << static_cast<int>(message.ID) << "\n";
+    if (message.pDescription)
+      out << "      " << message.pDescription << "\n";
+  };
+
+  out << "D3D12 Error/Corruption messages:\n";
+  bool wroteImportant = false;
+  for (uint64_t i = 0; i < messageCount; ++i) {
+    SIZE_T messageLength = 0;
+    if (FAILED(infoQueue->GetMessage(i, nullptr, &messageLength)) ||
+        messageLength == 0)
+      continue;
+
+    std::vector<char> storage(messageLength);
+    auto *message = reinterpret_cast<D3D12_MESSAGE *>(storage.data());
+    if (FAILED(infoQueue->GetMessage(i, message, &messageLength)))
+      continue;
+
+    if (message->Severity <= D3D12_MESSAGE_SEVERITY_ERROR) {
+      dumpMessage(i, *message);
+      wroteImportant = true;
+    }
+  }
+  if (!wroteImportant)
+    out << "  (none)\n";
+
+  out << "D3D12 Last messages:\n";
+  const uint64_t first = (messageCount > 128) ? (messageCount - 128) : 0;
+  for (uint64_t i = first; i < messageCount; ++i) {
+    SIZE_T messageLength = 0;
+    if (FAILED(infoQueue->GetMessage(i, nullptr, &messageLength)) ||
+        messageLength == 0)
+      continue;
+
+    std::vector<char> storage(messageLength);
+    auto *message = reinterpret_cast<D3D12_MESSAGE *>(storage.data());
+    if (FAILED(infoQueue->GetMessage(i, message, &messageLength)))
+      continue;
+
+    dumpMessage(i, *message);
+  }
 }
 
 void DxContext::Shutdown() {
@@ -118,7 +184,15 @@ void DxContext::CreateDeviceAndQueue(bool enableDebugLayer) {
     ComPtr<ID3D12InfoQueue> infoQueue;
     if (SUCCEEDED(m_device.As(&infoQueue))) {
       infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
-      infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
+      infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, FALSE);
+
+      D3D12_MESSAGE_ID denyIds[] = {
+          D3D12_MESSAGE_ID_CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE,
+      };
+      D3D12_INFO_QUEUE_FILTER filter{};
+      filter.DenyList.NumIDs = _countof(denyIds);
+      filter.DenyList.pIDList = denyIds;
+      infoQueue->AddStorageFilterEntries(&filter);
     }
   }
 
@@ -127,6 +201,7 @@ void DxContext::CreateDeviceAndQueue(bool enableDebugLayer) {
   q.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
   ThrowIfFailed(m_device->CreateCommandQueue(&q, IID_PPV_ARGS(&m_queue)),
                 "CreateCommandQueue failed");
+  SetDebugName(m_queue.Get(), L"DxContext.CommandQueue");
 }
 
 // ---- Convenience wrappers ----
@@ -301,6 +376,9 @@ void DxContext::CreateCommandObjects() {
                       D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
                       IID_PPV_ARGS(&m_frames[i].constants)),
                   "CreateCommittedResource (FrameConstants) failed");
+    const std::wstring name =
+        L"DxContext.FrameConstants[" + std::to_wstring(i) + L"]";
+    SetDebugName(m_frames[i].constants.Get(), name.c_str());
     ThrowIfFailed(
         m_frames[i].constants->Map(
             0, &range,
@@ -361,6 +439,9 @@ void DxContext::RecreateSizeDependentResources() {
   for (uint32_t i = 0; i < FrameCount; ++i) {
     ThrowIfFailed(m_swapchain->GetBuffer(i, IID_PPV_ARGS(&m_backBuffers[i])),
                   "Swapchain GetBuffer failed");
+    const std::wstring name =
+        L"DxContext.BackBuffer[" + std::to_wstring(i) + L"]";
+    SetDebugName(m_backBuffers[i].Get(), name.c_str());
     m_device->CreateRenderTargetView(m_backBuffers[i].Get(), nullptr, handle);
     handle.ptr += m_rtvDescriptorSize;
   }
@@ -404,6 +485,7 @@ void DxContext::CreateDepthResources() {
                                         D3D12_RESOURCE_STATE_DEPTH_WRITE,
                                         &clear, IID_PPV_ARGS(&m_depthBuffer)),
       "CreateCommittedResource (Depth) failed");
+  SetDebugName(m_depthBuffer.Get(), L"DxContext.DepthBuffer");
 
   D3D12_DEPTH_STENCIL_VIEW_DESC dsv{};
   dsv.Format = m_depthFormat;
@@ -456,12 +538,13 @@ void DxContext::WaitForGpu() {
 }
 
 void DxContext::MoveToNextFrame() {
+  ThrowIfFailed(m_swapchain->Present(1, 0), "Present failed");
+
   const uint64_t signalValue = ++m_fenceValue;
   ThrowIfFailed(m_queue->Signal(m_fence.Get(), signalValue),
                 "Queue Signal failed");
   m_frameFenceValues[m_frameIndex] = signalValue;
 
-  ThrowIfFailed(m_swapchain->Present(1, 0), "Present failed");
   m_frameIndex = m_swapchain->GetCurrentBackBufferIndex();
 
   const uint64_t fenceToWait = m_frameFenceValues[m_frameIndex];
@@ -592,6 +675,7 @@ void DxContext::CreatePostProcessResources() {
                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear,
                       IID_PPV_ARGS(&m_hdrTarget)),
                   "CreateCommittedResource (HDR target) failed");
+    SetDebugName(m_hdrTarget.Get(), L"DxContext.HdrTarget");
   }
 
   // HDR RTV (slot FrameCount in RTV heap)
@@ -637,6 +721,7 @@ void DxContext::CreatePostProcessResources() {
                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear,
                       IID_PPV_ARGS(&m_ldrTarget)),
                   "CreateCommittedResource (LDR target) failed");
+    SetDebugName(m_ldrTarget.Get(), L"DxContext.LdrTarget");
   }
 
   // LDR RTV (slot FrameCount + 1)
@@ -688,6 +773,9 @@ void DxContext::CreatePostProcessResources() {
                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear,
                       IID_PPV_ARGS(&m_bloomMips[i].tex)),
                   "CreateCommittedResource (Bloom mip) failed");
+    const std::wstring name =
+        L"DxContext.BloomMip[" + std::to_wstring(i) + L"]";
+    SetDebugName(m_bloomMips[i].tex.Get(), name.c_str());
 
     // RTV (slot FrameCount + 2 + i)
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle =
@@ -755,6 +843,7 @@ void DxContext::CreatePostProcessResources() {
                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear,
                       IID_PPV_ARGS(&m_viewNormalTarget)),
                   "CreateCommittedResource (ViewNormal target) failed");
+    SetDebugName(m_viewNormalTarget.Get(), L"DxContext.ViewNormalTarget");
   }
   {
     D3D12_CPU_DESCRIPTOR_HANDLE rtvH =
@@ -797,6 +886,7 @@ void DxContext::CreatePostProcessResources() {
                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear,
                       IID_PPV_ARGS(&m_ssaoTarget)),
                   "CreateCommittedResource (SSAO target) failed");
+    SetDebugName(m_ssaoTarget.Get(), L"DxContext.SsaoTarget");
   }
   {
     D3D12_CPU_DESCRIPTOR_HANDLE rtvH =
@@ -837,6 +927,7 @@ void DxContext::CreatePostProcessResources() {
                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear,
                       IID_PPV_ARGS(&m_ssaoBlurTarget)),
                   "CreateCommittedResource (SSAO blur target) failed");
+    SetDebugName(m_ssaoBlurTarget.Get(), L"DxContext.SsaoBlurTarget");
   }
   {
     D3D12_CPU_DESCRIPTOR_HANDLE rtvH =
@@ -893,6 +984,7 @@ void DxContext::CreatePostProcessResources() {
                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear,
                       IID_PPV_ARGS(&m_velocityTarget)),
                   "CreateCommittedResource (Velocity target) failed");
+    SetDebugName(m_velocityTarget.Get(), L"DxContext.VelocityTarget");
   }
   {
     D3D12_CPU_DESCRIPTOR_HANDLE rtvH =
@@ -936,6 +1028,7 @@ void DxContext::CreatePostProcessResources() {
                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear,
                       IID_PPV_ARGS(&m_ldr2Target)),
                   "CreateCommittedResource (LDR2 target) failed");
+    SetDebugName(m_ldr2Target.Get(), L"DxContext.Ldr2Target");
   }
   {
     D3D12_CPU_DESCRIPTOR_HANDLE rtvH =
@@ -988,6 +1081,7 @@ void DxContext::CreatePostProcessResources() {
                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear,
                       IID_PPV_ARGS(&m_dofTarget)),
                   "CreateCommittedResource (DOF target) failed");
+    SetDebugName(m_dofTarget.Get(), L"DxContext.DofTarget");
   }
   {
     D3D12_CPU_DESCRIPTOR_HANDLE rtvH =
@@ -1050,6 +1144,7 @@ void DxContext::CreatePostProcessResources() {
                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear,
                       IID_PPV_ARGS(&m_gbufferAlbedo)),
                   "CreateCommittedResource (G-buffer Albedo) failed");
+    SetDebugName(m_gbufferAlbedo.Get(), L"DxContext.GBufferAlbedo");
   }
   {
     D3D12_CPU_DESCRIPTOR_HANDLE h =
@@ -1093,6 +1188,7 @@ void DxContext::CreatePostProcessResources() {
                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear,
                       IID_PPV_ARGS(&m_gbufferNormal)),
                   "CreateCommittedResource (G-buffer Normal) failed");
+    SetDebugName(m_gbufferNormal.Get(), L"DxContext.GBufferNormal");
   }
   {
     D3D12_CPU_DESCRIPTOR_HANDLE h =
@@ -1136,6 +1232,7 @@ void DxContext::CreatePostProcessResources() {
                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear,
                       IID_PPV_ARGS(&m_gbufferMaterial)),
                   "CreateCommittedResource (G-buffer Material) failed");
+    SetDebugName(m_gbufferMaterial.Get(), L"DxContext.GBufferMaterial");
   }
   {
     D3D12_CPU_DESCRIPTOR_HANDLE h =
@@ -1179,6 +1276,7 @@ void DxContext::CreatePostProcessResources() {
                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear,
                       IID_PPV_ARGS(&m_gbufferEmissive)),
                   "CreateCommittedResource (G-buffer Emissive) failed");
+    SetDebugName(m_gbufferEmissive.Get(), L"DxContext.GBufferEmissive");
   }
   {
     D3D12_CPU_DESCRIPTOR_HANDLE h =
@@ -1249,6 +1347,9 @@ void DxContext::CreatePostProcessResources() {
                       D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear,
                       IID_PPV_ARGS(&m_taaHistory[i])),
                   "CreateCommittedResource (TAA history) failed");
+    const std::wstring name =
+        L"DxContext.TaaHistory[" + std::to_wstring(i) + L"]";
+    SetDebugName(m_taaHistory[i].Get(), name.c_str());
 
     // RTV
     D3D12_CPU_DESCRIPTOR_HANDLE rtvH =
@@ -1345,6 +1446,7 @@ void DxContext::BeginFrame() {
         D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
         IID_PPV_ARGS(&m_previewTex)),
         "Preview: CreateCommittedResource failed");
+    SetDebugName(m_previewTex.Get(), L"DxContext.PreviewTexture");
 
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
     UINT numRows = 0;
@@ -1371,6 +1473,7 @@ void DxContext::BeginFrame() {
         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
         IID_PPV_ARGS(&m_previewUpload)),
         "Preview: upload buffer failed");
+    SetDebugName(m_previewUpload.Get(), L"DxContext.PreviewUpload");
 
     void *mapped = nullptr;
     m_previewUpload->Map(0, nullptr, &mapped);

@@ -10,10 +10,10 @@
 
 class OverworldScene {
 public:
-  static constexpr float kFloorSizeMeters = 60.0f;
-  static constexpr float kPlayableHalfExtentMeters = 24.0f;
-  static constexpr float kCastleWallHalfExtentMeters = 25.5f;
-  static constexpr float kCastleGateHalfWidthMeters = 4.0f;
+  static constexpr float kFloorSizeMeters = 60.0f; // Floor size
+  static constexpr float kPlayableHalfExtentMeters = 24.0f; // player movement allow range
+  static constexpr float kCastleWallHalfExtentMeters = 25.5f; // castle wall range
+  static constexpr float kCastleGateHalfWidthMeters = 4.0f; // Castle gate range
 
   void Initialize(DxContext &dx);
   void BuildFrame(FrameData &frame) const;

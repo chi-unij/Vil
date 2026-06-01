@@ -51,6 +51,7 @@ void ShadowMap::Initialize(DxContext &dx, uint32_t size, uint32_t cascadeCount) 
                     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear,
                     IID_PPV_ARGS(&m_tex)),
                 "CreateCommittedResource (ShadowMap Texture2DArray) failed");
+  m_tex->SetName(L"ShadowMap.Texture2DArray");
 
   // 3) Per-cascade DSV views (each targets one array slice).
   for (uint32_t i = 0; i < cascadeCount; ++i) {

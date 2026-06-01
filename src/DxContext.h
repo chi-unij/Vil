@@ -21,6 +21,7 @@
 #include "Lighting.h"
 #include "ShadowMap.h"
 #include <DirectXMath.h>
+#include <iosfwd>
 #include <wrl.h>
 
 class MeshRenderer;
@@ -41,6 +42,7 @@ public:
   void Shutdown();
 
   void Resize(uint32_t width, uint32_t height);
+  void DumpDebugMessages(std::ostream &out) const;
 
   // ---- Frame management ----
   void BeginFrame();
