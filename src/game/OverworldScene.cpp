@@ -60,6 +60,19 @@ std::string ResolveLiveAssetPath(const std::string &path) {
   return path;
 }
 
+XMFLOAT3 OffsetAwayFromCenter(const XMFLOAT3 &position, float distanceOffset) {
+  if (std::abs(distanceOffset) <= 0.0001f)
+    return position;
+
+  const float lenSq = position.x * position.x + position.z * position.z;
+  if (lenSq <= 0.0001f)
+    return position;
+
+  const float invLen = 1.0f / std::sqrt(lenSq);
+  return {position.x + position.x * invLen * distanceOffset, position.y,
+          position.z + position.z * invLen * distanceOffset};
+}
+
 } // namespace
 
 void OverworldScene::Initialize(DxContext &dx) {
@@ -175,6 +188,7 @@ void OverworldScene::Initialize(DxContext &dx) {
   }
 
   ReloadPlacements(dx);
+  BuildBackgroundForest(dx);
 }
 
 void OverworldScene::BuildFrame(FrameData &frame) const {
@@ -271,6 +285,33 @@ void OverworldScene::BuildFrame(FrameData &frame) const {
         XMMatrixTranslation(object.position.x, object.position.y,
                             object.position.z);
     frame.opaqueItems.push_back({object.meshId, world});
+  }
+
+  const auto &forestDebug = m_backgroundForestDebug;
+  if (forestDebug.enabled && !m_backgroundForestMeshIds.empty()) {
+    int drawnClusters = 0;
+    for (const BackgroundForestCluster &cluster : m_backgroundForestClusters) {
+      if (cluster.densityTier > forestDebug.densityLevel)
+        continue;
+      if (forestDebug.singleClusterPreview && drawnClusters > 0)
+        break;
+
+      const XMFLOAT3 spacedPosition = {
+          cluster.position.x * forestDebug.spacingMultiplier,
+          cluster.position.y,
+          cluster.position.z * forestDebug.spacingMultiplier};
+      const XMFLOAT3 position =
+          OffsetAwayFromCenter(spacedPosition, forestDebug.distanceOffset);
+      const float scale = cluster.baseScale * forestDebug.scaleMultiplier;
+      for (uint32_t meshId : m_backgroundForestMeshIds) {
+        const XMMATRIX world =
+            XMMatrixScaling(scale, scale, scale) *
+            XMMatrixRotationY(cluster.yawRadians) *
+            XMMatrixTranslation(position.x, position.y, position.z);
+        frame.opaqueItems.push_back({meshId, world});
+      }
+      ++drawnClusters;
+    }
   }
 }
 
@@ -385,4 +426,70 @@ bool OverworldScene::AppendStageObject(DxContext &dx, const std::string &path,
     outObjects.push_back(object);
   }
   return true;
+}
+
+void OverworldScene::BuildBackgroundForest(DxContext &dx) {
+  m_backgroundForestMeshIds.clear();
+  m_backgroundForestClusters.clear();
+
+  StageModel *model =
+      FindOrLoadModel(dx, "Assets/models/low_poly_forest_tree_pack.glb");
+  if (!model) {
+    OutputDebugStringA(
+        "[OverworldScene] WARNING: background forest pack not loaded.\n");
+    return;
+  }
+
+  m_backgroundForestMeshIds = model->meshIds;
+  if (m_backgroundForestMeshIds.empty())
+    return;
+
+  // 城外の到達不能エリアを森林クラスターで塞ぎ、境界の空白感を減らす。
+  constexpr float nearBand = kCastleWallHalfExtentMeters + 2.2f;
+  constexpr float midBand = kCastleWallHalfExtentMeters + 8.0f;
+  constexpr float farBand = kCastleWallHalfExtentMeters + 15.0f;
+
+  for (int i = -5; i <= 5; ++i) {
+    const float x = static_cast<float>(i) * 5.4f;
+    if (std::abs(x) > kCastleGateHalfWidthMeters + 3.5f) {
+      AppendBackgroundForestCluster(x, nearBand, 0.55f + 0.03f * (i & 1),
+                                    17.0f * static_cast<float>(i), 0);
+    }
+    AppendBackgroundForestCluster(x, -nearBand, 0.58f + 0.02f * (i & 1),
+                                  23.0f * static_cast<float>(i), 0);
+  }
+
+  for (int i = -4; i <= 4; ++i) {
+    const float z = static_cast<float>(i) * 6.0f;
+    AppendBackgroundForestCluster(-nearBand, z, 0.56f + 0.025f * (i & 1),
+                                  31.0f * static_cast<float>(i), 1);
+    AppendBackgroundForestCluster(nearBand, z, 0.54f + 0.025f * (i & 1),
+                                  -29.0f * static_cast<float>(i), 1);
+  }
+
+  for (int i = -4; i <= 4; ++i) {
+    const float x = static_cast<float>(i) * 8.0f;
+    AppendBackgroundForestCluster(x, farBand, 0.72f, 41.0f * i, 2);
+    AppendBackgroundForestCluster(x, -farBand, 0.72f, -37.0f * i, 2);
+  }
+
+  for (int i = -3; i <= 3; ++i) {
+    const float z = static_cast<float>(i) * 9.0f;
+    AppendBackgroundForestCluster(-midBand, z, 0.64f, 53.0f * i, 3);
+    AppendBackgroundForestCluster(midBand, z, 0.64f, -47.0f * i, 3);
+  }
+
+  OutputDebugStringA("[OverworldScene] background forest initialized.\n");
+}
+
+void OverworldScene::AppendBackgroundForestCluster(float x, float z,
+                                                   float scale,
+                                                   float yawDegrees,
+                                                   int densityTier) {
+  BackgroundForestCluster cluster{};
+  cluster.position = {x, 0.0f, z};
+  cluster.baseScale = scale;
+  cluster.yawRadians = yawDegrees * XM_PI / 180.0f;
+  cluster.densityTier = densityTier;
+  m_backgroundForestClusters.push_back(cluster);
 }

@@ -15,6 +15,15 @@ public:
   static constexpr float kCastleWallHalfExtentMeters = 25.5f; // castle wall range
   static constexpr float kCastleGateHalfWidthMeters = 4.0f; // Castle gate range
 
+  struct BackgroundForestDebugSettings {
+    bool enabled = true;
+    bool singleClusterPreview = false;
+    int densityLevel = 3;
+    float scaleMultiplier = 0.34f;
+    float distanceOffset = 30.0f;
+    float spacingMultiplier = 0.5f;
+  };
+
   void Initialize(DxContext &dx);
   void BuildFrame(FrameData &frame) const;
   bool ReloadPlacements(DxContext &dx);
@@ -22,6 +31,18 @@ public:
   bool IsReady() const { return m_ready; }
   const std::string &PlacementPath() const { return m_placementPath; }
   size_t ObjectCount() const { return m_stageObjects.size(); }
+  size_t BackgroundForestClusterCount() const {
+    return m_backgroundForestClusters.size();
+  }
+  size_t BackgroundForestMeshPartCount() const {
+    return m_backgroundForestMeshIds.size();
+  }
+  BackgroundForestDebugSettings &BackgroundForestDebug() {
+    return m_backgroundForestDebug;
+  }
+  const BackgroundForestDebugSettings &BackgroundForestDebug() const {
+    return m_backgroundForestDebug;
+  }
 
 private:
   struct StageObject {
@@ -36,15 +57,28 @@ private:
     std::vector<uint32_t> meshIds;
   };
 
+  struct BackgroundForestCluster {
+    DirectX::XMFLOAT3 position = {0.0f, 0.0f, 0.0f};
+    float baseScale = 1.0f;
+    float yawRadians = 0.0f;
+    int densityTier = 0;
+  };
+
   bool AppendStageObject(DxContext &dx, const std::string &path,
                          const StageObject &placement,
                          std::vector<StageObject> &outObjects);
   StageModel *FindOrLoadModel(DxContext &dx, const std::string &path);
+  void BuildBackgroundForest(DxContext &dx);
+  void AppendBackgroundForestCluster(float x, float z, float scale,
+                                     float yawDegrees, int densityTier);
 
   uint32_t m_floorMeshId = UINT32_MAX;
   uint32_t m_castleWallMeshId = UINT32_MAX;
   uint32_t m_castleMerlonMeshId = UINT32_MAX;
   uint32_t m_castleTowerMeshId = UINT32_MAX;
+  std::vector<uint32_t> m_backgroundForestMeshIds;
+  std::vector<BackgroundForestCluster> m_backgroundForestClusters;
+  BackgroundForestDebugSettings m_backgroundForestDebug;
   std::vector<StageObject> m_stageObjects;
   std::vector<StageModel> m_stageModels;
   std::string m_placementPath = "Assets/scenes/overworld_placements.json";

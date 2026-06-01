@@ -306,6 +306,17 @@ static DirectX::XMMATRIX ComputeCascadeViewProj(
   return lightView * lightProj;
 }
 
+static float LerpFloat(float a, float b, float t) {
+  return a + (b - a) * t;
+}
+
+static float DaylightTFromHour(float hour) {
+  const float wrapped = std::fmod(std::max(hour, 0.0f), 24.0f);
+  if (wrapped <= 12.0f)
+    return wrapped / 12.0f;
+  return (24.0f - wrapped) / 12.0f;
+}
+
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
   try {
     {
@@ -411,6 +422,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     uint32_t fpsFrames = 0;
     float fpsValue = 0.0f;
     float skyExposure = 0.3f;
+    float gameTimeOfDayHours = 12.0f;
+    bool gameTimeAuto = true;
+    float gameHoursPerSecond = 0.25f;
 
     // IBL (Phase 10.2)
     bool iblEnabled = true;
@@ -473,6 +487,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       float r = 0.1f + 0.1f * (0.5f + 0.5f * sinf(t));
       float g = 0.1f + 0.1f * (0.5f + 0.5f * sinf(t * 1.7f));
       float b = 0.2f + 0.2f * (0.5f + 0.5f * sinf(t * 0.9f));
+      if (appMode == AppMode::Game && gameTimeAuto) {
+        gameTimeOfDayHours =
+            std::fmod(gameTimeOfDayHours + dt * gameHoursPerSecond, 24.0f);
+      }
+      const float gameDaylightT = DaylightTFromHour(gameTimeOfDayHours);
+      const float gameSkyExposure =
+          LerpFloat(0.01f, 0.25f, gameDaylightT); // Sky exposure linear from 0.01 to 0.25
+      const float gamePostExposure =
+          LerpFloat(0.1f, 1.0f, gameDaylightT); // Post exposure linear from 0.1 to 1.0
+      constexpr float kGameIblIntensity = 0.7f;
 
       auto &input = window.GetInput();
       input.PollGamepad();
@@ -806,6 +830,46 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         ImGui::Text("Placement: {%.2ff, %.2ff, %.2ff}",
                     cameraPos.x, cameraPos.y, cameraPos.z);
         ImGui::Text("Objects: %zu", overworldScene.ObjectCount());
+        ImGui::Separator();
+        ImGui::Text("Time");
+        ImGui::SliderFloat("Hour", &gameTimeOfDayHours, 0.0f, 24.0f, "%.2f");
+        ImGui::Checkbox("Auto Time", &gameTimeAuto);
+        ImGui::SliderFloat("Hours / sec", &gameHoursPerSecond, 0.01f, 4.0f,
+                           "%.2f", ImGuiSliderFlags_Logarithmic);
+        ImGui::Text("Sky Exposure: %.3f", gameSkyExposure);
+        ImGui::Text("Post Exposure: %.3f", gamePostExposure);
+        ImGui::Text("IBL Intensity: %.2f", kGameIblIntensity);
+        if (ImGui::Button("Midnight")) {
+          gameTimeOfDayHours = 0.0f;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Afternoon")) {
+          gameTimeOfDayHours = 12.0f;
+        }
+        ImGui::Separator();
+        ImGui::Text("Forest Debug");
+        auto &forestDebug = overworldScene.BackgroundForestDebug();
+        ImGui::Checkbox("Forest Enabled", &forestDebug.enabled);
+        ImGui::Checkbox("Single Cluster Preview",
+                        &forestDebug.singleClusterPreview);
+        ImGui::SliderInt("Forest Density", &forestDebug.densityLevel, 0, 3);
+        ImGui::SliderFloat("Forest Scale", &forestDebug.scaleMultiplier, 0.02f,
+                           0.60f, "%.3f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderFloat("Forest Distance", &forestDebug.distanceOffset,
+                           -10.0f, 60.0f, "%.1f");
+        ImGui::SliderFloat("Forest Spacing", &forestDebug.spacingMultiplier,
+                           0.5f, 1.8f, "%.2f");
+        if (ImGui::Button("Reset Forest")) {
+          forestDebug.enabled = true;
+          forestDebug.singleClusterPreview = false;
+          forestDebug.densityLevel = 3;
+          forestDebug.scaleMultiplier = 0.34f;
+          forestDebug.distanceOffset = 30.0f;
+          forestDebug.spacingMultiplier = 0.5f;
+        }
+        ImGui::Text("Clusters: %zu  Mesh parts: %zu",
+                    overworldScene.BackgroundForestClusterCount(),
+                    overworldScene.BackgroundForestMeshPartCount());
         ImGui::End();
       }
 
@@ -940,6 +1004,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       } else if (appMode == AppMode::Game) {
         overworldScene.BuildFrame(frame);
         playerPreview.BuildFrame(frame);
+        frame.skyExposure = gameSkyExposure;
+        frame.lighting.iblIntensity = kGameIblIntensity;
+        frame.exposure = gamePostExposure;
       } else if (scenePlayMode) {
         // Scene play mode (Phase 8): build frame data but skip editor UI.
         editorScene.BuildFrameData(frame);
