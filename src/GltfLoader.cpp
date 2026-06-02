@@ -461,6 +461,11 @@ static void ApplyMaterialToPart(const tinygltf::Model &model, int materialIndex,
         static_cast<float>(mat.emissiveFactor[1]),
         static_cast<float>(mat.emissiveFactor[2])};
   }
+  part.material.alphaCutout =
+      (mat.alphaMode == "MASK" || mat.alphaMode == "BLEND");
+  part.material.alphaCutoff = static_cast<float>(mat.alphaCutoff);
+  if (part.material.alphaCutoff <= 0.0f)
+    part.material.alphaCutoff = 0.5f;
 
   part.material.hasBaseColor = !part.baseColorImage.pixels.empty();
   part.material.hasNormal = !part.normalImage.pixels.empty();

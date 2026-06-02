@@ -26,6 +26,10 @@ struct Material {
   // Procedural tile shader type (0 = none, 1 = fire, 2 = ice, etc.)
   float proceduralTypeId = 0.0f;
 
+  // glTF alpha cutout for foliage/card materials.
+  bool alphaCutout = false;
+  float alphaCutoff = 0.5f;
+
   // Parallax Occlusion Mapping (per-material, not all meshes have height maps)
   bool  pomEnabled   = false;
   float heightScale  = 0.02f;

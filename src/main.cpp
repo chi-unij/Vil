@@ -863,8 +863,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
           forestDebug.enabled = true;
           forestDebug.singleClusterPreview = false;
           forestDebug.densityLevel = 3;
-          forestDebug.scaleMultiplier = 0.34f;
-          forestDebug.distanceOffset = 30.0f;
+          forestDebug.scaleMultiplier = 0.40f;
+          forestDebug.distanceOffset = 32.0f;
           forestDebug.spacingMultiplier = 0.5f;
         }
         ImGui::Text("Clusters: %zu  Mesh parts: %zu",
@@ -874,7 +874,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       }
 
       // ---- ImGui debug windows ----
-      if (appMode == AppMode::Editor) {
+      if (appMode == AppMode::Editor) {   
         imgui.DrawDebugWindow(cam, fpsValue, dt);
         ImGui::SetNextWindowCollapsed(true, ImGuiCond_FirstUseEver);
         ImGui::Begin("Sky");

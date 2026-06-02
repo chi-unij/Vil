@@ -15,7 +15,7 @@ cbuffer GBufferCB : register(b0)
     float4   gPOMParams;        // x=heightScale, y=minLayers, z=maxLayers, w=enabled
     float4   gBaseColorFactor;  // rgba multiplier for base color
     float4   gUVTilingOffset;   // xy=tiling, zw=offset
-    float4   gAnimParams;      // x=gameTime, y=materialTypeId
+    float4   gAnimParams;      // x=gameTime, y=materialTypeId, z=alphaCutoff, w=alphaCutout
 };
 
 // Per-instance world matrices (Phase 12.5 — Instanced Rendering).
@@ -154,7 +154,11 @@ PSOut PSMain(PSIn i)
     N = normalize(mul(normalTS, TBN));
 
     // ---- Sample material textures ----
-    float3 albedo = gBaseColorMap.Sample(gSam, uv).rgb * gBaseColorFactor.rgb;
+    float4 baseColorSample = gBaseColorMap.Sample(gSam, uv);
+    float alpha = baseColorSample.a * gBaseColorFactor.a;
+    if (gAnimParams.w > 0.5f && alpha < gAnimParams.z)
+        discard;
+    float3 albedo = baseColorSample.rgb * gBaseColorFactor.rgb;
 
     float4 mr = gMetalRoughMap.Sample(gSam, uv);
     float roughness = saturate(mr.g * gMaterialFactors.y);

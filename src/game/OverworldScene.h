@@ -19,8 +19,8 @@ public:
     bool enabled = true;
     bool singleClusterPreview = false;
     int densityLevel = 3;
-    float scaleMultiplier = 0.34f;
-    float distanceOffset = 30.0f;
+    float scaleMultiplier = 0.40f;
+    float distanceOffset = 32.0f;
     float spacingMultiplier = 0.5f;
   };
 

@@ -580,7 +580,7 @@ void MeshRenderer::DrawMeshGBufferInstanced(
     DirectX::XMFLOAT4 pomParams;
     DirectX::XMFLOAT4 baseColorFactor; // rgba multiplier
     DirectX::XMFLOAT4 uvTilingOffset;  // xy=tiling, zw=offset
-    DirectX::XMFLOAT4 animParams;      // x=gameTime, y=materialTypeId
+    DirectX::XMFLOAT4 animParams;      // x=gameTime, y=materialTypeId, z=alphaCutoff, w=alphaCutout
   };
 
   GBufferCB cb{};
@@ -597,7 +597,8 @@ void MeshRenderer::DrawMeshGBufferInstanced(
   cb.baseColorFactor = mat.baseColorFactor;
   cb.uvTilingOffset = {mat.uvTiling.x, mat.uvTiling.y,
                        mat.uvOffset.x, mat.uvOffset.y};
-  cb.animParams = {gameTime, mat.proceduralTypeId, 0.0f, 0.0f};
+  cb.animParams = {gameTime, mat.proceduralTypeId, mat.alphaCutoff,
+                   mat.alphaCutout ? 1.0f : 0.0f};
 
   void *cbCpu = nullptr;
   D3D12_GPU_VIRTUAL_ADDRESS cbGpu =
@@ -1187,7 +1188,7 @@ void MeshRenderer::DrawMeshInstanced(
     DirectX::XMFLOAT4 pomParams;           // x = heightScale, y = minLayers, z = maxLayers, w = enabled
     DirectX::XMFLOAT4 baseColorFactor;     // rgba multiplier
     DirectX::XMFLOAT4 uvTilingOffset;      // xy=tiling, zw=offset
-    DirectX::XMFLOAT4 animParams;          // x=gameTime, y=materialTypeId
+    DirectX::XMFLOAT4 animParams;          // x=gameTime, y=materialTypeId, z=alphaCutoff, w=alphaCutout
   };
 
   MeshCB cb{};
@@ -1225,7 +1226,8 @@ void MeshRenderer::DrawMeshInstanced(
   cb.baseColorFactor = mat.baseColorFactor;
   cb.uvTilingOffset = {mat.uvTiling.x, mat.uvTiling.y,
                        mat.uvOffset.x, mat.uvOffset.y};
-  cb.animParams = {gameTime, mat.proceduralTypeId, 0.0f, 0.0f};
+  cb.animParams = {gameTime, mat.proceduralTypeId, mat.alphaCutoff,
+                   mat.alphaCutout ? 1.0f : 0.0f};
 
   void *cbCpu = nullptr;
   D3D12_GPU_VIRTUAL_ADDRESS cbGpu =
