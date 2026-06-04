@@ -5,6 +5,10 @@ cbuffer SkyCB : register(b0)
     float4x4 gInvViewProj; // inverse(view * proj)
     float3   gCameraPos;
     float    gExposure;
+    float3   gSunDirection;
+    float    gSunIntensity;
+    float3   gSunColor;
+    float    gSunAngularRadius;
 };
 
 Texture2D<float4> gEnvLatLong : register(t0);
@@ -58,6 +62,17 @@ float4 PSMain(VSOut i) : SV_Target
 
     float3 hdr = gEnvLatLong.SampleLevel(gSamp, envUV, 0).rgb;
     hdr *= gExposure;
+
+    float3 sunViewDir = normalize(-gSunDirection);
+    float cosToSun = dot(dir, sunViewDir);
+    float sunCore = smoothstep(cos(gSunAngularRadius * 1.10),
+                               cos(gSunAngularRadius * 0.72), cosToSun);
+    float sunGlow = smoothstep(cos(gSunAngularRadius * 7.0),
+                               cos(gSunAngularRadius * 1.25), cosToSun);
+    float horizonWarmth = saturate(dot(dir, sunViewDir) * 0.5 + 0.5);
+
+    hdr += gSunColor * gSunIntensity * (sunCore * 7.0 + sunGlow * 0.45);
+    hdr += gSunColor * gExposure * horizonWarmth * sunGlow * 0.20;
 
     // Output linear HDR — tonemapping happens in post-process.
     return float4(hdr, 1.0);

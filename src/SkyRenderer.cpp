@@ -51,6 +51,10 @@ struct SkyCB {
   DirectX::XMFLOAT4X4 invViewProj;
   DirectX::XMFLOAT3 cameraPos;
   float exposure;
+  DirectX::XMFLOAT3 sunDirection;
+  float sunIntensity;
+  DirectX::XMFLOAT3 sunColor;
+  float sunAngularRadius;
 };
 
 void SkyRenderer::Initialize(DxContext &dx) {
@@ -290,7 +294,10 @@ void SkyRenderer::Initialize(DxContext &dx) {
 }
 
 void SkyRenderer::Draw(DxContext &dx, const DirectX::XMMATRIX &view,
-                        const DirectX::XMMATRIX &proj, float exposure) {
+                       const DirectX::XMMATRIX &proj, float exposure,
+                       const DirectX::XMFLOAT3 &sunDirection,
+                       const DirectX::XMFLOAT3 &sunColor,
+                       float sunIntensity) {
   using namespace DirectX;
 
   // Inverse of (view * proj), for ray reconstruction.
@@ -306,6 +313,10 @@ void SkyRenderer::Draw(DxContext &dx, const DirectX::XMMATRIX &view,
   XMStoreFloat4x4(&cb.invViewProj, XMMatrixTranspose(invVp));
   cb.cameraPos = camPos;
   cb.exposure = exposure;
+  cb.sunDirection = sunDirection;
+  cb.sunIntensity = sunIntensity;
+  cb.sunColor = sunColor;
+  cb.sunAngularRadius = 0.035f;
 
   const uint32_t fi = dx.FrameIndex();
   memcpy(m_frameCBs[fi].mapped, &cb, sizeof(cb));

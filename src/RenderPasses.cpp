@@ -79,7 +79,9 @@ void SkyPass::Execute(DxContext &dx, const FrameData &frame) {
   auto normalRtv = dx.ViewNormalRtv();
   dx.CmdList()->ClearRenderTargetView(normalRtv, normalClear, 0, nullptr);
 
-  m_sky.Draw(dx, frame.view, frame.proj, frame.skyExposure);
+  m_sky.Draw(dx, frame.view, frame.proj, frame.skyExposure,
+             frame.lighting.lightDir, frame.lighting.lightColor,
+             frame.lighting.lightIntensity);
 }
 
 // ============================================================================

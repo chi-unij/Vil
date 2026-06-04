@@ -22,7 +22,9 @@ class SkyRenderer {
 public:
   void Initialize(DxContext &dx);
   void Draw(DxContext &dx, const DirectX::XMMATRIX &view,
-            const DirectX::XMMATRIX &proj, float exposure);
+            const DirectX::XMMATRIX &proj, float exposure,
+            const DirectX::XMFLOAT3 &sunDirection,
+            const DirectX::XMFLOAT3 &sunColor, float sunIntensity);
   void Reset();
 
   std::string ReloadShaders(DxContext &dx);

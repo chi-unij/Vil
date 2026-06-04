@@ -317,6 +317,49 @@ static float DaylightTFromHour(float hour) {
   return (24.0f - wrapped) / 12.0f;
 }
 
+struct GameTimeLightingProfile {
+  DirectX::XMFLOAT3 sunDirection = {0.3f, -1.0f, 0.2f};
+  DirectX::XMFLOAT3 sunColor = {1.0f, 0.98f, 0.92f};
+  float sunIntensity = 3.0f;
+};
+
+static DirectX::XMFLOAT3 LerpFloat3(const DirectX::XMFLOAT3 &a,
+                                    const DirectX::XMFLOAT3 &b, float t) {
+  return {LerpFloat(a.x, b.x, t), LerpFloat(a.y, b.y, t),
+          LerpFloat(a.z, b.z, t)};
+}
+
+static GameTimeLightingProfile BuildGameTimeLighting(float hour) {
+  using namespace DirectX;
+
+  const float wrappedHour = std::fmod(std::max(hour, 0.0f), 24.0f);
+  const float dayProgress = wrappedHour / 24.0f;
+  const float sunAngle = dayProgress * XM_2PI;
+  const float altitude = std::sin(sunAngle - XM_PIDIV2);
+  const float daylight = std::clamp((altitude + 0.16f) / 1.16f, 0.0f, 1.0f);
+  const float warmEdge =
+      std::pow(1.0f - std::clamp(std::abs(altitude), 0.0f, 1.0f), 2.0f);
+
+  const float horizontal =
+      std::max(0.18f, std::sqrt(std::max(0.0f, 1.0f - altitude * altitude)));
+  const float azimuth = -0.65f + dayProgress * XM_PI;
+  const XMVECTOR sunDir =
+      XMVector3Normalize(XMVectorSet(std::cos(azimuth) * horizontal,
+                                     -std::max(0.08f, std::abs(altitude)),
+                                     std::sin(azimuth) * horizontal, 0.0f));
+
+  const XMFLOAT3 middayColor = {1.0f, 0.98f, 0.90f};
+  const XMFLOAT3 goldenColor = {1.0f, 0.60f, 0.32f};
+  const XMFLOAT3 moonColor = {0.34f, 0.43f, 0.72f};
+  const XMFLOAT3 dayColor = LerpFloat3(middayColor, goldenColor, warmEdge);
+
+  GameTimeLightingProfile profile{};
+  XMStoreFloat3(&profile.sunDirection, sunDir);
+  profile.sunColor = LerpFloat3(moonColor, dayColor, daylight);
+  profile.sunIntensity = LerpFloat(0.16f, 4.2f, daylight);
+  return profile;
+}
+
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
   try {
     {
@@ -496,6 +539,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
           LerpFloat(0.01f, 0.25f, gameDaylightT); // Sky exposure linear from 0.01 to 0.25
       const float gamePostExposure =
           LerpFloat(0.1f, 1.0f, gameDaylightT); // Post exposure linear from 0.1 to 1.0
+      const GameTimeLightingProfile gameLighting =
+          BuildGameTimeLighting(gameTimeOfDayHours);
       constexpr float kGameIblIntensity = 0.7f;
 
       auto &input = window.GetInput();
@@ -838,6 +883,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
                            "%.2f", ImGuiSliderFlags_Logarithmic);
         ImGui::Text("Sky Exposure: %.3f", gameSkyExposure);
         ImGui::Text("Post Exposure: %.3f", gamePostExposure);
+        ImGui::Text("Sun Dir: %.2f, %.2f, %.2f",
+                    gameLighting.sunDirection.x, gameLighting.sunDirection.y,
+                    gameLighting.sunDirection.z);
+        ImGui::Text("Sun Color: %.2f, %.2f, %.2f",
+                    gameLighting.sunColor.x, gameLighting.sunColor.y,
+                    gameLighting.sunColor.z);
+        ImGui::Text("Sun Intensity: %.2f", gameLighting.sunIntensity);
         ImGui::Text("IBL Intensity: %.2f", kGameIblIntensity);
         if (ImGui::Button("Midnight")) {
           gameTimeOfDayHours = 0.0f;
@@ -936,8 +988,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       // ---- Compute CSM cascade splits + per-cascade light VP ----
       using namespace DirectX;
       const auto &shadowCfg = editorScene.ShadowSettings();
+      const XMFLOAT3 activeSunDirection =
+          appMode == AppMode::Game ? gameLighting.sunDirection
+                                   : editorScene.LightSettings().lightDir;
       const XMVECTOR raysDir =
-          XMVector3Normalize(XMLoadFloat3(&editorScene.LightSettings().lightDir));
+          XMVector3Normalize(XMLoadFloat3(&activeSunDirection));
       const XMFLOAT3 camPosF = cam.GetPosition();
 
       const uint32_t cascadeCount = dx.GetShadowMap().CascadeCount();
@@ -1005,6 +1060,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         overworldScene.BuildFrame(frame);
         playerPreview.BuildFrame(frame);
         frame.skyExposure = gameSkyExposure;
+        frame.lighting.lightDir = gameLighting.sunDirection;
+        frame.lighting.lightColor = gameLighting.sunColor;
+        frame.lighting.lightIntensity = gameLighting.sunIntensity;
         frame.lighting.iblIntensity = kGameIblIntensity;
         frame.exposure = gamePostExposure;
       } else if (scenePlayMode) {
