@@ -471,6 +471,7 @@ void GridPass::Execute(DxContext &dx, const FrameData &frame) {
   auto dsv = dx.Dsv();
   dx.CmdList()->OMSetRenderTargets(1, &hdrRtv, FALSE, &dsv);
   m_grid.Draw(dx, frame.view, frame.proj);
+  m_grid.DrawLines(dx, frame.view, frame.proj, frame.debugLines);
 }
 
 // ============================================================================

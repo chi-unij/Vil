@@ -23,6 +23,12 @@ struct RenderItem {
   DirectX::XMMATRIX world = DirectX::XMMatrixIdentity();
 };
 
+struct DebugLine {
+  DirectX::XMFLOAT3 start = {};
+  DirectX::XMFLOAT3 end = {};
+  DirectX::XMFLOAT4 color = {1.0f, 0.2f, 0.1f, 1.0f};
+};
+
 // A batch of instances sharing the same mesh (Phase 12.5 — Instanced Rendering).
 // Built from RenderItems by grouping on meshId.
 struct InstanceBatch {
@@ -57,6 +63,9 @@ struct FrameData {
 
   // Wireframe highlight overlay for selected entities (editor).
   std::vector<RenderItem> highlightItems;
+
+  // Runtime debug line overlay.
+  std::vector<DebugLine> debugLines;
 
   // Particles
   bool particlesEnabled = false;

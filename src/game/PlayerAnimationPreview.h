@@ -3,6 +3,7 @@
 #include "AnimationPlayer.h"
 #include "DxContext.h"
 #include "RenderPass.h"
+#include "game/CollisionSystem.h"
 
 #include <DirectXMath.h>
 #include <array>
@@ -24,7 +25,10 @@ public:
 
   void Initialize(DxContext &dx);
   void Update(float dt);
-  void Update(float dt, const Input &input, float playableHalfExtentMeters);
+  void Update(float dt, const Input &input, float worldHalfExtentMeters,
+              const std::vector<CollisionSystem::Collider> &colliders,
+              const std::vector<CollisionSystem::MeshTriangle>
+                  &meshTriangles);
   void BuildFrame(FrameData &frame) const;
   void DrawDebugUi();
 

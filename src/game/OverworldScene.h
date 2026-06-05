@@ -1,7 +1,9 @@
 #pragma once
 
 #include "DxContext.h"
+#include "GltfLoader.h"
 #include "RenderPass.h"
+#include "game/CollisionSystem.h"
 
 #include <DirectXMath.h>
 #include <cstdint>
@@ -24,9 +26,30 @@ public:
     float spacingMultiplier = 0.5f;
   };
 
+  struct CollisionShapeConfig {
+    std::string label;
+    CollisionSystem::ShapeType shape = CollisionSystem::ShapeType::Box;
+    DirectX::XMFLOAT3 center = {0.0f, 0.0f, 0.0f};
+    DirectX::XMFLOAT3 size = {1.0f, 1.0f, 1.0f};
+    float yawRadians = 0.0f;
+    bool enabled = true;
+  };
+
   void Initialize(DxContext &dx);
   void BuildFrame(FrameData &frame) const;
   bool ReloadPlacements(DxContext &dx);
+  std::vector<CollisionShapeConfig> BuildDefaultCollisionShapes() const;
+  std::vector<CollisionSystem::Aabb> BuildCollisionAabbs() const;
+  std::vector<CollisionSystem::Collider> BuildCollisionColliders(
+      const std::vector<CollisionShapeConfig> &collisionShapes) const;
+  void AppendCollisionDebugLines(
+      FrameData &frame,
+      const std::vector<CollisionSystem::Collider> &collisionColliders) const;
+  const std::vector<CollisionSystem::MeshTriangle> &StageCollisionTriangles()
+      const {
+    return m_stageCollisionTriangles;
+  }
+  void AppendStageCollisionDebugLines(FrameData &frame) const;
 
   bool IsReady() const { return m_ready; }
   const std::string &PlacementPath() const { return m_placementPath; }
@@ -55,6 +78,7 @@ private:
   struct StageModel {
     std::string path;
     std::vector<uint32_t> meshIds;
+    std::vector<LoadedMesh> collisionMeshes;
   };
 
   struct BackgroundForestCluster {
@@ -67,6 +91,8 @@ private:
   bool AppendStageObject(DxContext &dx, const std::string &path,
                          const StageObject &placement,
                          std::vector<StageObject> &outObjects);
+  void AppendStageObjectCollision(const StageModel &model,
+                                  const StageObject &placement);
   StageModel *FindOrLoadModel(DxContext &dx, const std::string &path);
   void BuildBackgroundForest(DxContext &dx);
   void AppendBackgroundForestCluster(float x, float z, float scale,
@@ -81,6 +107,7 @@ private:
   BackgroundForestDebugSettings m_backgroundForestDebug;
   std::vector<StageObject> m_stageObjects;
   std::vector<StageModel> m_stageModels;
+  std::vector<CollisionSystem::MeshTriangle> m_stageCollisionTriangles;
   std::string m_placementPath = "Assets/scenes/overworld_placements.json";
   bool m_ready = false;
 };

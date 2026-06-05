@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include <d3d12.h>
 #include <dxgi1_6.h>
@@ -16,12 +17,16 @@
 #include <DirectXMath.h>
 
 class DxContext;
+struct DebugLine;
 
 class GridRenderer {
 public:
   void Initialize(DxContext &dx);
   void Draw(DxContext &dx, const DirectX::XMMATRIX &view,
             const DirectX::XMMATRIX &proj);
+  void DrawLines(DxContext &dx, const DirectX::XMMATRIX &view,
+                 const DirectX::XMMATRIX &proj,
+                 const std::vector<DebugLine> &lines);
   std::string ReloadShaders(DxContext &dx);
   void Reset();
 

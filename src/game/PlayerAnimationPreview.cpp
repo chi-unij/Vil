@@ -7,6 +7,7 @@
 #include <DirectXMath.h>
 #include <Windows.h>
 #include <algorithm>
+#include <cmath>
 #include <imgui.h>
 
 using namespace DirectX;
@@ -109,7 +110,12 @@ void PlayerAnimationPreview::Update(float dt) {
 }
 
 void PlayerAnimationPreview::Update(float dt, const Input &input,
-                                    float playableHalfExtentMeters) {
+                                    float worldHalfExtentMeters,
+                                    const std::vector<CollisionSystem::Collider>
+                                        &colliders,
+                                    const std::vector<
+                                        CollisionSystem::MeshTriangle>
+                                        &meshTriangles) {
   if (!m_ready) {
     Update(dt);
     return;
@@ -139,15 +145,15 @@ void PlayerAnimationPreview::Update(float dt, const Input &input,
     const bool running = input.IsKeyDown(VK_SHIFT) ||
                          input.IsGamepadButtonDown(XINPUT_GAMEPAD_A);
     const float moveSpeed = running ? 6.0f : 3.2f;
-    m_previewPosition.x += moveX * moveSpeed * dt;
-    m_previewPosition.z += moveZ * moveSpeed * dt;
+    XMFLOAT3 desiredPosition = m_previewPosition;
+    desiredPosition.x += moveX * moveSpeed * dt;
+    desiredPosition.z += moveZ * moveSpeed * dt;
 
-    m_previewPosition.x =
-        std::clamp(m_previewPosition.x, -playableHalfExtentMeters,
-                   playableHalfExtentMeters);
-    m_previewPosition.z =
-        std::clamp(m_previewPosition.z, -playableHalfExtentMeters,
-                   playableHalfExtentMeters);
+    CollisionSystem::Capsule capsule{};
+    m_previewPosition =
+        CollisionSystem::ResolveCapsuleAgainstCollidersAndMesh(
+            desiredPosition, capsule, colliders, meshTriangles,
+            worldHalfExtentMeters);
 
     m_previewYaw = std::atan2(moveX, moveZ);
     m_activeSlot = running ? ClipSlot::Run : ClipSlot::Walk;

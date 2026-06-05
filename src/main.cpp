@@ -34,6 +34,7 @@
 #include <dbghelp.h>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 #include <imgui.h>
 
@@ -414,6 +415,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     playerPreview.Initialize(dx);
     OverworldScene overworldScene;
     overworldScene.Initialize(dx);
+    std::vector<OverworldScene::CollisionShapeConfig> overworldCollisionShapes =
+        overworldScene.BuildDefaultCollisionShapes();
+    std::vector<CollisionSystem::Collider> overworldCollisionColliders =
+        overworldScene.BuildCollisionColliders(overworldCollisionShapes);
+    const std::vector<CollisionSystem::MeshTriangle> emptyMeshTriangles;
+    bool showCollisionDebug = true;
+    bool useModelMeshCollision = true;
+    bool showModelCollisionDebug = true;
 
     // Initialize particle system.
     dx.InitParticleRenderer();
@@ -763,7 +772,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       if (appMode == AppMode::Game && !uiWantsKeyboard &&
           !gameFreeCameraEnabled) {
         playerPreview.Update(dt, input,
-                             OverworldScene::kPlayableHalfExtentMeters);
+                             OverworldScene::kFloorSizeMeters * 0.5f,
+                             overworldCollisionColliders,
+                             useModelMeshCollision
+                                 ? overworldScene.StageCollisionTriangles()
+                                 : emptyMeshTriangles);
         const DirectX::XMFLOAT3 playerPos = playerPreview.Position();
         cam.SetPosition(playerPos.x, 4.0f, playerPos.z - 8.0f);
         cam.SetYawPitch(0.0f, -0.28f);
@@ -852,11 +865,54 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
                                  30.0f, "%.1f")) {
             cam.SetMoveSpeed(freeCamSpeed);
           }
-          ImGui::Separator();
-          ImGui::Text("Overworld");
-          if (ImGui::Button("Reload Placements")) {
-            overworldScene.ReloadPlacements(dx);
+        ImGui::Separator();
+        ImGui::Text("Overworld");
+        ImGui::Checkbox("Show Collision", &showCollisionDebug);
+        ImGui::Checkbox("Use Model Mesh Collision", &useModelMeshCollision);
+        ImGui::Checkbox("Show Model Collision", &showModelCollisionDebug);
+        ImGui::Text("Model collision tris: %zu",
+                    overworldScene.StageCollisionTriangles().size());
+        if (ImGui::Button("Reset Collision Defaults")) {
+          overworldCollisionShapes =
+              overworldScene.BuildDefaultCollisionShapes();
+        }
+        ImGui::Text("Collision shapes: %zu", overworldCollisionShapes.size());
+        if (ImGui::CollapsingHeader("Collision Shape Editor",
+                                    ImGuiTreeNodeFlags_DefaultOpen)) {
+          for (size_t i = 0; i < overworldCollisionShapes.size(); ++i) {
+            auto &box = overworldCollisionShapes[i];
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::TreeNode(box.label.c_str())) {
+              ImGui::Checkbox("Enabled", &box.enabled);
+              const char *shapeNames[] = {"Box", "Circle", "Triangle"};
+              int shapeIndex = static_cast<int>(box.shape);
+              if (ImGui::Combo("Shape", &shapeIndex, shapeNames,
+                               IM_ARRAYSIZE(shapeNames))) {
+                box.shape = static_cast<CollisionSystem::ShapeType>(shapeIndex);
+              }
+              ImGui::DragFloat3("Center", &box.center.x, 0.05f, -40.0f, 40.0f,
+                                "%.2f");
+              ImGui::DragFloat3("Size", &box.size.x, 0.05f, 0.05f, 80.0f,
+                                "%.2f");
+              float yawDegrees = box.yawRadians * 180.0f / DirectX::XM_PI;
+              if (ImGui::DragFloat("Yaw deg", &yawDegrees, 1.0f, -180.0f,
+                                   180.0f, "%.1f")) {
+                box.yawRadians = yawDegrees * DirectX::XM_PI / 180.0f;
+              }
+              ImGui::Text("Default line:");
+              ImGui::Text("%s: shape %s, center {%.2ff, %.2ff, %.2ff}, size {%.2ff, %.2ff, %.2ff}, yaw %.1f",
+                          box.label.c_str(), shapeNames[shapeIndex],
+                          box.center.x, box.center.y,
+                          box.center.z, box.size.x, box.size.y, box.size.z,
+                          yawDegrees);
+              ImGui::TreePop();
+            }
+            ImGui::PopID();
           }
+        }
+        if (ImGui::Button("Reload Placements")) {
+          overworldScene.ReloadPlacements(dx);
+        }
           ImGui::Text("File: %s", overworldScene.PlacementPath().c_str());
         }
 
@@ -984,6 +1040,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       }
 
       // SSAO, Post Processing, and Cascaded Shadows panels moved to SceneEditor (Phase 4).
+      if (appMode == AppMode::Game) {
+        overworldCollisionColliders =
+            overworldScene.BuildCollisionColliders(overworldCollisionShapes);
+      }
 
       // ---- Compute CSM cascade splits + per-cascade light VP ----
       using namespace DirectX;
@@ -1059,6 +1119,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       } else if (appMode == AppMode::Game) {
         overworldScene.BuildFrame(frame);
         playerPreview.BuildFrame(frame);
+        if (showCollisionDebug) {
+          overworldScene.AppendCollisionDebugLines(frame,
+                                                   overworldCollisionColliders);
+        }
+        if (showModelCollisionDebug) {
+          overworldScene.AppendStageCollisionDebugLines(frame);
+        }
         frame.skyExposure = gameSkyExposure;
         frame.lighting.lightDir = gameLighting.sunDirection;
         frame.lighting.lightColor = gameLighting.sunColor;

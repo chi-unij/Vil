@@ -7,6 +7,7 @@
 #include "GridRenderer.h"
 #include "DxContext.h"
 #include "DxUtil.h"
+#include "RenderPass.h"
 #include "ShaderCompiler.h"
 
 #include <cstring>
@@ -234,6 +235,60 @@ void GridRenderer::Draw(DxContext &dx, const DirectX::XMMATRIX &view,
   dx.m_cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
   dx.m_cmdList->IASetVertexBuffers(0, 1, &m_vbView);
   dx.m_cmdList->DrawInstanced(m_vertexCount, 1, 0, 0);
+}
+
+void GridRenderer::DrawLines(DxContext &dx, const DirectX::XMMATRIX &view,
+                             const DirectX::XMMATRIX &proj,
+                             const std::vector<DebugLine> &lines) {
+  if (lines.empty())
+    return;
+
+  using namespace DirectX;
+
+  struct Vertex {
+    float px, py, pz;
+    float r, g, b, a;
+  };
+
+  std::vector<Vertex> verts;
+  verts.reserve(lines.size() * 2);
+  for (const DebugLine &line : lines) {
+    verts.push_back({line.start.x, line.start.y, line.start.z, line.color.x,
+                     line.color.y, line.color.z, line.color.w});
+    verts.push_back({line.end.x, line.end.y, line.end.z, line.color.x,
+                     line.color.y, line.color.z, line.color.w});
+  }
+
+  const UINT vbSize = static_cast<UINT>(verts.size() * sizeof(Vertex));
+  void *vbCpu = nullptr;
+  D3D12_GPU_VIRTUAL_ADDRESS vbGpu = dx.AllocFrameConstants(vbSize, &vbCpu);
+  memcpy(vbCpu, verts.data(), vbSize);
+
+  XMMATRIX wvp = XMMatrixIdentity() * view * proj;
+
+  SceneCB cb{};
+  XMStoreFloat4x4(&cb.worldViewProj, XMMatrixTranspose(wvp));
+  void *cbCpu = nullptr;
+  D3D12_GPU_VIRTUAL_ADDRESS cbGpu =
+      dx.AllocFrameConstants(sizeof(SceneCB), &cbCpu);
+  memcpy(cbCpu, &cb, sizeof(cb));
+
+  D3D12_VERTEX_BUFFER_VIEW vbView{};
+  vbView.BufferLocation = vbGpu;
+  vbView.StrideInBytes = sizeof(Vertex);
+  vbView.SizeInBytes = vbSize;
+
+  dx.SetViewportScissorFull();
+  dx.m_cmdList->SetGraphicsRootSignature(m_rootSig.Get());
+  dx.m_cmdList->SetPipelineState(m_pso.Get());
+
+  ID3D12DescriptorHeap *heaps[] = {dx.m_mainSrvHeap.Get()};
+  dx.m_cmdList->SetDescriptorHeaps(1, heaps);
+  dx.m_cmdList->SetGraphicsRootConstantBufferView(0, cbGpu);
+
+  dx.m_cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+  dx.m_cmdList->IASetVertexBuffers(0, 1, &vbView);
+  dx.m_cmdList->DrawInstanced(static_cast<UINT>(verts.size()), 1, 0, 0);
 }
 
 std::string GridRenderer::ReloadShaders(DxContext &dx) {

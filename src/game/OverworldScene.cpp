@@ -5,6 +5,7 @@
 
 #include <DirectXMath.h>
 #include <Windows.h>
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -47,6 +48,11 @@ bool ReadFloat3(const json &object, const char *key, XMFLOAT3 &outValue) {
   return true;
 }
 
+void PushDebugLine(FrameData &frame, const XMFLOAT3 &start, const XMFLOAT3 &end,
+                   const XMFLOAT4 &color) {
+  frame.debugLines.push_back({start, end, color});
+}
+
 std::string ResolveLiveAssetPath(const std::string &path) {
   namespace fs = std::filesystem;
 
@@ -71,6 +77,24 @@ XMFLOAT3 OffsetAwayFromCenter(const XMFLOAT3 &position, float distanceOffset) {
   const float invLen = 1.0f / std::sqrt(lenSq);
   return {position.x + position.x * invLen * distanceOffset, position.y,
           position.z + position.z * invLen * distanceOffset};
+}
+
+XMFLOAT3 TransformStagePoint(const XMFLOAT3 &local,
+                             const XMFLOAT3 &position,
+                             const XMFLOAT3 &scale, float yawRadians) {
+  const float sx = local.x * scale.x;
+  const float sy = local.y * scale.y;
+  const float sz = local.z * scale.z;
+  const float c = std::cos(yawRadians);
+  const float s = std::sin(yawRadians);
+  return {position.x + sx * c - sz * s, position.y + sy,
+          position.z + sx * s + sz * c};
+}
+
+float TriangleArea2D(const XMFLOAT2 &a, const XMFLOAT2 &b,
+                     const XMFLOAT2 &c) {
+  return std::abs((b.x - a.x) * (c.y - a.y) -
+                  (b.y - a.y) * (c.x - a.x)) * 0.5f;
 }
 
 } // namespace
@@ -315,6 +339,182 @@ void OverworldScene::BuildFrame(FrameData &frame) const {
   }
 }
 
+std::vector<OverworldScene::CollisionShapeConfig>
+OverworldScene::BuildDefaultCollisionShapes() const {
+  constexpr float wallThickness = 0.7f;
+  constexpr float wallHeight = 4.8f;
+  constexpr float wallLength = kCastleWallHalfExtentMeters * 2.0f;
+  constexpr float gateGapWidth = kCastleGateHalfWidthMeters * 2.0f;
+  constexpr float northWallSegmentLength = (wallLength - gateGapWidth) * 0.5f;
+  constexpr float northWallSegmentCenterX =
+      kCastleGateHalfWidthMeters + northWallSegmentLength * 0.5f;
+  constexpr float towerSize = 1.8f;
+  constexpr float towerHeight = 5.8f;
+
+  auto makeBox = [](const std::string &label, float sx, float sy, float sz,
+                    float x, float y, float z) {
+    CollisionShapeConfig box{};
+    box.label = label;
+    box.shape = CollisionSystem::ShapeType::Box;
+    box.center = {x, y, z};
+    box.size = {sx, sy, sz};
+    box.yawRadians = 0.0f;
+    box.enabled = true;
+    return box;
+  };
+
+  std::vector<CollisionShapeConfig> boxes;
+  boxes.reserve(15);
+  boxes.push_back(makeBox("South Wall", wallLength, wallHeight, wallThickness,
+                          0.0f, wallHeight * 0.5f,
+                          -kCastleWallHalfExtentMeters));
+  boxes.push_back(makeBox("East Wall", wallThickness, wallHeight, wallLength,
+                          kCastleWallHalfExtentMeters, wallHeight * 0.5f,
+                          0.0f));
+  boxes.push_back(makeBox("West Wall", wallThickness, wallHeight, wallLength,
+                          -kCastleWallHalfExtentMeters, wallHeight * 0.5f,
+                          0.0f));
+  boxes.push_back(makeBox("North Wall L", northWallSegmentLength, wallHeight,
+                          wallThickness, -northWallSegmentCenterX,
+                          wallHeight * 0.5f, kCastleWallHalfExtentMeters));
+  boxes.push_back(makeBox("North Wall R", northWallSegmentLength, wallHeight,
+                          wallThickness, northWallSegmentCenterX,
+                          wallHeight * 0.5f, kCastleWallHalfExtentMeters));
+  boxes.push_back(makeBox("North Gate Block", gateGapWidth, wallHeight,
+                          wallThickness, 0.0f, wallHeight * 0.5f,
+                          kCastleWallHalfExtentMeters));
+  // Castle Gate の glTF は描画モデルで、現時点では mesh collider を持たない。
+  // Chihiro が実機調整した門まわりの既定値。門扉は North Gate Block で塞ぐ。
+  boxes.push_back(makeBox("Gate Pillar L", 1.0f, 2.0f, 1.0f, -4.0f, 3.0f,
+                          25.0f));
+  boxes.back().shape = CollisionSystem::ShapeType::Circle;
+  boxes.push_back(makeBox("Gate Pillar R", 1.0f, 2.0f, 1.0f, 4.0f, 3.0f,
+                          25.0f));
+  boxes.back().shape = CollisionSystem::ShapeType::Circle;
+  boxes.push_back(makeBox("Gate Base L", 0.5f, 6.0f, 0.5f, -1.8f, 3.0f,
+                          24.0f));
+  boxes.push_back(makeBox("Gate Base R", 0.5f, 6.0f, 0.5f, 1.8f, 3.0f,
+                          24.0f));
+  boxes.push_back(makeBox("Tower SW", towerSize, towerHeight, towerSize,
+                          -kCastleWallHalfExtentMeters, towerHeight * 0.5f,
+                          -kCastleWallHalfExtentMeters));
+  boxes.push_back(makeBox("Tower SE", towerSize, towerHeight, towerSize,
+                          kCastleWallHalfExtentMeters, towerHeight * 0.5f,
+                          -kCastleWallHalfExtentMeters));
+  boxes.push_back(makeBox("Tower NW", towerSize, towerHeight, towerSize,
+                          -kCastleWallHalfExtentMeters, towerHeight * 0.5f,
+                          kCastleWallHalfExtentMeters));
+  boxes.push_back(makeBox("Tower NE", towerSize, towerHeight, towerSize,
+                          kCastleWallHalfExtentMeters, towerHeight * 0.5f,
+                          kCastleWallHalfExtentMeters));
+  return boxes;
+}
+
+std::vector<CollisionSystem::Aabb> OverworldScene::BuildCollisionAabbs() const {
+  const std::vector<CollisionShapeConfig> collisionShapes =
+      BuildDefaultCollisionShapes();
+  std::vector<CollisionSystem::Aabb> aabbs;
+  aabbs.reserve(collisionShapes.size());
+  for (const CollisionShapeConfig &box : collisionShapes) {
+    if (!box.enabled)
+      continue;
+
+    const XMFLOAT3 half = {box.size.x * 0.5f, box.size.y * 0.5f,
+                           box.size.z * 0.5f};
+    CollisionSystem::Aabb aabb{};
+    aabb.min = {box.center.x - half.x, box.center.y - half.y,
+                box.center.z - half.z};
+    aabb.max = {box.center.x + half.x, box.center.y + half.y,
+                box.center.z + half.z};
+    aabbs.push_back(aabb);
+  }
+  return aabbs;
+}
+
+std::vector<CollisionSystem::Collider> OverworldScene::BuildCollisionColliders(
+    const std::vector<CollisionShapeConfig> &collisionShapes) const {
+  std::vector<CollisionSystem::Collider> colliders;
+  colliders.reserve(collisionShapes.size());
+  for (const CollisionShapeConfig &shape : collisionShapes) {
+    CollisionSystem::Collider collider{};
+    collider.shape = shape.shape;
+    collider.center = shape.center;
+    collider.size = shape.size;
+    collider.yawRadians = shape.yawRadians;
+    collider.enabled = shape.enabled;
+    colliders.push_back(collider);
+  }
+  return colliders;
+}
+
+void OverworldScene::AppendCollisionDebugLines(
+    FrameData &frame,
+    const std::vector<CollisionSystem::Collider> &collisionColliders) const {
+  const XMFLOAT4 wallColor = {1.0f, 0.12f, 0.05f, 1.0f};
+  constexpr float y = 0.08f;
+
+  auto rotate2 = [](float x, float z, float yaw) {
+    const float c = std::cos(yaw);
+    const float s = std::sin(yaw);
+    return XMFLOAT2{x * c - z * s, x * s + z * c};
+  };
+  auto toWorld = [&](const CollisionSystem::Collider &c, float x, float z) {
+    const XMFLOAT2 r = rotate2(x, z, c.yawRadians);
+    return XMFLOAT3{c.center.x + r.x, y, c.center.z + r.y};
+  };
+  auto pushLoop = [&](const std::vector<XMFLOAT3> &points,
+                      const XMFLOAT4 &color) {
+    if (points.size() < 2)
+      return;
+    for (size_t i = 0; i < points.size(); ++i)
+      PushDebugLine(frame, points[i], points[(i + 1) % points.size()], color);
+  };
+
+  for (const CollisionSystem::Collider &collider : collisionColliders) {
+    if (!collider.enabled)
+      continue;
+
+    if (collider.shape == CollisionSystem::ShapeType::Circle) {
+      std::vector<XMFLOAT3> points;
+      constexpr int segments = 24;
+      const float r = std::max(collider.size.x, collider.size.z) * 0.5f;
+      points.reserve(segments);
+      for (int i = 0; i < segments; ++i) {
+        const float t = (static_cast<float>(i) / segments) * XM_2PI;
+        points.push_back({collider.center.x + std::cos(t) * r, y,
+                          collider.center.z + std::sin(t) * r});
+      }
+      pushLoop(points, wallColor);
+    } else if (collider.shape == CollisionSystem::ShapeType::Triangle) {
+      const float hx = collider.size.x * 0.5f;
+      const float hz = collider.size.z * 0.5f;
+      pushLoop({toWorld(collider, 0.0f, hz), toWorld(collider, -hx, -hz),
+                toWorld(collider, hx, -hz)},
+               wallColor);
+    } else {
+      const float hx = collider.size.x * 0.5f;
+      const float hz = collider.size.z * 0.5f;
+      pushLoop({toWorld(collider, -hx, -hz), toWorld(collider, hx, -hz),
+                toWorld(collider, hx, hz), toWorld(collider, -hx, hz)},
+               wallColor);
+    }
+  }
+}
+
+void OverworldScene::AppendStageCollisionDebugLines(FrameData &frame) const {
+  const XMFLOAT4 meshColor = {0.1f, 0.75f, 1.0f, 1.0f};
+  constexpr float y = 0.10f;
+
+  for (const CollisionSystem::MeshTriangle &tri : m_stageCollisionTriangles) {
+    const XMFLOAT3 a = {tri.a.x, y, tri.a.y};
+    const XMFLOAT3 b = {tri.b.x, y, tri.b.y};
+    const XMFLOAT3 c = {tri.c.x, y, tri.c.y};
+    PushDebugLine(frame, a, b, meshColor);
+    PushDebugLine(frame, b, c, meshColor);
+    PushDebugLine(frame, c, a, meshColor);
+  }
+}
+
 bool OverworldScene::ReloadPlacements(DxContext &dx) {
   const std::string resolvedPlacementPath =
       ResolveLiveAssetPath(m_placementPath);
@@ -342,6 +542,7 @@ bool OverworldScene::ReloadPlacements(DxContext &dx) {
   }
 
   std::vector<StageObject> newObjects;
+  m_stageCollisionTriangles.clear();
   for (const json &entry : root["objects"]) {
     if (!entry.contains("model") || !entry["model"].is_string())
       continue;
@@ -400,6 +601,7 @@ OverworldScene::FindOrLoadModel(DxContext &dx, const std::string &path) {
       continue;
     }
     model.meshIds.push_back(meshId);
+    model.collisionMeshes.push_back(part.mesh);
   }
 
   if (!model.meshIds.empty()) {
@@ -425,7 +627,48 @@ bool OverworldScene::AppendStageObject(DxContext &dx, const std::string &path,
     object.meshId = meshId;
     outObjects.push_back(object);
   }
+  AppendStageObjectCollision(*model, placement);
   return true;
+}
+
+void OverworldScene::AppendStageObjectCollision(const StageModel &model,
+                                                const StageObject &placement) {
+  constexpr float minProjectedArea = 0.0025f;
+
+  for (const LoadedMesh &mesh : model.collisionMeshes) {
+    for (size_t i = 0; i + 2 < mesh.indices.size(); i += 3) {
+      const uint32_t i0 = mesh.indices[i + 0];
+      const uint32_t i1 = mesh.indices[i + 1];
+      const uint32_t i2 = mesh.indices[i + 2];
+      if (i0 >= mesh.vertices.size() || i1 >= mesh.vertices.size() ||
+          i2 >= mesh.vertices.size())
+        continue;
+
+      const MeshVertex &v0 = mesh.vertices[i0];
+      const MeshVertex &v1 = mesh.vertices[i1];
+      const MeshVertex &v2 = mesh.vertices[i2];
+      const XMFLOAT3 p0 =
+          TransformStagePoint({v0.pos[0], v0.pos[1], v0.pos[2]},
+                              placement.position, placement.scale,
+                              placement.yawRadians);
+      const XMFLOAT3 p1 =
+          TransformStagePoint({v1.pos[0], v1.pos[1], v1.pos[2]},
+                              placement.position, placement.scale,
+                              placement.yawRadians);
+      const XMFLOAT3 p2 =
+          TransformStagePoint({v2.pos[0], v2.pos[1], v2.pos[2]},
+                              placement.position, placement.scale,
+                              placement.yawRadians);
+
+      CollisionSystem::MeshTriangle tri{};
+      tri.a = {p0.x, p0.z};
+      tri.b = {p1.x, p1.z};
+      tri.c = {p2.x, p2.z};
+      if (TriangleArea2D(tri.a, tri.b, tri.c) < minProjectedArea)
+        continue;
+      m_stageCollisionTriangles.push_back(tri);
+    }
+  }
 }
 
 void OverworldScene::BuildBackgroundForest(DxContext &dx) {
