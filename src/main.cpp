@@ -477,6 +477,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     float gameTimeOfDayHours = 12.0f;
     bool gameTimeAuto = true;
     float gameHoursPerSecond = 0.25f;
+    float waterWaveHeight = 1.0f;
+    float waterWaveSpeed = 1.0f;
+    float waterWaveFrequency = 1.0f;
 
     // IBL (Phase 10.2)
     bool iblEnabled = true;
@@ -955,6 +958,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
           gameTimeOfDayHours = 12.0f;
         }
         ImGui::Separator();
+        ImGui::Text("Water");
+        ImGui::SliderFloat("Wave Height", &waterWaveHeight, 0.0f, 3.0f,
+                           "%.2f");
+        ImGui::SliderFloat("Wave Speed", &waterWaveSpeed, 0.0f, 3.0f,
+                           "%.2f");
+        ImGui::SliderFloat("Wave Frequency", &waterWaveFrequency, 0.2f, 3.0f,
+                           "%.2f");
+        if (ImGui::Button("Reset Water")) {
+          waterWaveHeight = 1.0f;
+          waterWaveSpeed = 1.0f;
+          waterWaveFrequency = 1.0f;
+        }
+        ImGui::Separator();
         ImGui::Text("Forest Debug");
         auto &forestDebug = overworldScene.BackgroundForestDebug();
         ImGui::Checkbox("Forest Enabled", &forestDebug.enabled);
@@ -1079,6 +1095,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       frame.view = cam.View();
       frame.proj = cam.Proj(); // includes jitter when TAA is enabled
       frame.cameraPos = camPosF;
+      frame.gameTime = t;
+      frame.waterWaveParams = {waterWaveHeight, waterWaveSpeed,
+                               waterWaveFrequency, 0.0f};
       frame.cascadeCount = cascadeCount;
       frame.cascadeLightViewProj = cascadeVP;
       frame.cascadeSplitDistances = cascadeSplitDists;

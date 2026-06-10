@@ -115,6 +115,7 @@ struct FrameData {
 
   // Procedural tile animation (Phase 9)
   float gameTime = 0.0f;
+  DirectX::XMFLOAT4 waterWaveParams = {1.0f, 1.0f, 1.0f, 0.0f};
 };
 
 // Base class for all render passes.

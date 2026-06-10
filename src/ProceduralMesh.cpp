@@ -105,6 +105,41 @@ LoadedMesh CreatePlane(float width, float depth) {
 
   return m;
 }
+// mesh pixels split (for the wtaer and river)
+LoadedMesh CreateTessellatedPlane(float width, float depth, uint32_t xSegments,
+                                  uint32_t zSegments) {
+  LoadedMesh m;
+  xSegments = xSegments == 0 ? 1 : xSegments;
+  zSegments = zSegments == 0 ? 1 : zSegments;
+
+  const float hw = width * 0.5f;
+  const float hd = depth * 0.5f;
+  const uint32_t cols = xSegments + 1;
+
+  for (uint32_t z = 0; z <= zSegments; ++z) {
+    const float v = static_cast<float>(z) / static_cast<float>(zSegments);
+    const float pz = -hd + depth * v;
+    for (uint32_t x = 0; x <= xSegments; ++x) {
+      const float u = static_cast<float>(x) / static_cast<float>(xSegments);
+      const float px = -hw + width * u;
+      PushVert(m, px, 0.0f, pz, 0.0f, 1.0f, 0.0f, u, 1.0f - v,
+               1.0f, 0.0f, 0.0f, 1.0f);
+    }
+  }
+
+  for (uint32_t z = 0; z < zSegments; ++z) {
+    for (uint32_t x = 0; x < xSegments; ++x) {
+      const uint32_t tl = z * cols + x;
+      const uint32_t tr = tl + 1;
+      const uint32_t bl = (z + 1) * cols + x;
+      const uint32_t br = bl + 1;
+      PushTri(m, tl, br, tr);
+      PushTri(m, tl, bl, br);
+    }
+  }
+
+  return m;
+}
 
 LoadedMesh CreateCylinder(float radius, float height, uint32_t segments) {
   LoadedMesh m;

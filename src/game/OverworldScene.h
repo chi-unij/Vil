@@ -99,6 +99,7 @@ private:
                                      float yawDegrees, int densityTier);
 
   uint32_t m_floorMeshId = UINT32_MAX;
+  uint32_t m_waterMeshId = UINT32_MAX;
   uint32_t m_castleWallMeshId = UINT32_MAX;
   uint32_t m_castleMerlonMeshId = UINT32_MAX;
   uint32_t m_castleTowerMeshId = UINT32_MAX;

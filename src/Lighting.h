@@ -25,6 +25,8 @@ struct Material {
 
   // Procedural tile shader type (0 = none, 1 = fire, 2 = ice, etc.)
   float proceduralTypeId = 0.0f;
+  // 頂点変形タイプ。色の procedural 表現とは独立して使う。
+  float vertexDeformTypeId = 0.0f;
 
   // glTF alpha cutout for foliage/card materials.
   bool alphaCutout = false;

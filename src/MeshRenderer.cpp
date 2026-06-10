@@ -557,7 +557,8 @@ void MeshRenderer::DrawMeshGBufferInstanced(
     DxContext &dx, uint32_t meshId,
     const std::vector<DirectX::XMMATRIX> &worlds,
     const DirectX::XMMATRIX &view, const DirectX::XMMATRIX &proj,
-    const DirectX::XMFLOAT3 &cameraPos, float gameTime) {
+    const DirectX::XMFLOAT3 &cameraPos, float gameTime,
+    const DirectX::XMFLOAT4 &waterWaveParams) {
   CreateGBufferPipelineOnce(dx);
 
   if (meshId >= m_meshes.size() || worlds.empty())
@@ -581,6 +582,7 @@ void MeshRenderer::DrawMeshGBufferInstanced(
     DirectX::XMFLOAT4 baseColorFactor; // rgba multiplier
     DirectX::XMFLOAT4 uvTilingOffset;  // xy=tiling, zw=offset
     DirectX::XMFLOAT4 animParams;      // x=gameTime, y=materialTypeId, z=alphaCutoff, w=alphaCutout
+    DirectX::XMFLOAT4 waterWaveParams;
   };
 
   GBufferCB cb{};
@@ -599,6 +601,8 @@ void MeshRenderer::DrawMeshGBufferInstanced(
                        mat.uvOffset.x, mat.uvOffset.y};
   cb.animParams = {gameTime, mat.proceduralTypeId, mat.alphaCutoff,
                    mat.alphaCutout ? 1.0f : 0.0f};
+  cb.waterWaveParams = waterWaveParams;
+  cb.waterWaveParams.w = mat.vertexDeformTypeId;
 
   void *cbCpu = nullptr;
   D3D12_GPU_VIRTUAL_ADDRESS cbGpu =

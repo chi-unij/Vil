@@ -141,6 +141,19 @@ void OverworldScene::Initialize(DxContext &dx) {
   floorMaterial.pomMaxLayers = 20.0f;
 
   m_floorMeshId = dx.CreateMeshResources(floorMesh, images, floorMaterial);
+
+  const LoadedMesh waterMesh =
+      ProceduralMesh::CreateTessellatedPlane(1.0f, 1.0f, 256, 256);
+  Material waterMaterial{};
+  waterMaterial.baseColorFactor = {0.34f, 0.58f, 0.66f, 1.0f};
+  waterMaterial.metallicFactor = 0.0f;
+  waterMaterial.roughnessFactor = 0.12f;
+  waterMaterial.emissiveFactor = {0.0f, 0.04f, 0.08f};
+  waterMaterial.uvTiling = {1.0f, 1.0f};
+  waterMaterial.proceduralTypeId = 0.0f;
+  waterMaterial.vertexDeformTypeId = 6.0f;
+  m_waterMeshId = dx.CreateMeshResources(waterMesh, {}, waterMaterial);
+
   const LoadedMesh castleWallMesh = ProceduralMesh::CreateCube(1.0f);
 
   LoadedImage wallBaseColor;
@@ -200,12 +213,13 @@ void OverworldScene::Initialize(DxContext &dx) {
       dx.CreateMeshResources(castleWallMesh, wallImages, castleTowerMaterial);
   m_ready =
       (m_floorMeshId != UINT32_MAX && m_castleWallMeshId != UINT32_MAX &&
+       m_waterMeshId != UINT32_MAX &&
        m_castleMerlonMeshId != UINT32_MAX &&
        m_castleTowerMeshId != UINT32_MAX);
 
   if (m_ready) {
     OutputDebugStringA(
-        "[OverworldScene] 60m x 60m floor and castle walls initialized.\n");
+        "[OverworldScene] 60m x 60m floor, water moat, and castle walls initialized.\n");
   } else {
     OutputDebugStringA(
         "[OverworldScene] FAILED: floor or castle wall mesh was not created.\n");
@@ -221,6 +235,25 @@ void OverworldScene::BuildFrame(FrameData &frame) const {
 
   const XMMATRIX floorWorld = XMMatrixTranslation(0.0f, 0.0f, 0.0f);
   frame.opaqueItems.push_back({m_floorMeshId, floorWorld});
+
+  constexpr float waterY = 0.16f;
+  constexpr float waterOuterHalf = kFloorSizeMeters * 0.5f - 1.0f;
+  constexpr float waterInnerHalf = kCastleWallHalfExtentMeters + 0.9f;
+  constexpr float waterWidth = waterOuterHalf - waterInnerHalf;
+  constexpr float waterCenter = waterInnerHalf + waterWidth * 0.5f;
+  constexpr float waterLongLength = waterOuterHalf * 2.0f;
+  constexpr float waterSideLength = waterInnerHalf * 2.0f;
+
+  auto pushWater = [&frame](uint32_t meshId, float sx, float sz, float x,
+                            float z) {
+    frame.opaqueItems.push_back(
+        {meshId, XMMatrixScaling(sx, 1.0f, sz) * XMMatrixTranslation(x, waterY, z)});
+  };
+
+  pushWater(m_waterMeshId, waterLongLength, waterWidth, 0.0f, waterCenter);
+  pushWater(m_waterMeshId, waterLongLength, waterWidth, 0.0f, -waterCenter);
+  pushWater(m_waterMeshId, waterWidth, waterSideLength, waterCenter, 0.0f);
+  pushWater(m_waterMeshId, waterWidth, waterSideLength, -waterCenter, 0.0f);
 
   constexpr float wallThickness = 0.7f;
   constexpr float wallHeight = 4.8f;

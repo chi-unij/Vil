@@ -19,6 +19,11 @@ LoadedMesh CreateCube(float size = 1.0f);
 // Flat quad on the XZ plane, centered at origin.
 LoadedMesh CreatePlane(float width = 1.0f, float depth = 1.0f);
 
+// 水面など、頂点変形を行うための分割済み XZ 平面。
+LoadedMesh CreateTessellatedPlane(float width = 1.0f, float depth = 1.0f,
+                                  uint32_t xSegments = 16,
+                                  uint32_t zSegments = 16);
+
 // Vertical cylinder along Y axis, centered at origin.
 LoadedMesh CreateCylinder(float radius = 0.5f, float height = 1.0f,
                           uint32_t segments = 16);
