@@ -477,9 +477,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     float gameTimeOfDayHours = 12.0f;
     bool gameTimeAuto = true;
     float gameHoursPerSecond = 0.25f;
+    float gameRuntimeSeconds = 0.0f;
     float waterWaveHeight = 1.0f;
     float waterWaveSpeed = 1.0f;
     float waterWaveFrequency = 1.0f;
+    float wetSurfaceStrength = 0.9f;
+    float wetSurfaceDrySeconds = 4.0f;
+    float wetSurfaceImpactRadius = 4.5f;
+    float wetSurfaceCycleSeconds = 5.5f;
+    float puddleStrength = 0.85f;
+    float puddleBuildSeconds = 5.0f;
+    float puddleRadius = 3.2f;
+    float puddleRippleStrength = 1.0f;
 
     // IBL (Phase 10.2)
     bool iblEnabled = true;
@@ -810,6 +819,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         case TitleScreen::Action::Start:
           TraceAppEvent("title action: start");
           appMode = AppMode::Game;
+          gameRuntimeSeconds = 0.0f;
           cam.SetPosition(0.0f, 4.0f, -8.0f);
           cam.SetYawPitch(0.0f, -0.28f);
           cam.SetLens(DirectX::XM_PIDIV4,
@@ -832,6 +842,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         case TitleScreen::Action::None:
           break;
         }
+      }
+
+      if (appMode == AppMode::Game) {
+        gameRuntimeSeconds += dt;
       }
 
       // ---- Settings window (Phase 12.6) ----
@@ -965,10 +979,34 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
                            "%.2f");
         ImGui::SliderFloat("Wave Frequency", &waterWaveFrequency, 0.2f, 3.0f,
                            "%.2f");
+        ImGui::SliderFloat("Wet Strength", &wetSurfaceStrength, 0.0f, 1.0f,
+                           "%.2f");
+        ImGui::SliderFloat("Wet Dry Seconds", &wetSurfaceDrySeconds, 0.2f,
+                           12.0f, "%.2f");
+        ImGui::SliderFloat("Wet Impact Radius", &wetSurfaceImpactRadius, 0.5f,
+                           8.0f, "%.2f");
+        ImGui::SliderFloat("Wet Cycle Seconds", &wetSurfaceCycleSeconds, 0.5f,
+                           16.0f, "%.2f");
+        ImGui::SliderFloat("Puddle Strength", &puddleStrength, 0.0f, 1.0f,
+                           "%.2f");
+        ImGui::SliderFloat("Puddle Build Seconds", &puddleBuildSeconds, 0.5f,
+                           20.0f, "%.2f");
+        ImGui::SliderFloat("Puddle Radius", &puddleRadius, 0.5f, 8.0f,
+                           "%.2f");
+        ImGui::SliderFloat("Puddle Ripple", &puddleRippleStrength, 0.0f, 2.0f,
+                           "%.2f");
         if (ImGui::Button("Reset Water")) {
           waterWaveHeight = 1.0f;
           waterWaveSpeed = 1.0f;
           waterWaveFrequency = 1.0f;
+          wetSurfaceStrength = 0.9f;
+          wetSurfaceDrySeconds = 4.0f;
+          wetSurfaceImpactRadius = 4.5f;
+          wetSurfaceCycleSeconds = 5.5f;
+          puddleStrength = 0.85f;
+          puddleBuildSeconds = 5.0f;
+          puddleRadius = 3.2f;
+          puddleRippleStrength = 1.0f;
         }
         ImGui::Separator();
         ImGui::Text("Forest Debug");
@@ -1095,9 +1133,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       frame.view = cam.View();
       frame.proj = cam.Proj(); // includes jitter when TAA is enabled
       frame.cameraPos = camPosF;
-      frame.gameTime = t;
+      frame.gameTime = (appMode == AppMode::Game) ? gameRuntimeSeconds : t;
       frame.waterWaveParams = {waterWaveHeight, waterWaveSpeed,
                                waterWaveFrequency, 0.0f};
+      frame.wetSurfaceParams = {wetSurfaceStrength, wetSurfaceDrySeconds,
+                                wetSurfaceImpactRadius,
+                                wetSurfaceCycleSeconds};
+      frame.puddleParams = {puddleStrength, puddleBuildSeconds, puddleRadius,
+                            puddleRippleStrength};
       frame.cascadeCount = cascadeCount;
       frame.cascadeLightViewProj = cascadeVP;
       frame.cascadeSplitDistances = cascadeSplitDists;

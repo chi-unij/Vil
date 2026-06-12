@@ -66,7 +66,11 @@ public:
                                 const DirectX::XMFLOAT3 &cameraPos,
                                 float gameTime = 0.0f,
                                 const DirectX::XMFLOAT4 &waterWaveParams =
-                                    DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 0.0f));
+                                    DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 0.0f),
+                                const DirectX::XMFLOAT4 &wetSurfaceParams =
+                                    DirectX::XMFLOAT4(0.9f, 4.0f, 4.5f, 5.5f),
+                                const DirectX::XMFLOAT4 &puddleParams =
+                                    DirectX::XMFLOAT4(0.85f, 5.0f, 3.2f, 1.0f));
 
   void DrawMeshShadowInstanced(DxContext &dx, uint32_t meshId,
                                const std::vector<DirectX::XMMATRIX> &worlds,

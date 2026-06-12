@@ -17,6 +17,8 @@ cbuffer GBufferCB : register(b0)
     float4   gUVTilingOffset;   // xy=tiling, zw=offset
     float4   gAnimParams;      // x=gameTime, y=materialTypeId, z=alphaCutoff, w=alphaCutout
     float4   gWaterWaveParams; // x=高さ, y=速度, z=周波数, w=頂点変形タイプ
+    float4   gWetSurfaceParams; // x=強さ, y=乾燥秒数, z=幅, w=周期秒数
+    float4   gPuddleParams;    // x=強さ, y=蓄積秒数, z=半径, w=波紋強さ
 };
 
 // Per-instance world matrices (Phase 12.5 — Instanced Rendering).
@@ -197,6 +199,45 @@ PSOut PSMain(PSIn i)
         ao        = procResult.ao;
         // Apply procedural normal in tangent space
         N = normalize(mul(procResult.normalTS, TBN));
+    }
+
+    float wetness = ((int)(gAnimParams.y + 0.5f) == 7)
+        ? ComputeWaterImpactWetness(i.posW.xz, gAnimParams.x, gWetSurfaceParams)
+        : 0.0f;
+    if (wetness > 0.001f)
+    {
+        float3 wetColor = albedo * float3(0.12f, 0.13f, 0.12f);
+        albedo = lerp(albedo, wetColor, wetness);
+        roughness = lerp(roughness, 0.16f, wetness);
+        ao = lerp(ao, 0.82f, wetness * 0.6f);
+    }
+
+    float puddle = ((int)(gAnimParams.y + 0.5f) == 7)
+        ? ComputeWaterImpactPuddle(i.posW.xz, gAnimParams.x, gPuddleParams)
+        : 0.0f;
+    float puddleWetRim = ((int)(gAnimParams.y + 0.5f) == 7)
+        ? ComputeWaterImpactPuddleWetRim(i.posW.xz, gAnimParams.x,
+                                         gWetSurfaceParams, gPuddleParams)
+        : 0.0f;
+    puddleWetRim *= (1.0f - puddle * 0.85f);
+    if (puddleWetRim > 0.001f)
+    {
+        float3 rimColor = albedo * float3(0.075f, 0.082f, 0.075f);
+        albedo = lerp(albedo, rimColor, puddleWetRim);
+        roughness = lerp(roughness, 0.12f, puddleWetRim);
+        ao = lerp(ao, 0.76f, puddleWetRim * 0.65f);
+    }
+    if (puddle > 0.001f)
+    {
+        float ripple = ComputeWaterImpactPuddleRipple(i.posW.xz, gAnimParams.x)
+                       * gPuddleParams.w;
+        float3 puddleColor = float3(0.025f, 0.11f, 0.14f);
+        float3 skyTint = float3(0.14f, 0.30f, 0.34f);
+        float3 connectedWaterColor = lerp(puddleColor, skyTint, 0.35f);
+        albedo = lerp(albedo, connectedWaterColor, puddle);
+        roughness = lerp(roughness, saturate(0.045f + abs(ripple) * 0.018f), puddle);
+        ao = lerp(ao, 0.95f, puddle);
+        N = normalize(N + float3(ripple * 0.010f, 0.0f, ripple * 0.007f) * puddle);
     }
 
     // ---- Pack to G-buffer ----

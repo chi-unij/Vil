@@ -143,7 +143,9 @@ void GBufferPass::Execute(DxContext &dx, const FrameData &frame) {
   for (const auto &batch : batches) {
     m_mesh.DrawMeshGBufferInstanced(dx, batch.meshId, batch.worldMatrices,
                                     frame.view, frame.proj, frame.cameraPos,
-                                    frame.gameTime, frame.waterWaveParams);
+                                    frame.gameTime, frame.waterWaveParams,
+                                    frame.wetSurfaceParams,
+                                    frame.puddleParams);
   }
 }
 

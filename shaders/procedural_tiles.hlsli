@@ -394,6 +394,86 @@ ProceduralResult ProceduralWater(float2 worldXZ, float time)
     return r;
 }
 
+float ComputeWaterImpactWetness(float2 worldXZ, float time, float4 wetParams)
+{
+    float strength = saturate(wetParams.x);
+    if (strength <= 0.001f)
+        return 0.0f;
+
+    float drySeconds = max(wetParams.y, 0.1f);
+    float impactRadius = max(wetParams.z, 0.05f);
+    float cycleSeconds = max(wetParams.w, drySeconds);
+
+    float impactDistance = length(worldXZ);
+    float impactMask = 1.0f - smoothstep(impactRadius, impactRadius + 1.25f,
+                                         impactDistance);
+
+    const float impactTime = 1.85f;
+    float wetAge = fmod(max(time - impactTime, 0.0f), cycleSeconds);
+    float drying = 1.0f - smoothstep(0.0f, drySeconds, wetAge);
+    float brokenEdge = lerp(0.75f, 1.0f,
+                            fbm(worldXZ * 1.7f + float2(13.0f, 29.0f), 3));
+    float splashNoise = lerp(0.55f, 1.0f,
+                             fbm(worldXZ * 3.6f + float2(4.0f, 17.0f), 4));
+    return saturate(impactMask * drying * brokenEdge * splashNoise * strength);
+}
+
+float ComputeWaterImpactPuddle(float2 worldXZ, float time, float4 puddleParams)
+{
+    float strength = saturate(puddleParams.x);
+    if (strength <= 0.001f)
+        return 0.0f;
+
+    float buildSeconds = max(puddleParams.y, 0.1f);
+    float radius = max(puddleParams.z, 0.05f);
+    float accumulation = saturate((time - buildSeconds) / max(buildSeconds, 0.1f));
+
+    float dist = length(worldXZ);
+    float edgeNoise = fbm(worldXZ * 0.85f + float2(31.0f, 7.0f), 4) - 0.5f;
+    float noisyRadius = radius + edgeNoise * 0.45f;
+    float filledCore = 1.0f - smoothstep(noisyRadius * 0.72f,
+                                         noisyRadius * 0.94f,
+                                         dist);
+    float softEdge = 1.0f - smoothstep(noisyRadius * 0.94f,
+                                       noisyRadius + 0.95f,
+                                       dist);
+    float poolMask = max(filledCore, softEdge * 0.82f);
+
+    return saturate(poolMask * accumulation * strength);
+}
+
+float ComputeWaterImpactPuddleWetRim(float2 worldXZ, float time,
+                                     float4 wetParams, float4 puddleParams)
+{
+    float wetStrength = saturate(wetParams.x);
+    float puddleStrength = saturate(puddleParams.x);
+    if (wetStrength <= 0.001f || puddleStrength <= 0.001f)
+        return 0.0f;
+
+    float buildSeconds = max(puddleParams.y, 0.1f);
+    float radius = max(puddleParams.z, 0.05f);
+    float accumulation = saturate((time - buildSeconds * 0.55f) /
+                                  max(buildSeconds, 0.1f));
+    float dist = length(worldXZ);
+
+    float innerEdge = smoothstep(radius * 0.62f, radius * 0.96f, dist);
+    float outerEdge = 1.0f - smoothstep(radius + 0.45f, radius + 2.3f, dist);
+    float rim = innerEdge * outerEdge;
+    float breakup = lerp(0.72f, 1.0f,
+                         fbm(worldXZ * 1.9f + float2(19.0f, 43.0f), 3));
+
+    return saturate(rim * breakup * accumulation * wetStrength);
+}
+
+float ComputeWaterImpactPuddleRipple(float2 worldXZ, float time)
+{
+    float dist = length(worldXZ);
+    float ringA = sin(dist * 9.0f - time * 7.0f);
+    float ringB = sin((worldXZ.x * 1.5f + worldXZ.y * 1.9f) + time * 2.6f);
+    float noise = fbm(worldXZ * 1.4f + float2(time * 0.06f, -time * 0.04f), 3);
+    return (ringA * 0.28f + ringB * 0.10f + (noise - 0.5f) * 0.22f);
+}
+
 // ============================================================================
 // Dispatcher
 // ============================================================================
