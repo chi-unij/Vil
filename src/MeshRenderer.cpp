@@ -47,6 +47,7 @@ static ComPtr<ID3DBlob> CompileShaderLocal(const wchar_t *filePath,
 void MeshRenderer::Reset() {
   m_meshes.clear();
   m_pso.Reset();
+  m_transparentPso.Reset();
   m_rootSig.Reset();
   m_shadowPso.Reset();
   m_shadowRootSig.Reset();
@@ -109,6 +110,26 @@ std::string MeshRenderer::ReloadShaders(DxContext &dx) {
       ComPtr<ID3D12PipelineState> newPso;
       if (SUCCEEDED(dx.m_device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&newPso))))
         m_pso = newPso;
+
+      if (m_transparentPso) {
+        pso.BlendState = {};
+        pso.BlendState.RenderTarget[0].BlendEnable = TRUE;
+        pso.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        pso.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        pso.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+        pso.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+        pso.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        pso.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        pso.BlendState.RenderTarget[0].RenderTargetWriteMask =
+            D3D12_COLOR_WRITE_ENABLE_ALL;
+        pso.BlendState.RenderTarget[1].RenderTargetWriteMask = 0;
+        pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        ComPtr<ID3D12PipelineState> newTransparentPso;
+        if (SUCCEEDED(dx.m_device->CreateGraphicsPipelineState(
+                &pso, IID_PPV_ARGS(&newTransparentPso))))
+          m_transparentPso = newTransparentPso;
+      }
     } else {
       if (!vs.success) errors += "[mesh.hlsl VS] " + vs.errorMessage + "\n";
       if (!ps.success) errors += "[mesh.hlsl PS] " + ps.errorMessage + "\n";
@@ -423,6 +444,72 @@ void MeshRenderer::CreatePipelineOnce(DxContext &dx) {
                 "Create Mesh PSO failed");
 }
 
+void MeshRenderer::CreateTransparentPipelineOnce(DxContext &dx) {
+  CreatePipelineOnce(dx);
+  if (m_transparentPso)
+    return;
+
+  auto vs = CompileShaderLocal(L"shaders/mesh.hlsl", "VSMain", "vs_5_1");
+  auto ps = CompileShaderLocal(L"shaders/mesh.hlsl", "PSMain", "ps_5_1");
+
+  D3D12_INPUT_ELEMENT_DESC inputElems[] = {
+      {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,
+       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24,
+       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"TANGENT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32,
+       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"BLENDINDICES", 0, DXGI_FORMAT_R16G16B16A16_UINT, 0, 48,
+       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"BLENDWEIGHT", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 56,
+       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+  };
+
+  D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+  pso.pRootSignature = m_rootSig.Get();
+  pso.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
+  pso.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
+
+  D3D12_BLEND_DESC blend{};
+  blend.RenderTarget[0].BlendEnable = TRUE;
+  blend.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+  blend.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+  blend.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+  blend.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+  blend.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+  blend.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+  blend.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+  blend.RenderTarget[1].RenderTargetWriteMask = 0;
+  pso.BlendState = blend;
+  pso.SampleMask = UINT_MAX;
+
+  D3D12_RASTERIZER_DESC rast{};
+  rast.FillMode = D3D12_FILL_MODE_SOLID;
+  rast.CullMode = D3D12_CULL_MODE_BACK;
+  rast.DepthClipEnable = TRUE;
+  pso.RasterizerState = rast;
+
+  D3D12_DEPTH_STENCIL_DESC ds{};
+  ds.DepthEnable = TRUE;
+  ds.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+  ds.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+  pso.DepthStencilState = ds;
+  pso.DSVFormat = dx.m_depthFormat;
+
+  pso.InputLayout = {inputElems, _countof(inputElems)};
+  pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+  pso.NumRenderTargets = 2;
+  pso.RTVFormats[0] = dx.m_hdrFormat;
+  pso.RTVFormats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+  pso.SampleDesc.Count = 1;
+
+  ThrowIfFailed(dx.m_device->CreateGraphicsPipelineState(
+                    &pso, IID_PPV_ARGS(&m_transparentPso)),
+                "Create Transparent Mesh PSO failed");
+}
+
 // ============================================================================
 // G-buffer pipeline (Phase 12.1 — Deferred Rendering).
 // ============================================================================
@@ -560,7 +647,8 @@ void MeshRenderer::DrawMeshGBufferInstanced(
     const DirectX::XMFLOAT3 &cameraPos, float gameTime,
     const DirectX::XMFLOAT4 &waterWaveParams,
     const DirectX::XMFLOAT4 &wetSurfaceParams,
-    const DirectX::XMFLOAT4 &puddleParams) {
+    const DirectX::XMFLOAT4 &puddleParams,
+    const DirectX::XMFLOAT4 &puddleVisualParams) {
   CreateGBufferPipelineOnce(dx);
 
   if (meshId >= m_meshes.size() || worlds.empty())
@@ -587,6 +675,7 @@ void MeshRenderer::DrawMeshGBufferInstanced(
     DirectX::XMFLOAT4 waterWaveParams;
     DirectX::XMFLOAT4 wetSurfaceParams;
     DirectX::XMFLOAT4 puddleParams;
+    DirectX::XMFLOAT4 puddleVisualParams;
   };
 
   GBufferCB cb{};
@@ -609,6 +698,7 @@ void MeshRenderer::DrawMeshGBufferInstanced(
   cb.waterWaveParams.w = mat.vertexDeformTypeId;
   cb.wetSurfaceParams = wetSurfaceParams;
   cb.puddleParams = puddleParams;
+  cb.puddleVisualParams = puddleVisualParams;
 
   void *cbCpu = nullptr;
   D3D12_GPU_VIRTUAL_ADDRESS cbGpu =
@@ -1165,7 +1255,7 @@ void MeshRenderer::DrawMeshInstanced(
     const std::vector<DirectX::XMMATRIX> &worlds,
     const DirectX::XMMATRIX &view, const DirectX::XMMATRIX &proj,
     const LightParams &lighting, const MeshShadowParams &shadow,
-    float gameTime) {
+    float gameTime, const DirectX::XMFLOAT4 &waterWaveParams) {
   if (!m_pso || !m_rootSig)
     return;
   if (meshId >= m_meshes.size() || worlds.empty())
@@ -1199,6 +1289,7 @@ void MeshRenderer::DrawMeshInstanced(
     DirectX::XMFLOAT4 baseColorFactor;     // rgba multiplier
     DirectX::XMFLOAT4 uvTilingOffset;      // xy=tiling, zw=offset
     DirectX::XMFLOAT4 animParams;          // x=gameTime, y=materialTypeId, z=alphaCutoff, w=alphaCutout
+    DirectX::XMFLOAT4 waterWaveParams;
   };
 
   MeshCB cb{};
@@ -1238,6 +1329,8 @@ void MeshRenderer::DrawMeshInstanced(
                        mat.uvOffset.x, mat.uvOffset.y};
   cb.animParams = {gameTime, mat.proceduralTypeId, mat.alphaCutoff,
                    mat.alphaCutout ? 1.0f : 0.0f};
+  cb.waterWaveParams = waterWaveParams;
+  cb.waterWaveParams.w = mat.vertexDeformTypeId;
 
   void *cbCpu = nullptr;
   D3D12_GPU_VIRTUAL_ADDRESS cbGpu =
@@ -1273,6 +1366,134 @@ void MeshRenderer::DrawMeshInstanced(
   cmd->SetGraphicsRootShaderResourceView(4, instGpu); // instance buffer
 
   // Upload bone palette — always upload kMaxBones to prevent out-of-range reads.
+  {
+    constexpr uint32_t boneBytes = kMaxBones * sizeof(DirectX::XMFLOAT4X4);
+    void *boneCpu = nullptr;
+    D3D12_GPU_VIRTUAL_ADDRESS boneGpu =
+        dx.AllocFrameConstants(boneBytes, &boneCpu);
+    auto *boneDst = reinterpret_cast<DirectX::XMFLOAT4X4 *>(boneCpu);
+    if (mesh.bonePalette.boneCount > 0) {
+      for (int b = 0; b < kMaxBones; ++b)
+        DirectX::XMStoreFloat4x4(&boneDst[b],
+                                  DirectX::XMMatrixTranspose(mesh.bonePalette.matrices[b]));
+    } else {
+      for (int b = 0; b < kMaxBones; ++b)
+        DirectX::XMStoreFloat4x4(&boneDst[b],
+                                  DirectX::XMMatrixTranspose(DirectX::XMMatrixIdentity()));
+    }
+    cmd->SetGraphicsRootShaderResourceView(5, boneGpu);
+  }
+
+  cmd->IASetVertexBuffers(0, 1, &mesh.vbView);
+  cmd->IASetIndexBuffer(&mesh.ibView);
+  cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  cmd->DrawIndexedInstanced(mesh.indexCount, instCount, 0, 0, 0);
+}
+
+void MeshRenderer::DrawMeshTransparentInstanced(
+    DxContext &dx, uint32_t meshId,
+    const std::vector<DirectX::XMMATRIX> &worlds,
+    const DirectX::XMMATRIX &view, const DirectX::XMMATRIX &proj,
+    const LightParams &lighting, const MeshShadowParams &shadow,
+    float gameTime, const DirectX::XMFLOAT4 &waterWaveParams) {
+  CreateTransparentPipelineOnce(dx);
+  if (!m_transparentPso || !m_rootSig)
+    return;
+  if (meshId >= m_meshes.size() || worlds.empty())
+    return;
+  const auto &mesh = m_meshes[meshId];
+  if (mesh.indexCount == 0)
+    return;
+
+  auto cmd = dx.m_cmdList.Get();
+  cmd->SetPipelineState(m_transparentPso.Get());
+  cmd->SetGraphicsRootSignature(m_rootSig.Get());
+
+  D3D12_CPU_DESCRIPTOR_HANDLE rtvs[2] = {dx.HdrRtv(), dx.ViewNormalRtv()};
+  auto dsv = dx.Dsv();
+  cmd->OMSetRenderTargets(2, rtvs, FALSE, &dsv);
+
+  struct MeshCB {
+    DirectX::XMFLOAT4X4 viewMat;
+    DirectX::XMFLOAT4X4 projMat;
+    DirectX::XMFLOAT4 cameraPos;
+    DirectX::XMFLOAT4 lightDirIntensity;
+    DirectX::XMFLOAT4 lightColorRoughness;
+    DirectX::XMFLOAT4 metallicPad;
+    DirectX::XMFLOAT4X4 cascadeLightViewProj[kMaxCascades];
+    DirectX::XMFLOAT4 shadowParams;
+    DirectX::XMFLOAT4 cascadeSplits;
+    DirectX::XMFLOAT4 emissiveFactor;
+    DirectX::XMFLOAT4 pomParams;
+    DirectX::XMFLOAT4 baseColorFactor;
+    DirectX::XMFLOAT4 uvTilingOffset;
+    DirectX::XMFLOAT4 animParams;
+    DirectX::XMFLOAT4 waterWaveParams;
+  };
+
+  MeshCB cb{};
+  DirectX::XMStoreFloat4x4(&cb.viewMat, DirectX::XMMatrixTranspose(view));
+  DirectX::XMStoreFloat4x4(&cb.projMat, DirectX::XMMatrixTranspose(proj));
+
+  const DirectX::XMMATRIX invView = DirectX::XMMatrixInverse(nullptr, view);
+  const DirectX::XMVECTOR camPosV = invView.r[3];
+  DirectX::XMStoreFloat4(&cb.cameraPos, camPosV);
+
+  const auto &mat = mesh.material;
+  cb.lightDirIntensity = {lighting.lightDir.x, lighting.lightDir.y,
+                          lighting.lightDir.z, lighting.lightIntensity};
+  cb.lightColorRoughness = {lighting.lightColor.x, lighting.lightColor.y,
+                            lighting.lightColor.z, mat.roughnessFactor};
+  cb.metallicPad = {mat.metallicFactor, lighting.iblIntensity,
+                    lighting.cascadeDebug, 0.0f};
+
+  for (uint32_t c = 0; c < shadow.cascadeCount && c < kMaxCascades; ++c) {
+    DirectX::XMStoreFloat4x4(&cb.cascadeLightViewProj[c],
+                             DirectX::XMMatrixTranspose(shadow.lightViewProj[c]));
+  }
+  cb.shadowParams = {shadow.texelSize.x, shadow.texelSize.y, shadow.bias,
+                     shadow.strength};
+  cb.cascadeSplits = {
+      shadow.splitDistances[0], shadow.splitDistances[1],
+      shadow.splitDistances[2], static_cast<float>(shadow.cascadeCount)};
+  cb.emissiveFactor = {mat.emissiveFactor.x, mat.emissiveFactor.y,
+                       mat.emissiveFactor.z, 0.0f};
+  cb.pomParams = {mat.heightScale, mat.pomMinLayers,
+                  mat.pomMaxLayers, mat.pomEnabled ? 1.0f : 0.0f};
+  cb.baseColorFactor = mat.baseColorFactor;
+  cb.uvTilingOffset = {mat.uvTiling.x, mat.uvTiling.y,
+                       mat.uvOffset.x, mat.uvOffset.y};
+  cb.animParams = {gameTime, mat.proceduralTypeId, mat.alphaCutoff,
+                   mat.alphaCutout ? 1.0f : 0.0f};
+  cb.waterWaveParams = waterWaveParams;
+  cb.waterWaveParams.w = mat.vertexDeformTypeId;
+
+  void *cbCpu = nullptr;
+  D3D12_GPU_VIRTUAL_ADDRESS cbGpu =
+      dx.AllocFrameConstants(sizeof(MeshCB), &cbCpu);
+  memcpy(cbCpu, &cb, sizeof(MeshCB));
+
+  uint32_t instCount = static_cast<uint32_t>(worlds.size());
+  uint32_t instBytes = instCount * sizeof(DirectX::XMFLOAT4X4);
+  void *instCpu = nullptr;
+  D3D12_GPU_VIRTUAL_ADDRESS instGpu =
+      dx.AllocFrameConstants(instBytes, &instCpu);
+  auto *dst = reinterpret_cast<DirectX::XMFLOAT4X4 *>(instCpu);
+  for (uint32_t i = 0; i < instCount; ++i)
+    DirectX::XMStoreFloat4x4(&dst[i], DirectX::XMMatrixTranspose(worlds[i]));
+
+  ID3D12DescriptorHeap *heaps[] = {dx.m_mainSrvHeap.Get()};
+  cmd->SetDescriptorHeaps(1, heaps);
+
+  cmd->SetGraphicsRootConstantBufferView(0, cbGpu);
+  if (mesh.materialTableGpu.ptr != 0)
+    cmd->SetGraphicsRootDescriptorTable(1, mesh.materialTableGpu);
+  if (shadow.shadowSrvGpu.ptr != 0)
+    cmd->SetGraphicsRootDescriptorTable(2, shadow.shadowSrvGpu);
+  if (m_iblTableGpu.ptr != 0)
+    cmd->SetGraphicsRootDescriptorTable(3, m_iblTableGpu);
+  cmd->SetGraphicsRootShaderResourceView(4, instGpu);
+
   {
     constexpr uint32_t boneBytes = kMaxBones * sizeof(DirectX::XMFLOAT4X4);
     void *boneCpu = nullptr;

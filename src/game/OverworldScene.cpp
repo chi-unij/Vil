@@ -1,6 +1,7 @@
 #include "game/OverworldScene.h"
 
 #include "GltfLoader.h"
+#include "MeshRenderer.h"
 #include "ProceduralMesh.h"
 
 #include <DirectXMath.h>
@@ -257,7 +258,7 @@ void OverworldScene::BuildFrame(FrameData &frame) const {
 
   auto pushWater = [&frame](uint32_t meshId, float sx, float sz, float x,
                             float z) {
-    frame.opaqueItems.push_back(
+    frame.transparentItems.push_back(
         {meshId, XMMatrixScaling(sx, 1.0f, sz) * XMMatrixTranslation(x, waterY, z)});
   };
 
@@ -382,6 +383,21 @@ void OverworldScene::BuildFrame(FrameData &frame) const {
       ++drawnClusters;
     }
   }
+}
+
+void OverworldScene::SetWaterTransparency(DxContext &dx, float transparency) {
+  if (m_waterMeshId == UINT32_MAX)
+    return;
+
+  const float t = std::clamp(transparency, 0.0f, 0.95f);
+  Material &mat = dx.GetMeshRenderer().GetMeshMaterial(m_waterMeshId);
+  mat.baseColorFactor.w = 1.0f - t;
+  mat.baseColorFactor.x = std::lerp(0.34f, 0.18f, t);
+  mat.baseColorFactor.y = std::lerp(0.58f, 0.44f, t);
+  mat.baseColorFactor.z = std::lerp(0.66f, 0.55f, t);
+  mat.roughnessFactor = std::lerp(0.12f, 0.055f, t);
+  mat.emissiveFactor = {0.0f, std::lerp(0.04f, 0.018f, t),
+                        std::lerp(0.08f, 0.035f, t)};
 }
 
 void OverworldScene::AppendWaterDropTest(FrameData &frame) const {

@@ -454,6 +454,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     GBufferPass gbufferPass(dx.GetMeshRenderer());
     DeferredLightingPass deferredLightingPass(dx.GetShadowMap(), dx.GetMeshRenderer());
     GridPass gridPass(gridRenderer);
+    SSRPass ssrPass;
+    TransparentMeshPass transparentMeshPass(dx.GetMeshRenderer(), dx.GetShadowMap());
     TransparentPass transparentPass(dx.GetParticleRenderer());
     SSAOPass ssaoPass(ssaoRenderer);
     BloomPass bloomPass(postProcess);
@@ -481,6 +483,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     float waterWaveHeight = 1.0f;
     float waterWaveSpeed = 1.0f;
     float waterWaveFrequency = 1.0f;
+    float waterTransparency = 0.45f;
     float wetSurfaceStrength = 0.9f;
     float wetSurfaceDrySeconds = 4.0f;
     float wetSurfaceImpactRadius = 4.5f;
@@ -488,7 +491,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     float puddleStrength = 0.85f;
     float puddleBuildSeconds = 5.0f;
     float puddleRadius = 3.2f;
+    float puddleClarity = 0.25f;
+    float puddleTint = 0.60f;
     float puddleRippleStrength = 1.0f;
+    overworldScene.SetWaterTransparency(dx, waterTransparency);
 
     // IBL (Phase 10.2)
     bool iblEnabled = true;
@@ -614,6 +620,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
           g_shaderReloadErrors += skyRenderer.ReloadShaders(dx);
           g_shaderReloadErrors += gridRenderer.ReloadShaders(dx);
           g_shaderReloadErrors += deferredLightingPass.ReloadShaders(dx);
+          g_shaderReloadErrors += ssrPass.ReloadShaders(dx);
           g_shaderReloadErrors += dx.GetParticleRenderer().ReloadShaders(dx);
           g_shaderReloadTimer = g_shaderReloadErrors.empty()
                                     ? kShaderMsgOkDuration
@@ -979,6 +986,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
                            "%.2f");
         ImGui::SliderFloat("Wave Frequency", &waterWaveFrequency, 0.2f, 3.0f,
                            "%.2f");
+        if (ImGui::SliderFloat("Water Transparency", &waterTransparency, 0.0f,
+                               0.95f, "%.2f")) {
+          overworldScene.SetWaterTransparency(dx, waterTransparency);
+        }
         ImGui::SliderFloat("Wet Strength", &wetSurfaceStrength, 0.0f, 1.0f,
                            "%.2f");
         ImGui::SliderFloat("Wet Dry Seconds", &wetSurfaceDrySeconds, 0.2f,
@@ -993,12 +1004,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
                            20.0f, "%.2f");
         ImGui::SliderFloat("Puddle Radius", &puddleRadius, 0.5f, 8.0f,
                            "%.2f");
+        ImGui::SliderFloat("Puddle Clarity", &puddleClarity, 0.0f, 1.0f,
+                           "%.2f");
+        ImGui::SliderFloat("Puddle Tint", &puddleTint, 0.0f, 1.0f,
+                           "%.2f");
         ImGui::SliderFloat("Puddle Ripple", &puddleRippleStrength, 0.0f, 2.0f,
                            "%.2f");
         if (ImGui::Button("Reset Water")) {
           waterWaveHeight = 1.0f;
           waterWaveSpeed = 1.0f;
           waterWaveFrequency = 1.0f;
+          waterTransparency = 0.45f;
+          overworldScene.SetWaterTransparency(dx, waterTransparency);
           wetSurfaceStrength = 0.9f;
           wetSurfaceDrySeconds = 4.0f;
           wetSurfaceImpactRadius = 4.5f;
@@ -1006,6 +1023,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
           puddleStrength = 0.85f;
           puddleBuildSeconds = 5.0f;
           puddleRadius = 3.2f;
+          puddleClarity = 0.25f;
+          puddleTint = 0.60f;
           puddleRippleStrength = 1.0f;
         }
         ImGui::Separator();
@@ -1141,6 +1160,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
                                 wetSurfaceCycleSeconds};
       frame.puddleParams = {puddleStrength, puddleBuildSeconds, puddleRadius,
                             puddleRippleStrength};
+      frame.puddleVisualParams = {puddleClarity, puddleTint, 1.0f, 0.0f};
       frame.cascadeCount = cascadeCount;
       frame.cascadeLightViewProj = cascadeVP;
       frame.cascadeSplitDistances = cascadeSplitDists;
@@ -1294,6 +1314,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       if (traceGameFrame)
         TraceAppEvent("pass: Highlight");
       highlightPass.Execute(dx, frame);
+      if (traceGameFrame)
+        TraceAppEvent("pass: SSR");
+      ssrPass.Execute(dx, frame);
+      if (traceGameFrame)
+        TraceAppEvent("pass: TransparentMesh");
+      transparentMeshPass.Execute(dx, frame);
       if (traceGameFrame)
         TraceAppEvent("pass: SSAO");
       ssaoPass.Execute(dx, frame);

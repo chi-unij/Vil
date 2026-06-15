@@ -19,7 +19,9 @@
 #include "SkyRenderer.h"
 
 #include <algorithm>
+#include <cstring>
 #include <d3dcompiler.h>
+#include <iterator>
 #include <unordered_map>
 
 // ============================================================================
@@ -145,7 +147,8 @@ void GBufferPass::Execute(DxContext &dx, const FrameData &frame) {
                                     frame.view, frame.proj, frame.cameraPos,
                                     frame.gameTime, frame.waterWaveParams,
                                     frame.wetSurfaceParams,
-                                    frame.puddleParams);
+                                    frame.puddleParams,
+                                    frame.puddleVisualParams);
   }
 }
 
@@ -474,6 +477,242 @@ void GridPass::Execute(DxContext &dx, const FrameData &frame) {
   dx.CmdList()->OMSetRenderTargets(1, &hdrRtv, FALSE, &dsv);
   m_grid.Draw(dx, frame.view, frame.proj);
   m_grid.DrawLines(dx, frame.view, frame.proj, frame.debugLines);
+}
+
+// ============================================================================
+// SSRPass — screen-space reflection resolve for water / puddle pixels.
+// ============================================================================
+void SSRPass::CreatePipelineOnce(DxContext &dx) {
+  if (m_pso && m_rootSig)
+    return;
+
+  D3D12_DESCRIPTOR_RANGE srvRanges[5]{};
+  for (uint32_t i = 0; i < 5; ++i) {
+    srvRanges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRanges[i].NumDescriptors = 1;
+    srvRanges[i].BaseShaderRegister = i;
+    srvRanges[i].OffsetInDescriptorsFromTableStart = 0;
+  }
+
+  D3D12_ROOT_PARAMETER params[6]{};
+  params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+  params[0].Descriptor.ShaderRegister = 0;
+  params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+  for (uint32_t i = 0; i < 5; ++i) {
+    params[1 + i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1 + i].DescriptorTable.NumDescriptorRanges = 1;
+    params[1 + i].DescriptorTable.pDescriptorRanges = &srvRanges[i];
+    params[1 + i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+  }
+
+  D3D12_STATIC_SAMPLER_DESC samplers[2]{};
+  samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+  samplers[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  samplers[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
+  samplers[0].ShaderRegister = 0;
+  samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+  samplers[1].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+  samplers[1].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  samplers[1].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
+  samplers[1].ShaderRegister = 1;
+  samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+  D3D12_ROOT_SIGNATURE_DESC rsDesc{};
+  rsDesc.NumParameters = static_cast<UINT>(std::size(params));
+  rsDesc.pParameters = params;
+  rsDesc.NumStaticSamplers = static_cast<UINT>(std::size(samplers));
+  rsDesc.pStaticSamplers = samplers;
+  rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+  Microsoft::WRL::ComPtr<ID3DBlob> rsBlob, rsError;
+  ThrowIfFailed(D3D12SerializeRootSignature(
+                    &rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, &rsError),
+                "Serialize SSR RS failed");
+  ThrowIfFailed(dx.Device()->CreateRootSignature(0, rsBlob->GetBufferPointer(),
+                                                 rsBlob->GetBufferSize(),
+                                                 IID_PPV_ARGS(&m_rootSig)),
+                "Create SSR RS failed");
+
+  auto vs = CompileShaderFromFile(L"shaders/ssr.hlsl", "VSFullscreen", "vs_5_1");
+  auto ps = CompileShaderFromFile(L"shaders/ssr.hlsl", "PSMain", "ps_5_1");
+
+  D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+  pso.pRootSignature = m_rootSig.Get();
+  pso.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
+  pso.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
+
+  D3D12_BLEND_DESC blend{};
+  blend.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+  pso.BlendState = blend;
+  pso.SampleMask = UINT_MAX;
+
+  D3D12_RASTERIZER_DESC rast{};
+  rast.FillMode = D3D12_FILL_MODE_SOLID;
+  rast.CullMode = D3D12_CULL_MODE_NONE;
+  rast.DepthClipEnable = FALSE;
+  pso.RasterizerState = rast;
+
+  D3D12_DEPTH_STENCIL_DESC ds{};
+  ds.DepthEnable = FALSE;
+  pso.DepthStencilState = ds;
+
+  pso.InputLayout = {nullptr, 0};
+  pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+  pso.NumRenderTargets = 1;
+  pso.RTVFormats[0] = dx.HdrFormat();
+  pso.SampleDesc.Count = 1;
+
+  ThrowIfFailed(dx.Device()->CreateGraphicsPipelineState(&pso,
+                                                         IID_PPV_ARGS(&m_pso)),
+                "Create SSR PSO failed");
+}
+
+std::string SSRPass::ReloadShaders(DxContext &dx) {
+  std::string errors;
+  if (!m_rootSig)
+    return errors;
+
+  auto vs = CompileShaderSafe(L"shaders/ssr.hlsl", "VSFullscreen", "vs_5_1");
+  auto ps = CompileShaderSafe(L"shaders/ssr.hlsl", "PSMain", "ps_5_1");
+  if (vs.success && ps.success) {
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
+    pso.pRootSignature = m_rootSig.Get();
+    pso.VS = {vs.bytecode->GetBufferPointer(), vs.bytecode->GetBufferSize()};
+    pso.PS = {ps.bytecode->GetBufferPointer(), ps.bytecode->GetBufferSize()};
+
+    D3D12_BLEND_DESC blend{};
+    blend.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.BlendState = blend;
+    pso.SampleMask = UINT_MAX;
+
+    D3D12_RASTERIZER_DESC rast{};
+    rast.FillMode = D3D12_FILL_MODE_SOLID;
+    rast.CullMode = D3D12_CULL_MODE_NONE;
+    rast.DepthClipEnable = FALSE;
+    pso.RasterizerState = rast;
+
+    D3D12_DEPTH_STENCIL_DESC ds{};
+    ds.DepthEnable = FALSE;
+    pso.DepthStencilState = ds;
+
+    pso.InputLayout = {nullptr, 0};
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = dx.HdrFormat();
+    pso.SampleDesc.Count = 1;
+
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> newPso;
+    if (SUCCEEDED(dx.Device()->CreateGraphicsPipelineState(&pso,
+                                                           IID_PPV_ARGS(&newPso))))
+      m_pso = newPso;
+  } else {
+    if (!vs.success) errors += "[ssr.hlsl VS] " + vs.errorMessage + "\n";
+    if (!ps.success) errors += "[ssr.hlsl PS] " + ps.errorMessage + "\n";
+  }
+  return errors;
+}
+
+void SSRPass::Execute(DxContext &dx, const FrameData &frame) {
+  CreatePipelineOnce(dx);
+
+  dx.Transition(dx.HdrTarget(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+  dx.Transition(dx.DepthBuffer(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+  dx.Transition(dx.TaaOutputTarget(),
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+  struct SSRCB {
+    DirectX::XMFLOAT4X4 invViewProj;
+    DirectX::XMFLOAT4X4 view;
+    DirectX::XMFLOAT4X4 proj;
+    DirectX::XMFLOAT4 screenParams;
+    DirectX::XMFLOAT4 reflectionParams;
+  };
+
+  DirectX::XMMATRIX vp = frame.view * frame.proj;
+  SSRCB cb{};
+  DirectX::XMStoreFloat4x4(&cb.invViewProj,
+                           DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, vp)));
+  DirectX::XMStoreFloat4x4(&cb.view, DirectX::XMMatrixTranspose(frame.view));
+  DirectX::XMStoreFloat4x4(&cb.proj, DirectX::XMMatrixTranspose(frame.proj));
+  cb.screenParams = {static_cast<float>(dx.Width()), static_cast<float>(dx.Height()),
+                     1.0f / static_cast<float>(dx.Width()),
+                     1.0f / static_cast<float>(dx.Height())};
+  cb.reflectionParams = {0.85f, 28.0f, 0.35f, 0.35f};
+
+  void *cbCpu = nullptr;
+  D3D12_GPU_VIRTUAL_ADDRESS cbGpu = dx.AllocFrameConstants(sizeof(SSRCB), &cbCpu);
+  memcpy(cbCpu, &cb, sizeof(SSRCB));
+
+  auto *cmd = dx.CmdList();
+  ID3D12DescriptorHeap *heaps[] = {dx.MainSrvHeap()};
+  cmd->SetDescriptorHeaps(1, heaps);
+  cmd->SetGraphicsRootSignature(m_rootSig.Get());
+  cmd->SetPipelineState(m_pso.Get());
+  cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+  cmd->SetGraphicsRootConstantBufferView(0, cbGpu);
+  cmd->SetGraphicsRootDescriptorTable(1, dx.HdrSrvGpu());
+  cmd->SetGraphicsRootDescriptorTable(2, dx.GBufferAlbedoSrvGpu());
+  cmd->SetGraphicsRootDescriptorTable(3, dx.GBufferNormalSrvGpu());
+  cmd->SetGraphicsRootDescriptorTable(4, dx.GBufferMaterialSrvGpu());
+  cmd->SetGraphicsRootDescriptorTable(5, dx.DepthSrvGpu());
+
+  auto scratchRtv = dx.TaaOutputRtv();
+  cmd->OMSetRenderTargets(1, &scratchRtv, FALSE, nullptr);
+  dx.SetViewportScissorFull();
+  cmd->DrawInstanced(3, 1, 0, 0);
+
+  dx.Transition(dx.TaaOutputTarget(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_COPY_SOURCE);
+  dx.Transition(dx.HdrTarget(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_COPY_DEST);
+  cmd->CopyResource(dx.HdrTarget(), dx.TaaOutputTarget());
+  dx.Transition(dx.TaaOutputTarget(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+  dx.Transition(dx.HdrTarget(), D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_RENDER_TARGET);
+  dx.Transition(dx.DepthBuffer(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE);
+}
+
+// ============================================================================
+// TransparentMeshPass — alpha-blended forward meshes, mainly clean water.
+// ============================================================================
+void TransparentMeshPass::Execute(DxContext &dx, const FrameData &frame) {
+  if (frame.transparentItems.empty())
+    return;
+
+  MeshShadowParams shadowParams{};
+  if (frame.shadowsEnabled) {
+    shadowParams.cascadeCount =
+        std::min({frame.cascadeCount, m_shadow.CascadeCount(), kMaxCascades});
+    shadowParams.lightViewProj = frame.cascadeLightViewProj;
+    shadowParams.splitDistances = frame.cascadeSplitDistances;
+    const uint32_t smSize = m_shadow.Size();
+    if (smSize > 0) {
+      shadowParams.texelSize = m_shadow.TexelSize();
+      shadowParams.bias = frame.shadowBias;
+      shadowParams.strength = frame.shadowStrength;
+      shadowParams.shadowSrvGpu = m_shadow.SrvGpu();
+    }
+  }
+
+  auto batches = BuildBatches(frame.transparentItems);
+  for (const auto &batch : batches) {
+    m_mesh.DrawMeshTransparentInstanced(dx, batch.meshId, batch.worldMatrices,
+                                        frame.view, frame.proj, frame.lighting,
+                                        shadowParams, frame.gameTime,
+                                        frame.waterWaveParams);
+  }
 }
 
 // ============================================================================

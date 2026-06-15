@@ -61,6 +61,10 @@ struct FrameData {
   // Scene items to draw (both shadow + opaque passes iterate this).
   std::vector<RenderItem> opaqueItems;
 
+  // Transparent meshes rendered after deferred lighting. These read depth but
+  // do not write it, so underlying opaque surfaces stay visible.
+  std::vector<RenderItem> transparentItems;
+
   // Wireframe highlight overlay for selected entities (editor).
   std::vector<RenderItem> highlightItems;
 
@@ -118,6 +122,7 @@ struct FrameData {
   DirectX::XMFLOAT4 waterWaveParams = {1.0f, 1.0f, 1.0f, 0.0f};
   DirectX::XMFLOAT4 wetSurfaceParams = {0.9f, 4.0f, 4.5f, 5.5f};
   DirectX::XMFLOAT4 puddleParams = {0.85f, 5.0f, 3.2f, 1.0f};
+  DirectX::XMFLOAT4 puddleVisualParams = {0.25f, 0.60f, 1.0f, 0.0f};
 };
 
 // Base class for all render passes.

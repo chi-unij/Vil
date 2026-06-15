@@ -37,6 +37,7 @@ public:
 
   void Initialize(DxContext &dx);
   void BuildFrame(FrameData &frame) const;
+  void SetWaterTransparency(DxContext &dx, float transparency);
   bool ReloadPlacements(DxContext &dx);
   std::vector<CollisionShapeConfig> BuildDefaultCollisionShapes() const;
   std::vector<CollisionSystem::Aabb> BuildCollisionAabbs() const;

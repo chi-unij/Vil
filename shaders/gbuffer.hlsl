@@ -19,6 +19,7 @@ cbuffer GBufferCB : register(b0)
     float4   gWaterWaveParams; // x=高さ, y=速度, z=周波数, w=頂点変形タイプ
     float4   gWetSurfaceParams; // x=強さ, y=乾燥秒数, z=幅, w=周期秒数
     float4   gPuddleParams;    // x=強さ, y=蓄積秒数, z=半径, w=波紋強さ
+    float4   gPuddleVisualParams; // x=透明感, y=色味, z=法線強さ, w=unused
 };
 
 // Per-instance world matrices (Phase 12.5 — Instanced Rendering).
@@ -229,15 +230,41 @@ PSOut PSMain(PSIn i)
     }
     if (puddle > 0.001f)
     {
-        float ripple = ComputeWaterImpactPuddleRipple(i.posW.xz, gAnimParams.x)
-                       * gPuddleParams.w;
-        float3 puddleColor = float3(0.025f, 0.11f, 0.14f);
-        float3 skyTint = float3(0.14f, 0.30f, 0.34f);
-        float3 connectedWaterColor = lerp(puddleColor, skyTint, 0.35f);
-        albedo = lerp(albedo, connectedWaterColor, puddle);
-        roughness = lerp(roughness, saturate(0.045f + abs(ripple) * 0.018f), puddle);
-        ao = lerp(ao, 0.95f, puddle);
-        N = normalize(N + float3(ripple * 0.010f, 0.0f, ripple * 0.007f) * puddle);
+        float clarity = saturate(gPuddleVisualParams.x);
+        float tintStrength = saturate(gPuddleVisualParams.y);
+        float normalStrength = saturate(gPuddleVisualParams.z) * gPuddleParams.w;
+
+        float2 rippleUv = i.posW.xz;
+        float ripple = ComputeWaterImpactPuddleRipple(rippleUv, gAnimParams.x);
+        float waveA = fbm(rippleUv * 6.0f +
+                          float2(gAnimParams.x * 0.05f, -gAnimParams.x * 0.035f), 3);
+        float waveB = fbm(rippleUv * 13.0f +
+                          float2(-gAnimParams.x * 0.12f, gAnimParams.x * 0.09f), 2);
+
+        float waterHeight = ripple * 0.32f + (waveA - 0.5f) * 0.42f +
+                            (waveB - 0.5f) * 0.16f;
+        float waterHeightX = ComputeWaterImpactPuddleRipple(rippleUv + float2(0.08f, 0.0f),
+                                                            gAnimParams.x) * 0.32f +
+                             (fbm((rippleUv + float2(0.08f, 0.0f)) * 6.0f +
+                                  float2(gAnimParams.x * 0.05f, -gAnimParams.x * 0.035f), 3) - 0.5f) * 0.42f;
+        float waterHeightZ = ComputeWaterImpactPuddleRipple(rippleUv + float2(0.0f, 0.08f),
+                                                            gAnimParams.x) * 0.32f +
+                             (fbm((rippleUv + float2(0.0f, 0.08f)) * 6.0f +
+                                  float2(gAnimParams.x * 0.05f, -gAnimParams.x * 0.035f), 3) - 0.5f) * 0.42f;
+        float2 rippleSlope = float2(waterHeightX - waterHeight,
+                                    waterHeightZ - waterHeight) * normalStrength;
+
+        float3 clearWaterTint = float3(0.045f, 0.13f, 0.15f);
+        float3 preservedFloor = albedo * lerp(0.62f, 0.94f, clarity);
+        float3 tintedFloor = preservedFloor + clearWaterTint * tintStrength;
+        albedo = lerp(albedo, tintedFloor, puddle);
+
+        float cleanWaterRoughness = lerp(0.085f, 0.026f, clarity);
+        cleanWaterRoughness = saturate(cleanWaterRoughness + abs(ripple) * 0.010f * normalStrength);
+        roughness = lerp(roughness, cleanWaterRoughness, puddle);
+        ao = lerp(ao, lerp(0.88f, 0.98f, clarity), puddle);
+        N = normalize(N + float3(rippleSlope.x * 0.065f, 0.0f,
+                                 rippleSlope.y * 0.065f) * puddle);
     }
 
     // ---- Pack to G-buffer ----

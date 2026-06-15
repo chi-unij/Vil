@@ -14,6 +14,7 @@ cbuffer MeshCB : register(b0)
     float4   gBaseColorFactor;    // rgba multiplier for base color
     float4   gUVTilingOffset;     // xy=tiling, zw=offset
     float4   gAnimParams;        // x=gameTime, y=materialTypeId, z=alphaCutoff, w=alphaCutout
+    float4   gWaterWaveParams;   // x=height, y=speed, z=frequency, w=vertex deform type
 };
 
 // Per-instance world matrices (Phase 12.5 — Instanced Rendering).
@@ -71,11 +72,25 @@ PSIn VSMain(VSIn v, uint instId : SV_InstanceID)
     }
 
     float4x4 world = gInstanceWorlds[instId];
-    float4x4 wvp = mul(world, mul(gView, gProj));
+    float4 posW = mul(float4(skinnedPos, 1.0f), world);
+
+    if ((int)(gWaterWaveParams.w + 0.5f) == 6)
+    {
+        float2 p = posW.xz * gWaterWaveParams.z;
+        float t = gAnimParams.x * gWaterWaveParams.y;
+        float height = gWaterWaveParams.x;
+        float wave =
+            sin(p.x * 1.4f + t * 3.0f) * 0.05f +
+            sin((p.x * 0.7f + p.y * 1.2f) - t * 1.6f) * 0.032f +
+            sin((p.x - p.y) * 2.1f + t * 1.1f) * 0.020f;
+        float edgeDistance = min(min(v.uv.x, 1.0f - v.uv.x),
+                                 min(v.uv.y, 1.0f - v.uv.y));
+        float edgeFade = smoothstep(0.0f, 0.08f, edgeDistance);
+        posW.y += wave * height * edgeFade;
+    }
 
     PSIn o;
-    o.pos = mul(float4(skinnedPos, 1.0f), wvp);
-    float4 posW = mul(float4(skinnedPos, 1.0f), world);
+    o.pos = mul(posW, mul(gView, gProj));
     o.posW = posW.xyz;
     o.nrmW = mul(float4(skinnedNrm, 0.0f), world).xyz;
     o.uv = v.uv;
@@ -362,7 +377,7 @@ PSOut PSMain(PSIn i)
 
     // MRT output: linear HDR color + view-space normal (packed to [0,1]).
     PSOut output;
-    output.color = float4(color, 1.0f);
+    output.color = float4(color, alpha);
     float3 normalView = normalize(mul(float4(N, 0.0f), gView).xyz);
     output.normalVS = float4(normalView * 0.5f + 0.5f, 1.0f);
     return output;

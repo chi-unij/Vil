@@ -93,6 +93,30 @@ private:
   GridRenderer &m_grid;
 };
 
+// Pass 3d: Screen-space reflection resolve for water / puddle surfaces.
+class SSRPass : public RenderPass {
+public:
+  void Execute(DxContext &dx, const FrameData &frame) override;
+  std::string ReloadShaders(DxContext &dx);
+
+private:
+  Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
+  Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pso;
+  void CreatePipelineOnce(DxContext &dx);
+};
+
+// Pass 3e: Forward alpha-blended mesh pass for clean water surfaces.
+class TransparentMeshPass : public RenderPass {
+public:
+  TransparentMeshPass(MeshRenderer &mesh, ShadowMap &shadow)
+      : m_mesh(mesh), m_shadow(shadow) {}
+  void Execute(DxContext &dx, const FrameData &frame) override;
+
+private:
+  MeshRenderer &m_mesh;
+  ShadowMap &m_shadow;
+};
+
 // Pass 4: Draw transparent/additive geometry (particles).
 class TransparentPass : public RenderPass {
 public:

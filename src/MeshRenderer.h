@@ -70,7 +70,9 @@ public:
                                 const DirectX::XMFLOAT4 &wetSurfaceParams =
                                     DirectX::XMFLOAT4(0.9f, 4.0f, 4.5f, 5.5f),
                                 const DirectX::XMFLOAT4 &puddleParams =
-                                    DirectX::XMFLOAT4(0.85f, 5.0f, 3.2f, 1.0f));
+                                    DirectX::XMFLOAT4(0.85f, 5.0f, 3.2f, 1.0f),
+                                const DirectX::XMFLOAT4 &puddleVisualParams =
+                                    DirectX::XMFLOAT4(0.78f, 0.22f, 1.0f, 0.0f));
 
   void DrawMeshShadowInstanced(DxContext &dx, uint32_t meshId,
                                const std::vector<DirectX::XMMATRIX> &worlds,
@@ -82,7 +84,20 @@ public:
                          const DirectX::XMMATRIX &proj,
                          const LightParams &lighting,
                          const MeshShadowParams &shadow,
-                         float gameTime = 0.0f);
+                         float gameTime = 0.0f,
+                         const DirectX::XMFLOAT4 &waterWaveParams =
+                             DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 0.0f));
+
+  void DrawMeshTransparentInstanced(
+      DxContext &dx, uint32_t meshId,
+      const std::vector<DirectX::XMMATRIX> &worlds,
+      const DirectX::XMMATRIX &view,
+      const DirectX::XMMATRIX &proj,
+      const LightParams &lighting,
+      const MeshShadowParams &shadow,
+      float gameTime = 0.0f,
+      const DirectX::XMFLOAT4 &waterWaveParams =
+          DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 0.0f));
 
   void SetIBLDescriptors(D3D12_GPU_DESCRIPTOR_HANDLE iblTableBase);
 
@@ -105,6 +120,7 @@ private:
   struct MeshGpuResources;
 
   void CreatePipelineOnce(DxContext &dx);
+  void CreateTransparentPipelineOnce(DxContext &dx);
   void CreateGBufferPipelineOnce(DxContext &dx);
   void CreateShadowPipelineOnce(DxContext &dx);
   void CreateWireframePipelineOnce(DxContext &dx);
@@ -120,6 +136,7 @@ private:
 private:
   Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
   Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pso;
+  Microsoft::WRL::ComPtr<ID3D12PipelineState> m_transparentPso;
   Microsoft::WRL::ComPtr<ID3D12RootSignature> m_gbufferRootSig;
   Microsoft::WRL::ComPtr<ID3D12PipelineState> m_gbufferPso;
   Microsoft::WRL::ComPtr<ID3D12RootSignature> m_shadowRootSig;
