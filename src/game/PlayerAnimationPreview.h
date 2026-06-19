@@ -34,6 +34,8 @@ public:
 
   bool IsReady() const { return m_ready; }
   DirectX::XMFLOAT3 Position() const { return m_previewPosition; }
+  void SetPosition(const DirectX::XMFLOAT3 &position);
+  void SetYaw(float yawRadians);
 
 private:
   struct PreviewClip {

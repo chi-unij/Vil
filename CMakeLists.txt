@@ -176,6 +176,8 @@ add_executable(SoloAssignment WIN32
     # 新ゲームコード配置先（空。実装はここから始める）
     src/game/CollisionSystem.h
     src/game/CollisionSystem.cpp
+    src/game/BossArenaScene.h
+    src/game/BossArenaScene.cpp
     src/game/OverworldScene.h
     src/game/OverworldScene.cpp
     src/game/WorldRainParticles.h

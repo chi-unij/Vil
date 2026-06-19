@@ -164,6 +164,14 @@ void PlayerAnimationPreview::Update(float dt, const Input &input,
   Update(dt);
 }
 
+
+void PlayerAnimationPreview::SetPosition(const XMFLOAT3 &position) {
+  m_previewPosition = position;
+}
+
+void PlayerAnimationPreview::SetYaw(float yawRadians) {
+  m_previewYaw = yawRadians;
+}
 void PlayerAnimationPreview::BuildFrame(FrameData &frame) const {
   if (!m_ready)
     return;

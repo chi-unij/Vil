@@ -23,6 +23,7 @@
 #include "gridgame/StageData.h"
 #include "engine/Scene.h"
 #include "engine/SceneEditor.h"
+#include "game/BossArenaScene.h"
 #include "game/OverworldScene.h"
 #include "game/PlayerAnimationPreview.h"
 #include "game/TitleScreen.h"
@@ -414,6 +415,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     // CHI-35: Player / Idle / Walk / Run クリップ確認用プレビュー。
     PlayerAnimationPreview playerPreview;
     playerPreview.Initialize(dx);
+    BossArenaScene bossArenaScene;
+    bossArenaScene.Initialize(dx);
+    bossArenaScene.Reset(playerPreview);
     OverworldScene overworldScene;
     overworldScene.Initialize(dx);
     std::vector<OverworldScene::CollisionShapeConfig> overworldCollisionShapes =
@@ -421,6 +425,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     std::vector<CollisionSystem::Collider> overworldCollisionColliders =
         overworldScene.BuildCollisionColliders(overworldCollisionShapes);
     const std::vector<CollisionSystem::MeshTriangle> emptyMeshTriangles;
+    const std::vector<CollisionSystem::Collider> emptyCollisionColliders;
     bool showCollisionDebug = true;
     bool useModelMeshCollision = true;
     bool showModelCollisionDebug = true;
@@ -486,6 +491,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     bool gameTimeAuto = true;
     float gameHoursPerSecond = 0.25f;
     float gameRuntimeSeconds = 0.0f;
+    DirectX::XMFLOAT3 gameCameraPosition = {0.0f, 4.0f, -20.0f};
     float waterWaveHeight = 1.0f;
     float waterWaveSpeed = 1.0f;
     float waterWaveFrequency = 1.0f;
@@ -511,7 +517,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     bool gameFreeCameraEnabled = false;
 
     // ---- Editor/Game mode toggle (Milestone 4 Phase 0) ----
-    enum class AppMode { Title, Game, Editor };
+    enum class AppMode { Title, Game, BossArena, Editor };
     AppMode appMode = AppMode::Title;
     bool requestQuit = false;
     TitleScreen titleScreen;
@@ -657,7 +663,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       const bool uiWantsKeyboard = imgui.WantCaptureKeyboard();
 
       // Camera input routing — mode-dependent (Phase 6).
-      const bool isPlaying = appMode == AppMode::Game;
+      const bool isPlaying = appMode == AppMode::Game || appMode == AppMode::BossArena;
 
       // ゲーム中は通常カメラを固定し、設定で有効化した時だけデバッグ用フリーカメラを動かす。
       if (isPlaying && gameFreeCameraEnabled) {
@@ -798,18 +804,38 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         rainEmitter.Update(static_cast<double>(dt));
       }
 
-      if (appMode == AppMode::Game && !uiWantsKeyboard &&
-          !gameFreeCameraEnabled) {
-        playerPreview.Update(dt, input,
-                             OverworldScene::kFloorSizeMeters * 0.5f,
-                             overworldCollisionColliders,
-                             useModelMeshCollision
+      if ((appMode == AppMode::Game || appMode == AppMode::BossArena) &&
+          !uiWantsKeyboard && !gameFreeCameraEnabled) {
+        const bool inBossArena = appMode == AppMode::BossArena;
+        const bool bossPhoneActive =
+            inBossArena && bossArenaScene.IsPhoneOverlayActive();
+        if (bossPhoneActive) {
+          playerPreview.Update(dt);
+        } else {
+          playerPreview.Update(
+              dt, input,
+              inBossArena ? bossArenaScene.ArenaHalfExtent() + 6.0f
+                          : OverworldScene::kFloorSizeMeters * 0.5f,
+              inBossArena ? emptyCollisionColliders
+                          : overworldCollisionColliders,
+              inBossArena ? emptyMeshTriangles
+                          : (useModelMeshCollision
                                  ? overworldScene.StageCollisionTriangles()
-                                 : emptyMeshTriangles);
+                                 : emptyMeshTriangles));
+        }
+        if (inBossArena)
+          bossArenaScene.Update(dt, input, playerPreview);
         const DirectX::XMFLOAT3 playerPos = playerPreview.Position();
-        cam.SetPosition(playerPos.x, 4.0f, playerPos.z - 8.0f);
+        const DirectX::XMFLOAT3 targetCameraPos = {playerPos.x, 4.0f,
+                                                   playerPos.z - 8.0f};
+        const float cameraFollowT = std::clamp(dt * 7.5f, 0.0f, 1.0f);
+        gameCameraPosition = LerpFloat3(gameCameraPosition, targetCameraPos,
+                                        cameraFollowT);
+        cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
+                        gameCameraPosition.z);
         cam.SetYawPitch(0.0f, -0.28f);
-      } else if (appMode == AppMode::Game || appMode == AppMode::Editor) {
+      } else if (appMode == AppMode::Game || appMode == AppMode::BossArena ||
+                 appMode == AppMode::Editor) {
         playerPreview.Update(dt);
       }
 
@@ -835,9 +861,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
                                  static_cast<int>(window.Height()))) {
         case TitleScreen::Action::Start:
           TraceAppEvent("title action: start");
-          appMode = AppMode::Game;
+          appMode = AppMode::BossArena;
           gameRuntimeSeconds = 0.0f;
-          cam.SetPosition(0.0f, 4.0f, -8.0f);
+          bossArenaScene.Reset(playerPreview);
+          gameCameraPosition = {0.0f, 4.0f, -20.0f};
+          cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
+                          gameCameraPosition.z);
           cam.SetYawPitch(0.0f, -0.28f);
           cam.SetLens(DirectX::XM_PIDIV4,
                       static_cast<float>(window.Width()) /
@@ -861,7 +890,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         }
       }
 
-      if (appMode == AppMode::Game) {
+      if (appMode == AppMode::Game || appMode == AppMode::BossArena) {
         gameRuntimeSeconds += dt;
       }
 
@@ -953,7 +982,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         ImGui::End();
       }
 
-      if (appMode == AppMode::Game) {
+      if (appMode == AppMode::Game || appMode == AppMode::BossArena) {
         const DirectX::XMFLOAT3 cameraPos = cam.GetPosition();
         ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(260.0f, 0.0f), ImGuiCond_FirstUseEver);
@@ -1069,6 +1098,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       }
 
       // ---- ImGui debug windows ----
+      if (appMode == AppMode::BossArena) {
+        bossArenaScene.DrawHud(static_cast<int>(window.Width()),
+                               static_cast<int>(window.Height()));
+      }
+
       if (appMode == AppMode::Editor) {   
         imgui.DrawDebugWindow(cam, fpsValue, dt);
         ImGui::SetNextWindowCollapsed(true, ImGuiCond_FirstUseEver);
@@ -1136,8 +1170,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       using namespace DirectX;
       const auto &shadowCfg = editorScene.ShadowSettings();
       const XMFLOAT3 activeSunDirection =
-          appMode == AppMode::Game ? gameLighting.sunDirection
-                                   : editorScene.LightSettings().lightDir;
+          (appMode == AppMode::Game || appMode == AppMode::BossArena)
+              ? gameLighting.sunDirection
+              : editorScene.LightSettings().lightDir;
       const XMVECTOR raysDir =
           XMVector3Normalize(XMLoadFloat3(&activeSunDirection));
       const XMFLOAT3 camPosF = cam.GetPosition();
@@ -1166,7 +1201,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       frame.view = cam.View();
       frame.proj = cam.Proj(); // includes jitter when TAA is enabled
       frame.cameraPos = camPosF;
-      frame.gameTime = (appMode == AppMode::Game) ? gameRuntimeSeconds : t;
+      frame.gameTime = (appMode == AppMode::Game || appMode == AppMode::BossArena) ? gameRuntimeSeconds : t;
       frame.waterWaveParams = {waterWaveHeight, waterWaveSpeed,
                                waterWaveFrequency, 0.0f};
       frame.wetSurfaceParams = {wetSurfaceStrength, wetSurfaceDrySeconds,
@@ -1185,6 +1220,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       frame.clearColor[3] = 1.0f;
       frame.particlesEnabled = true;
       ApplySceneGlobalsToFrame(editorScene, frame);
+      if (appMode == AppMode::BossArena &&
+          bossArenaScene.IsPhoneOverlayActive()) {
+        frame.dofEnabled = true;
+        frame.dofFocalDistance = 0.8f;
+        frame.dofFocalRange = 0.35f;
+        frame.dofMaxBlur = 14.0f;
+      }
       // ゲームロジック未実装のため、エミッタは常に有効化条件のみで追加する。
       if (particlesEnabled && fireEnabled)
         frame.emitters.push_back(&fireEmitter);
@@ -1224,6 +1266,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         if (showModelCollisionDebug) {
           overworldScene.AppendStageCollisionDebugLines(frame);
         }
+        frame.skyExposure = gameSkyExposure;
+        frame.lighting.lightDir = gameLighting.sunDirection;
+        frame.lighting.lightColor = gameLighting.sunColor;
+        frame.lighting.lightIntensity = gameLighting.sunIntensity;
+        frame.lighting.iblIntensity = kGameIblIntensity;
+        frame.exposure = gamePostExposure;
+      } else if (appMode == AppMode::BossArena) {
+        bossArenaScene.BuildFrame(frame);
+        playerPreview.BuildFrame(frame);
         frame.skyExposure = gameSkyExposure;
         frame.lighting.lightDir = gameLighting.sunDirection;
         frame.lighting.lightColor = gameLighting.sunColor;
