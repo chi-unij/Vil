@@ -178,6 +178,8 @@ add_executable(SoloAssignment WIN32
     src/game/CollisionSystem.cpp
     src/game/OverworldScene.h
     src/game/OverworldScene.cpp
+    src/game/WorldRainParticles.h
+    src/game/WorldRainParticles.cpp
     src/game/PlayerAnimationPreview.h
     src/game/PlayerAnimationPreview.cpp
     src/game/TitleScreen.h

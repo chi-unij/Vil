@@ -26,6 +26,7 @@
 #include "game/OverworldScene.h"
 #include "game/PlayerAnimationPreview.h"
 #include "game/TitleScreen.h"
+#include "game/WorldRainParticles.h"
 
 #include <algorithm>
 #include <array>
@@ -440,6 +441,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     SparkEmitter sparkEmitter(256, sparkPos, 80.0, true);
     bool sparkEnabled = true;
 
+    RainEmitter rainEmitter(1024, OverworldScene::kFloorSizeMeters * 0.54f,
+                            12.0f, 0.18f, 760.0, true);
+    rainEmitter.WarmStart();
+    bool rainEnabled = true;
+
     // ---- Initialize post-processing (Phase 9) ----
     PostProcessRenderer postProcess;
     postProcess.Initialize(dx);
@@ -788,6 +794,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
           sparkEmitter.Update(static_cast<double>(dt));
       }
 
+      if (appMode == AppMode::Game && rainEnabled) {
+        rainEmitter.Update(static_cast<double>(dt));
+      }
+
       if (appMode == AppMode::Game && !uiWantsKeyboard &&
           !gameFreeCameraEnabled) {
         playerPreview.Update(dt, input,
@@ -978,6 +988,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         if (ImGui::Button("Afternoon")) {
           gameTimeOfDayHours = 12.0f;
         }
+        ImGui::Separator();
+        ImGui::Text("Weather");
+        ImGui::Checkbox("Rain Enabled", &rainEnabled);
+        ImGui::Text("Rain Particles: %zu", rainEmitter.GetCount());
         ImGui::Separator();
         ImGui::Text("Water");
         ImGui::SliderFloat("Wave Height", &waterWaveHeight, 0.0f, 3.0f,
@@ -1178,6 +1192,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         frame.emitters.push_back(&smokeEmitter);
       if (particlesEnabled && sparkEnabled)
         frame.emitters.push_back(&sparkEmitter);
+      if (appMode == AppMode::Game && rainEnabled)
+        frame.emitters.push_back(&rainEmitter);
 
       // Motion blur view-projection matrices (camera-dependent).
       {

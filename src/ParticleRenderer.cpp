@@ -66,10 +66,15 @@ std::string ParticleRenderer::ReloadShaders(DxContext &dx) {
   auto ps = CompileShaderSafe(L"shaders/particle.hlsl", "PSMain", "ps_5_0");
   if (vs.success && ps.success) {
     D3D12_INPUT_ELEMENT_DESC inputElems[] = {
-        {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 20, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-    };
+      {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12,
+       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 20,
+       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"PARAMS", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 36,
+       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+  };
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso{};
     pso.pRootSignature = m_rootSig.Get();
     pso.VS = {vs.bytecode->GetBufferPointer(), vs.bytecode->GetBufferSize()};
@@ -154,6 +159,8 @@ void ParticleRenderer::CreatePipeline(DxContext &dx) {
       {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12,
        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
       {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 20,
+       D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+      {"PARAMS", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 36,
        D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
   };
 
@@ -315,10 +322,11 @@ void ParticleRenderer::DrawParticles(DxContext &dx,
     for (size_t pi = 0; pi < emCount && offset < drawCount; ++pi, ++offset) {
       const ParticleVisual vis = em->GetParticle(pi)->GetVisual();
       const XMVECTOR center = XMLoadFloat3(&vis.position);
-      const float s = vis.scale;
+      const float sx = vis.size.x > 0.0f ? vis.size.x : vis.scale;
+      const float sy = vis.size.y > 0.0f ? vis.size.y : vis.scale;
 
-      XMVECTOR r = XMVectorScale(camRight, s);
-      XMVECTOR u = XMVectorScale(camUp, s);
+      XMVECTOR r = XMVectorScale(camRight, sx);
+      XMVECTOR u = XMVectorScale(camUp, sy);
 
       XMVECTOR positions[4] = {
           XMVectorAdd(center, XMVectorSubtract(u, r)),
@@ -334,6 +342,7 @@ void ParticleRenderer::DrawParticles(DxContext &dx,
         XMStoreFloat3(&vert.position, positions[v]);
         vert.uv = uvs[v];
         vert.color = vis.color;
+        vert.params = {vis.shape, vis.slant, 0.0f, 0.0f};
       }
     }
   }

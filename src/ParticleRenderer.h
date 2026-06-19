@@ -40,6 +40,7 @@ private:
     DirectX::XMFLOAT3 position; // world-space (billboard-expanded)
     DirectX::XMFLOAT2 uv;      // quad texture coordinate
     DirectX::XMFLOAT4 color;   // RGBA with alpha
+    DirectX::XMFLOAT4 params;  // x=shape, y=slant
   };
 
   Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;

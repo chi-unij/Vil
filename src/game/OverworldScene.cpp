@@ -156,14 +156,6 @@ void OverworldScene::Initialize(DxContext &dx) {
   waterMaterial.vertexDeformTypeId = 6.0f;
   m_waterMeshId = dx.CreateMeshResources(waterMesh, {}, waterMaterial);
 
-  const LoadedMesh waterDropMesh = ProceduralMesh::CreateSphere(1.0f, 8, 12);
-  Material waterDropMaterial = waterMaterial;
-  waterDropMaterial.baseColorFactor = {0.38f, 0.74f, 0.90f, 1.0f};
-  waterDropMaterial.roughnessFactor = 0.08f;
-  waterDropMaterial.emissiveFactor = {0.0f, 0.02f, 0.04f};
-  waterDropMaterial.proceduralTypeId = 6.0f;
-  waterDropMaterial.vertexDeformTypeId = 0.0f;
-  m_waterDropMeshId = dx.CreateMeshResources(waterDropMesh, {}, waterDropMaterial);
 
   const LoadedMesh castleWallMesh = ProceduralMesh::CreateCube(1.0f);
 
@@ -225,7 +217,6 @@ void OverworldScene::Initialize(DxContext &dx) {
   m_ready =
       (m_floorMeshId != UINT32_MAX && m_castleWallMeshId != UINT32_MAX &&
        m_waterMeshId != UINT32_MAX &&
-       m_waterDropMeshId != UINT32_MAX &&
        m_castleMerlonMeshId != UINT32_MAX &&
        m_castleTowerMeshId != UINT32_MAX);
 
@@ -266,7 +257,6 @@ void OverworldScene::BuildFrame(FrameData &frame) const {
   pushWater(m_waterMeshId, waterLongLength, waterWidth, 0.0f, -waterCenter);
   pushWater(m_waterMeshId, waterWidth, waterSideLength, waterCenter, 0.0f);
   pushWater(m_waterMeshId, waterWidth, waterSideLength, -waterCenter, 0.0f);
-  AppendWaterDropTest(frame);
 
   constexpr float wallThickness = 0.7f;
   constexpr float wallHeight = 4.8f;
@@ -398,53 +388,6 @@ void OverworldScene::SetWaterTransparency(DxContext &dx, float transparency) {
   mat.roughnessFactor = std::lerp(0.12f, 0.055f, t);
   mat.emissiveFactor = {0.0f, std::lerp(0.04f, 0.018f, t),
                         std::lerp(0.08f, 0.035f, t)};
-}
-
-void OverworldScene::AppendWaterDropTest(FrameData &frame) const {
-  if (m_waterDropMeshId == UINT32_MAX)
-    return;
-
-  constexpr int kDropCount = 72;
-  constexpr float kCycleSeconds = 2.6f;
-  constexpr float kDropHeight = 8.5f;
-  constexpr float kGroundY = 0.22f;
-  constexpr float kImpactRadius = 4.2f;
-
-  for (int i = 0; i < kDropCount; ++i) {
-    const float fi = static_cast<float>(i);
-    const float seedA = std::fmod(std::sin(fi * 12.9898f) * 43758.5453f, 1.0f);
-    const float seedB = std::fmod(std::sin(fi * 78.233f) * 24634.6345f, 1.0f);
-    const float u = seedA < 0.0f ? seedA + 1.0f : seedA;
-    const float v = seedB < 0.0f ? seedB + 1.0f : seedB;
-    const float angle = u * XM_2PI;
-    const float radius = std::sqrt(v) * kImpactRadius;
-    const float x = std::cos(angle) * radius;
-    const float z = std::sin(angle) * radius;
-    const float phaseOffset = fi / static_cast<float>(kDropCount);
-    float phase = std::fmod(frame.gameTime / kCycleSeconds + phaseOffset, 1.0f);
-    if (phase < 0.0f)
-      phase += 1.0f;
-
-    const float fallT = phase * phase;
-    const float y = kDropHeight + (kGroundY - kDropHeight) * fallT;
-    const float stretch = 1.0f + phase * 1.8f;
-    const float scale = 0.045f + 0.025f * (0.5f + 0.5f * std::sin(fi));
-
-    const XMMATRIX world =
-        XMMatrixScaling(scale * 0.75f, scale * stretch, scale * 0.75f) *
-        XMMatrixTranslation(x, y, z);
-    frame.opaqueItems.push_back({m_waterDropMeshId, world});
-
-    if (phase > 0.92f) {
-      const XMFLOAT4 splashColor = {0.25f, 0.75f, 1.0f, 0.85f};
-      constexpr float debugY = 0.09f;
-      const float splashR = 0.18f + (phase - 0.92f) * 2.0f;
-      PushDebugLine(frame, {x - splashR, debugY, z}, {x + splashR, debugY, z},
-                    splashColor);
-      PushDebugLine(frame, {x, debugY, z - splashR}, {x, debugY, z + splashR},
-                    splashColor);
-    }
-  }
 }
 
 std::vector<OverworldScene::CollisionShapeConfig>
