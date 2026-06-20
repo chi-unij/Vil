@@ -214,11 +214,80 @@ void OverworldScene::Initialize(DxContext &dx) {
       dx.CreateMeshResources(castleWallMesh, wallImages, castleMerlonMaterial);
   m_castleTowerMeshId =
       dx.CreateMeshResources(castleWallMesh, wallImages, castleTowerMaterial);
+
+  const LoadedMesh bossWarpMarkerMesh = ProceduralMesh::CreateCone(0.55f, 1.2f, 3);
+  Material bossWarpMarkerMaterial{};
+  bossWarpMarkerMaterial.baseColorFactor = {0.12f, 0.85f, 1.0f, 0.42f};
+  bossWarpMarkerMaterial.metallicFactor = 0.0f;
+  bossWarpMarkerMaterial.roughnessFactor = 0.18f;
+  bossWarpMarkerMaterial.emissiveFactor = {0.05f, 0.55f, 0.95f};
+  m_bossWarpMarkerMeshId =
+      dx.CreateMeshResources(bossWarpMarkerMesh, {}, bossWarpMarkerMaterial);
+
+  const LoadedMesh pathStoneMesh = ProceduralMesh::CreateCube(1.0f);
+  Material pathStoneMaterial{};
+  pathStoneMaterial.baseColorFactor = {0.28f, 0.31f, 0.27f, 1.0f};
+  pathStoneMaterial.metallicFactor = 0.0f;
+  pathStoneMaterial.roughnessFactor = 0.72f;
+  pathStoneMaterial.proceduralTypeId = 7.0f;
+  m_pathStoneMeshId =
+      dx.CreateMeshResources(pathStoneMesh, {}, pathStoneMaterial);
+
+  const LoadedMesh lanternPostMesh = ProceduralMesh::CreateCylinder(0.5f, 1.0f, 12);
+  Material lanternPostMaterial{};
+  lanternPostMaterial.baseColorFactor = {0.13f, 0.08f, 0.045f, 1.0f};
+  lanternPostMaterial.metallicFactor = 0.0f;
+  lanternPostMaterial.roughnessFactor = 0.65f;
+  m_lanternPostMeshId =
+      dx.CreateMeshResources(lanternPostMesh, {}, lanternPostMaterial);
+
+  const LoadedMesh lanternCapMesh = ProceduralMesh::CreateCube(1.0f);
+  Material lanternCapMaterial{};
+  lanternCapMaterial.baseColorFactor = {0.42f, 0.20f, 0.08f, 1.0f};
+  lanternCapMaterial.metallicFactor = 0.0f;
+  lanternCapMaterial.roughnessFactor = 0.58f;
+  m_lanternCapMeshId =
+      dx.CreateMeshResources(lanternCapMesh, {}, lanternCapMaterial);
+
+  const LoadedMesh lanternGlowMesh = ProceduralMesh::CreateSphere(0.5f, 8, 16);
+  Material lanternGlowMaterial{};
+  lanternGlowMaterial.baseColorFactor = {1.0f, 0.62f, 0.22f, 0.42f};
+  lanternGlowMaterial.metallicFactor = 0.0f;
+  lanternGlowMaterial.roughnessFactor = 0.18f;
+  lanternGlowMaterial.emissiveFactor = {1.6f, 0.70f, 0.22f};
+  m_lanternGlowMeshId =
+      dx.CreateMeshResources(lanternGlowMesh, {}, lanternGlowMaterial);
+
+  if (StageModel *lanternModel =
+          FindOrLoadModel(dx, "Assets/models/japanese_shrine_lantern.glb")) {
+    m_shrineLanternMeshIds = lanternModel->meshIds;
+    OutputDebugStringA("[OverworldScene] Japanese shrine lantern model loaded.\n");
+  } else {
+    OutputDebugStringA(
+        "[OverworldScene] WARNING: shrine lantern model not loaded; using procedural fallback.\n");
+  }
+
+  const LoadedMesh waystoneMesh = ProceduralMesh::CreateCube(1.0f);
+  Material waystoneMaterial{};
+  waystoneMaterial.baseColorFactor = {0.18f, 0.22f, 0.24f, 1.0f};
+  waystoneMaterial.metallicFactor = 0.0f;
+  waystoneMaterial.roughnessFactor = 0.9f;
+  waystoneMaterial.emissiveFactor = {0.0f, 0.025f, 0.04f};
+  waystoneMaterial.proceduralTypeId = 7.0f;
+  m_waystoneMeshId =
+      dx.CreateMeshResources(waystoneMesh, {}, waystoneMaterial);
+
   m_ready =
       (m_floorMeshId != UINT32_MAX && m_castleWallMeshId != UINT32_MAX &&
        m_waterMeshId != UINT32_MAX &&
        m_castleMerlonMeshId != UINT32_MAX &&
-       m_castleTowerMeshId != UINT32_MAX);
+       m_castleTowerMeshId != UINT32_MAX &&
+       m_bossWarpMarkerMeshId != UINT32_MAX &&
+       m_pathStoneMeshId != UINT32_MAX &&
+       m_lanternPostMeshId != UINT32_MAX &&
+       m_lanternCapMeshId != UINT32_MAX &&
+       m_lanternGlowMeshId != UINT32_MAX &&
+       m_waystoneMeshId != UINT32_MAX);
 
   if (m_ready) {
     OutputDebugStringA(
@@ -347,6 +416,8 @@ void OverworldScene::BuildFrame(FrameData &frame) const {
     frame.opaqueItems.push_back({object.meshId, world});
   }
 
+  AppendWorldPolishProps(frame);
+
   const auto &forestDebug = m_backgroundForestDebug;
   if (forestDebug.enabled && !m_backgroundForestMeshIds.empty()) {
     int drawnClusters = 0;
@@ -373,6 +444,128 @@ void OverworldScene::BuildFrame(FrameData &frame) const {
       ++drawnClusters;
     }
   }
+
+  // BossArena へ接続するワープ地点。半透明の三角マーカーを上下に揺らす。
+  const XMFLOAT3 warpPos = BossWarpPosition();
+  const float warpBob = std::sin(frame.gameTime * 2.8f) * 0.22f;
+  const float warpSpin = frame.gameTime * 1.2f;
+  const XMMATRIX warpMarkerWorld =
+      XMMatrixScaling(1.35f, 1.35f, 1.35f) *
+      XMMatrixRotationX(XM_PI) * XMMatrixRotationY(warpSpin) *
+      XMMatrixTranslation(warpPos.x, 2.30f + warpBob, warpPos.z);
+  frame.transparentItems.push_back({m_bossWarpMarkerMeshId, warpMarkerWorld});
+
+  GPUPointLight warpLight{};
+  warpLight.position = {warpPos.x, 1.0f + warpBob * 0.35f, warpPos.z};
+  warpLight.range = 5.0f;
+  warpLight.color = {0.18f, 0.85f, 1.0f};
+  warpLight.intensity = 1.8f;
+  frame.pointLights.push_back(warpLight);
+}
+
+void OverworldScene::AppendWorldPolishProps(FrameData &frame) const {
+  if (m_pathStoneMeshId == UINT32_MAX ||
+      m_lanternPostMeshId == UINT32_MAX ||
+      m_lanternCapMeshId == UINT32_MAX ||
+      m_lanternGlowMeshId == UINT32_MAX ||
+      m_waystoneMeshId == UINT32_MAX) {
+    return;
+  }
+
+  auto pushOpaque = [&frame](uint32_t meshId, float sx, float sy, float sz,
+                             float x, float y, float z, float yawRadians) {
+    const XMMATRIX world =
+        XMMatrixScaling(sx, sy, sz) * XMMatrixRotationY(yawRadians) *
+        XMMatrixTranslation(x, y, z);
+    frame.opaqueItems.push_back({meshId, world});
+  };
+
+  auto pushTransparent = [&frame](uint32_t meshId, float sx, float sy, float sz,
+                                  float x, float y, float z,
+                                  float yawRadians) {
+    const XMMATRIX world =
+        XMMatrixScaling(sx, sy, sz) * XMMatrixRotationY(yawRadians) *
+        XMMatrixTranslation(x, y, z);
+    frame.transparentItems.push_back({meshId, world});
+  };
+
+  for (int i = 0; i < 15; ++i) {
+    const float t = static_cast<float>(i) / 14.0f;
+    const float z = -16.8f + t * 37.2f;
+    const float x = std::sin(t * XM_2PI * 1.35f) * 0.38f;
+    const float yaw = std::sin(t * XM_2PI * 2.1f) * 0.22f;
+    const float width = 1.20f + 0.24f * (i % 3 == 0 ? 1.0f : 0.0f);
+    const float depth = 0.58f + 0.16f * (i % 2 == 0 ? 1.0f : 0.0f);
+    pushOpaque(m_pathStoneMeshId, width, 0.075f, depth, x, 0.055f, z, yaw);
+  }
+
+  struct LanternPlacement {
+    float x;
+    float z;
+    float yaw;
+    float intensity;
+  };
+  const LanternPlacement lanterns[] = {
+      {-4.3f, -14.0f, 0.18f, 0.62f}, {4.2f, -10.0f, -0.22f, 0.58f},
+      {-4.7f, -5.4f, 0.08f, 0.54f},  {4.6f, -1.0f, -0.18f, 0.54f},
+      {-4.5f, 4.2f, 0.20f, 0.60f},   {4.7f, 9.0f, -0.12f, 0.62f},
+      {-4.1f, 14.8f, 0.16f, 0.66f},   {4.0f, 19.2f, -0.20f, 0.74f},
+  };
+
+  for (const LanternPlacement &lantern : lanterns) {
+    if (!m_shrineLanternMeshIds.empty()) {
+      for (uint32_t meshId : m_shrineLanternMeshIds) {
+        pushOpaque(meshId, 0.78f, 0.78f, 0.78f, lantern.x, 0.0f,
+                   lantern.z, lantern.yaw);
+      }
+    } else {
+      pushOpaque(m_lanternPostMeshId, 0.15f, 1.62f, 0.15f, lantern.x, 0.82f,
+                 lantern.z, lantern.yaw);
+      pushOpaque(m_lanternCapMeshId, 0.62f, 0.18f, 0.62f, lantern.x, 1.68f,
+                 lantern.z, lantern.yaw + 0.35f);
+    }
+    pushTransparent(m_lanternGlowMeshId, 0.46f, 0.46f, 0.46f, lantern.x,
+                    1.12f, lantern.z, 0.0f);
+
+    GPUPointLight light{};
+    light.position = {lantern.x, 1.12f, lantern.z};
+    light.range = 3.7f;
+    light.color = {1.0f, 0.58f, 0.22f};
+    light.intensity = lantern.intensity * 0.88f;
+    frame.pointLights.push_back(light);
+  }
+
+  struct WaystonePlacement {
+    float x;
+    float z;
+    float yaw;
+    float height;
+  };
+  const WaystonePlacement waystones[] = {
+      {-7.8f, 6.2f, 0.45f, 1.35f}, {7.4f, 7.5f, -0.38f, 1.15f},
+      {-2.2f, 18.2f, 0.18f, 1.50f}, {2.2f, 18.2f, -0.18f, 1.50f},
+  };
+
+  for (const WaystonePlacement &stone : waystones) {
+    pushOpaque(m_waystoneMeshId, 0.48f, stone.height, 0.28f, stone.x,
+               stone.height * 0.5f, stone.z, stone.yaw);
+  }
+}
+XMFLOAT3 OverworldScene::PlayerSpawnPosition() const {
+  return {0.0f, 0.0f, -18.0f};
+}
+
+XMFLOAT3 OverworldScene::BossWarpPosition() const {
+  return {0.0f, 0.0f, 22.0f};
+}
+
+bool OverworldScene::IsPlayerInsideBossWarp(
+    const XMFLOAT3 &playerPosition) const {
+  const XMFLOAT3 warpPos = BossWarpPosition();
+  const float dx = playerPosition.x - warpPos.x;
+  const float dz = playerPosition.z - warpPos.z;
+  return dx * dx + dz * dz <=
+         kBossWarpRadiusMeters * kBossWarpRadiusMeters;
 }
 
 void OverworldScene::SetWaterTransparency(DxContext &dx, float transparency) {

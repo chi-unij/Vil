@@ -426,9 +426,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         overworldScene.BuildCollisionColliders(overworldCollisionShapes);
     const std::vector<CollisionSystem::MeshTriangle> emptyMeshTriangles;
     const std::vector<CollisionSystem::Collider> emptyCollisionColliders;
-    bool showCollisionDebug = true;
+    bool showCollisionDebug = false;
     bool useModelMeshCollision = true;
-    bool showModelCollisionDebug = true;
+    bool showModelCollisionDebug = false;
 
     // Initialize particle system.
     dx.InitParticleRenderer();
@@ -806,7 +806,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
 
       if ((appMode == AppMode::Game || appMode == AppMode::BossArena) &&
           !uiWantsKeyboard && !gameFreeCameraEnabled) {
-        const bool inBossArena = appMode == AppMode::BossArena;
+        bool inBossArena = appMode == AppMode::BossArena;
         const bool bossPhoneActive =
             inBossArena && bossArenaScene.IsPhoneOverlayActive();
         if (bossPhoneActive) {
@@ -822,12 +822,21 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
                           : (useModelMeshCollision
                                  ? overworldScene.StageCollisionTriangles()
                                  : emptyMeshTriangles));
+          if (!inBossArena &&
+              overworldScene.IsPlayerInsideBossWarp(
+                  playerPreview.Position())) {
+            TraceAppEvent("overworld warp: boss arena");
+            appMode = AppMode::BossArena;
+            inBossArena = true;
+            bossArenaScene.Reset(playerPreview);
+            gameCameraPosition = {0.0f, 4.0f, -20.0f};
+          }
         }
         if (inBossArena)
           bossArenaScene.Update(dt, input, playerPreview);
         const DirectX::XMFLOAT3 playerPos = playerPreview.Position();
-        const DirectX::XMFLOAT3 targetCameraPos = {playerPos.x, 4.0f,
-                                                   playerPos.z - 8.0f};
+        const DirectX::XMFLOAT3 targetCameraPos = {playerPos.x, 3.2f,
+                                                   playerPos.z - 5.8f};
         const float cameraFollowT = std::clamp(dt * 7.5f, 0.0f, 1.0f);
         gameCameraPosition = LerpFloat3(gameCameraPosition, targetCameraPos,
                                         cameraFollowT);
@@ -861,10 +870,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
                                  static_cast<int>(window.Height()))) {
         case TitleScreen::Action::Start:
           TraceAppEvent("title action: start");
-          appMode = AppMode::BossArena;
+          appMode = AppMode::Game;
           gameRuntimeSeconds = 0.0f;
-          bossArenaScene.Reset(playerPreview);
-          gameCameraPosition = {0.0f, 4.0f, -20.0f};
+          playerPreview.SetPosition(overworldScene.PlayerSpawnPosition());
+          playerPreview.SetYaw(0.0f);
+          {
+            const DirectX::XMFLOAT3 spawn = playerPreview.Position();
+            gameCameraPosition = {spawn.x, 3.2f, spawn.z - 5.8f};
+          }
           cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
                           gameCameraPosition.z);
           cam.SetYawPitch(0.0f, -0.28f);
