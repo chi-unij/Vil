@@ -814,7 +814,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         } else {
           playerPreview.Update(
               dt, input,
-              inBossArena ? bossArenaScene.ArenaHalfExtent() + 6.0f
+              inBossArena
+                  ? (bossArenaScene.DebugNoClipEnabled()
+                         ? 1000.0f
+                         : bossArenaScene.ArenaHalfExtent() + 6.0f)
                           : OverworldScene::kFloorSizeMeters * 0.5f,
               inBossArena ? emptyCollisionColliders
                           : overworldCollisionColliders,
@@ -1287,7 +1290,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         frame.exposure = gamePostExposure;
       } else if (appMode == AppMode::BossArena) {
         bossArenaScene.BuildFrame(frame);
-        playerPreview.BuildFrame(frame);
+        if (!bossArenaScene.DebugInvisibleEnabled())
+          playerPreview.BuildFrame(frame);
         frame.skyExposure = gameSkyExposure;
         frame.lighting.lightDir = gameLighting.sunDirection;
         frame.lighting.lightColor = gameLighting.sunColor;

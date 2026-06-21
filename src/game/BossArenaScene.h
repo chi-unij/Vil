@@ -7,6 +7,8 @@
 #include <DirectXMath.h>
 #include <array>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 class PlayerAnimationPreview;
 
@@ -29,6 +31,8 @@ public:
   bool IsPhoneOverlayActive() const {
     return m_phoneOpen || m_phoneSlide > 0.05f;
   }
+  bool DebugNoClipEnabled() const { return m_debugNoClip; }
+  bool DebugInvisibleEnabled() const { return m_debugInvisible; }
 
 private:
   enum class AttackPhase {
@@ -53,6 +57,7 @@ private:
   bool AreMirrorDotsPlaced() const;
   float MirrorRandom01(uint32_t salt) const;
   float TelegraphDuration() const;
+  void AppendWorldPolish(FrameData &frame) const;
 
   uint32_t m_floorMeshId = UINT32_MAX;
   uint32_t m_bossMeshId = UINT32_MAX;
@@ -60,6 +65,20 @@ private:
   uint32_t m_laserTelegraphMeshId = UINT32_MAX;
   uint32_t m_knockbackTelegraphMeshId = UINT32_MAX;
   uint32_t m_flameMeshId = UINT32_MAX;
+  uint32_t m_pathGlowMeshId = UINT32_MAX;
+  uint32_t m_sideMistMeshId = UINT32_MAX;
+  uint32_t m_bossSealMeshId = UINT32_MAX;
+  uint32_t m_pathStoneMeshId = UINT32_MAX;
+  uint32_t m_pathEdgeMeshId = UINT32_MAX;
+  uint32_t m_toriiWoodMeshId = UINT32_MAX;
+  uint32_t m_mossBankMeshId = UINT32_MAX;
+  uint32_t m_lanternPostMeshId = UINT32_MAX;
+  uint32_t m_lanternCapMeshId = UINT32_MAX;
+  uint32_t m_lanternGlowMeshId = UINT32_MAX;
+  std::vector<uint32_t> m_shrineMeshIds;
+  std::vector<uint32_t> m_lanternMeshIds;
+  std::vector<uint32_t> m_toriiGateMeshIds;
+  std::vector<uint32_t> m_shrineGateMeshIds;
   bool m_ready = false;
 
   AttackType m_attack = AttackType::MeteorAoE;
@@ -87,6 +106,8 @@ private:
   float m_knockbackTimer = 0.0f;
   bool m_failed = false;
   bool m_cleared = false;
+  bool m_debugNoClip = false;
+  bool m_debugInvisible = false;
 
   bool m_phoneOpen = false;
   bool m_phoneSpaceWasDown = false;

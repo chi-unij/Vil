@@ -1,12 +1,15 @@
 #include "game/BossArenaScene.h"
 
+#include "GltfLoader.h"
 #include "MeshRenderer.h"
 #include "ProceduralMesh.h"
 #include "game/PlayerAnimationPreview.h"
 
 #include <DirectXMath.h>
+#include <Windows.h>
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <imgui.h>
 
 using namespace DirectX;
@@ -68,6 +71,50 @@ float EaseOutCubic(float t) {
 
 ImU32 Rgba(float r, float g, float b, float a) {
   return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
+}
+
+std::string ResolveBossArenaAssetPath(const std::string &path) {
+  namespace fs = std::filesystem;
+
+  const fs::path direct(path);
+  const fs::path sourceFromBuild = fs::path("..") / ".." / ".." / path;
+  if (fs::exists(sourceFromBuild))
+    return sourceFromBuild.generic_string();
+  if (fs::exists(direct))
+    return direct.generic_string();
+  return path;
+}
+
+bool LoadBossArenaModelMeshIds(DxContext &dx, const std::string &path,
+                               std::vector<uint32_t> &outMeshIds) {
+  const std::string resolvedPath = ResolveBossArenaAssetPath(path);
+  std::vector<LoadedMeshPart> parts;
+  if (!LoadStaticModelParts(resolvedPath, parts)) {
+    OutputDebugStringA("[BossArenaScene] WARNING: model load failed: ");
+    OutputDebugStringA(resolvedPath.c_str());
+    OutputDebugStringA("\n");
+    return false;
+  }
+
+  for (const LoadedMeshPart &part : parts) {
+    const uint32_t meshId =
+        dx.CreateMeshResources(part.mesh, part.GetMaterialImages(),
+                               part.material);
+    if (meshId != UINT32_MAX)
+      outMeshIds.push_back(meshId);
+  }
+
+  if (outMeshIds.empty()) {
+    OutputDebugStringA("[BossArenaScene] WARNING: no mesh uploaded for model: ");
+    OutputDebugStringA(resolvedPath.c_str());
+    OutputDebugStringA("\n");
+    return false;
+  }
+
+  OutputDebugStringA("[BossArenaScene] model loaded: ");
+  OutputDebugStringA(resolvedPath.c_str());
+  OutputDebugStringA("\n");
+  return true;
 }
 
 float SmoothPulse(float time, float speed, float floor = 0.0f) {
@@ -194,6 +241,10 @@ void BossArenaScene::Initialize(DxContext &dx) {
   const LoadedMesh diskMesh = CreateUnitDiskMesh(96);
   const LoadedMesh telegraphPlane = ProceduralMesh::CreatePlane(1.0f, 1.0f);
   const LoadedMesh flameCardMesh = CreateFlameCardMesh();
+  const LoadedMesh cubeMesh = ProceduralMesh::CreateCube(1.0f);
+  const LoadedMesh lanternPostMesh =
+      ProceduralMesh::CreateCylinder(0.5f, 1.0f, 12);
+  const LoadedMesh lanternGlowMesh = ProceduralMesh::CreateSphere(0.5f, 8, 16);
 
   m_aoeTelegraphMeshId = dx.CreateMeshResources(
       diskMesh, {},
@@ -211,12 +262,86 @@ void BossArenaScene::Initialize(DxContext &dx) {
       flameCardMesh, {},
       MakeTelegraphMaterial({1.0f, 0.22f, 0.02f, 0.78f},
                             {2.2f, 0.42f, 0.06f}));
+  m_pathGlowMeshId = dx.CreateMeshResources(
+      telegraphPlane, {},
+      MakeTelegraphMaterial({0.18f, 0.78f, 0.72f, 0.20f},
+                            {0.08f, 0.42f, 0.38f}));
+  m_sideMistMeshId = dx.CreateMeshResources(
+      telegraphPlane, {},
+      MakeTelegraphMaterial({0.18f, 0.26f, 0.28f, 0.17f},
+                            {0.05f, 0.10f, 0.12f}));
+  m_bossSealMeshId = dx.CreateMeshResources(
+      diskMesh, {},
+      MakeTelegraphMaterial({0.95f, 0.12f, 0.04f, 0.30f},
+                            {1.2f, 0.18f, 0.05f}));
+
+  Material pathStoneMaterial{};
+  pathStoneMaterial.baseColorFactor = {0.28f, 0.30f, 0.28f, 1.0f};
+  pathStoneMaterial.roughnessFactor = 0.96f;
+  pathStoneMaterial.proceduralTypeId = 7.0f;
+  m_pathStoneMeshId = dx.CreateMeshResources(cubeMesh, {}, pathStoneMaterial);
+
+  Material pathEdgeMaterial{};
+  pathEdgeMaterial.baseColorFactor = {0.10f, 0.34f, 0.31f, 1.0f};
+  pathEdgeMaterial.emissiveFactor = {0.04f, 0.22f, 0.18f};
+  pathEdgeMaterial.roughnessFactor = 0.58f;
+  m_pathEdgeMeshId = dx.CreateMeshResources(cubeMesh, {}, pathEdgeMaterial);
+
+  Material toriiWoodMaterial{};
+  toriiWoodMaterial.baseColorFactor = {0.42f, 0.035f, 0.018f, 1.0f};
+  toriiWoodMaterial.emissiveFactor = {0.12f, 0.012f, 0.004f};
+  toriiWoodMaterial.roughnessFactor = 0.72f;
+  m_toriiWoodMeshId = dx.CreateMeshResources(cubeMesh, {}, toriiWoodMaterial);
+
+  Material mossBankMaterial{};
+  mossBankMaterial.baseColorFactor = {0.10f, 0.19f, 0.12f, 1.0f};
+  mossBankMaterial.roughnessFactor = 0.98f;
+  mossBankMaterial.proceduralTypeId = 7.0f;
+  m_mossBankMeshId = dx.CreateMeshResources(cubeMesh, {}, mossBankMaterial);
+
+  Material lanternPostMaterial{};
+  lanternPostMaterial.baseColorFactor = {0.16f, 0.08f, 0.04f, 1.0f};
+  lanternPostMaterial.roughnessFactor = 0.75f;
+  m_lanternPostMeshId =
+      dx.CreateMeshResources(lanternPostMesh, {}, lanternPostMaterial);
+
+  Material lanternCapMaterial{};
+  lanternCapMaterial.baseColorFactor = {0.09f, 0.055f, 0.035f, 1.0f};
+  lanternCapMaterial.roughnessFactor = 0.68f;
+  m_lanternCapMeshId =
+      dx.CreateMeshResources(cubeMesh, {}, lanternCapMaterial);
+
+  Material lanternGlowMaterial{};
+  lanternGlowMaterial.baseColorFactor = {1.0f, 0.48f, 0.18f, 0.62f};
+  lanternGlowMaterial.emissiveFactor = {1.4f, 0.42f, 0.08f};
+  lanternGlowMaterial.roughnessFactor = 0.24f;
+  m_lanternGlowMeshId =
+      dx.CreateMeshResources(lanternGlowMesh, {}, lanternGlowMaterial);
+
+  LoadBossArenaModelMeshIds(dx, "Assets/models/japanese_shrine_lantern.glb",
+                            m_lanternMeshIds);
+  LoadBossArenaModelMeshIds(dx, "Assets/models/japanese_shrine/scene.gltf",
+                            m_shrineMeshIds);
+  LoadBossArenaModelMeshIds(dx, "Assets/models/torii-gate/source/Test1.glb",
+                            m_toriiGateMeshIds);
+  LoadBossArenaModelMeshIds(dx, "Assets/models/shrine_gate.glb",
+                            m_shrineGateMeshIds);
 
   m_ready = (m_floorMeshId != UINT32_MAX && m_bossMeshId != UINT32_MAX &&
              m_aoeTelegraphMeshId != UINT32_MAX &&
              m_laserTelegraphMeshId != UINT32_MAX &&
              m_knockbackTelegraphMeshId != UINT32_MAX &&
-             m_flameMeshId != UINT32_MAX);
+             m_flameMeshId != UINT32_MAX &&
+             m_pathGlowMeshId != UINT32_MAX &&
+             m_sideMistMeshId != UINT32_MAX &&
+             m_bossSealMeshId != UINT32_MAX &&
+             m_pathStoneMeshId != UINT32_MAX &&
+             m_pathEdgeMeshId != UINT32_MAX &&
+             m_toriiWoodMeshId != UINT32_MAX &&
+             m_mossBankMeshId != UINT32_MAX &&
+             m_lanternPostMeshId != UINT32_MAX &&
+             m_lanternCapMeshId != UINT32_MAX &&
+             m_lanternGlowMeshId != UINT32_MAX);
 }
 
 void BossArenaScene::Reset(PlayerAnimationPreview &player) {
@@ -261,7 +386,7 @@ void BossArenaScene::Update(float dt, const Input &input,
   if (m_failed || m_cleared)
     return;
 
-  if (m_knockbackTimer > 0.0f) {
+  if (!m_debugNoClip && m_knockbackTimer > 0.0f) {
     XMFLOAT3 knockbackPos = player.Position();
     knockbackPos.x += m_knockbackVelocity.x * dt;
     knockbackPos.z += m_knockbackVelocity.z * dt;
@@ -270,8 +395,8 @@ void BossArenaScene::Update(float dt, const Input &input,
   }
 
   const XMFLOAT3 playerPos = player.Position();
-  if (std::abs(playerPos.x) > kArenaHalfExtent ||
-      std::abs(playerPos.z) > kArenaHalfExtent) {
+  if (!m_debugNoClip && (std::abs(playerPos.x) > kArenaHalfExtent ||
+                         std::abs(playerPos.z) > kArenaHalfExtent)) {
     m_playerHp = 0;
     m_failed = true;
     m_lastHitPosition = playerPos;
@@ -317,6 +442,7 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
     return;
 
   frame.opaqueItems.push_back({m_floorMeshId, XMMatrixIdentity()});
+  AppendWorldPolish(frame);
 
   const float bossHitT = std::clamp(m_bossHitShakeTimer / 0.62f, 0.0f, 1.0f);
   const float bossShake =
@@ -452,6 +578,14 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
     PushThickCircle(frame, bossBase, ringA, mirrorColor, 3);
     PushThickCircle(frame, bossBase, ringB, mirrorColor, 2);
 
+    const XMFLOAT4 pathRayColor{0.58f, 1.0f, 0.92f, counterT};
+    PushLine(frame, {0.0f, 0.24f, -kArenaHalfExtent + 2.4f},
+             {bossBase.x, 0.30f, bossBase.z}, pathRayColor);
+    PushLine(frame, {-3.75f, 0.19f, -kArenaHalfExtent + 4.2f},
+             {bossBase.x - 0.9f, 0.26f, bossBase.z - 0.55f}, pathRayColor);
+    PushLine(frame, {3.75f, 0.19f, -kArenaHalfExtent + 4.2f},
+             {bossBase.x + 0.9f, 0.26f, bossBase.z - 0.55f}, pathRayColor);
+
     constexpr int kCounterRays = 24;
     for (int i = 0; i < kCounterRays; ++i) {
       const float a = (static_cast<float>(i) / kCounterRays) * XM_2PI +
@@ -479,6 +613,189 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
   bossLight.color = {1.0f, 0.15f, 0.08f};
   bossLight.intensity = 5.2f + bossHitT * 4.0f;
   frame.pointLights.push_back(bossLight);
+}
+
+void BossArenaScene::AppendWorldPolish(FrameData &frame) const {
+  constexpr float pathHalfWidth = 4.35f;
+  constexpr float pathEdgeWidth = 5.15f;
+  constexpr float pathLength = kArenaHalfExtent * 2.0f;
+  constexpr float kSides[2] = {-1.0f, 1.0f};
+  const float time = frame.gameTime;
+  const float scroll = std::fmod(time * 5.4f, pathLength);
+  const float pulse = SmoothPulse(time, 3.1f, 0.45f);
+
+  auto pushOpaque = [&frame](uint32_t meshId, const XMMATRIX &world) {
+    if (meshId != UINT32_MAX)
+      frame.opaqueItems.push_back({meshId, world});
+  };
+  auto pushTransparent = [&frame](uint32_t meshId, const XMMATRIX &world) {
+    if (meshId != UINT32_MAX)
+      frame.transparentItems.push_back({meshId, world});
+  };
+  auto pushMeshGroup = [&frame](const std::vector<uint32_t> &meshIds,
+                                const XMMATRIX &world) {
+    for (uint32_t meshId : meshIds) {
+      if (meshId != UINT32_MAX)
+        frame.opaqueItems.push_back({meshId, world});
+    }
+  };
+  auto cubeWorld = [](float sx, float sy, float sz, float x, float y, float z,
+                      float yaw = 0.0f) {
+    return XMMatrixScaling(sx, sy, sz) * XMMatrixRotationY(yaw) *
+           XMMatrixTranslation(x, y, z);
+  };
+  auto addTorii = [&](float x, float z, float scale, float yaw) {
+    if (!m_toriiGateMeshIds.empty()) {
+      const float modelScale = scale * 3.65f;
+      pushMeshGroup(m_toriiGateMeshIds,
+                    XMMatrixScaling(modelScale, modelScale, modelScale) *
+                        XMMatrixRotationX(XM_PIDIV2) *
+                        XMMatrixRotationY(yaw) *
+                        XMMatrixTranslation(x, 0.02f, z));
+      return;
+    }
+
+    const float postX = 1.35f * scale;
+    const float postHeight = 3.7f * scale;
+    const float postWidth = 0.34f * scale;
+    pushOpaque(m_toriiWoodMeshId,
+               cubeWorld(postWidth, postHeight, postWidth, x - postX,
+                         postHeight * 0.5f, z, yaw));
+    pushOpaque(m_toriiWoodMeshId,
+               cubeWorld(postWidth, postHeight, postWidth, x + postX,
+                         postHeight * 0.5f, z, yaw));
+    pushOpaque(m_toriiWoodMeshId,
+               cubeWorld(4.2f * scale, 0.36f * scale, 0.42f * scale, x,
+                         postHeight + 0.10f * scale, z, yaw));
+    pushOpaque(m_toriiWoodMeshId,
+               cubeWorld(4.9f * scale, 0.28f * scale, 0.46f * scale, x,
+                         postHeight + 0.58f * scale, z, yaw));
+    pushOpaque(m_toriiWoodMeshId,
+               cubeWorld(2.0f * scale, 0.22f * scale, 0.36f * scale, x,
+                         postHeight - 0.54f * scale, z, yaw));
+  };
+  auto addProceduralLantern = [&](float x, float z, float scale) {
+    pushOpaque(m_lanternPostMeshId,
+               cubeWorld(0.18f * scale, 1.65f * scale, 0.18f * scale, x,
+                         0.82f * scale, z));
+    pushOpaque(m_lanternCapMeshId,
+               cubeWorld(0.82f * scale, 0.18f * scale, 0.82f * scale, x,
+                         1.72f * scale, z));
+    pushOpaque(m_lanternCapMeshId,
+               cubeWorld(0.58f * scale, 0.44f * scale, 0.58f * scale, x,
+                         1.38f * scale, z));
+    pushTransparent(m_lanternGlowMeshId,
+                    XMMatrixScaling(0.36f * scale, 0.36f * scale,
+                                    0.36f * scale) *
+                        XMMatrixTranslation(x, 1.38f * scale, z));
+  };
+
+  for (int i = 0; i < 17; ++i) {
+    const float fi = static_cast<float>(i);
+    const float z = -16.6f + fi * 2.05f;
+    const float width = 3.35f + static_cast<float>(i % 4) * 0.26f;
+    const float length = 1.48f + static_cast<float>((i + 1) % 3) * 0.22f;
+    const float x = (static_cast<float>((i * 37) % 5) - 2.0f) * 0.13f;
+    const float yaw = (static_cast<float>((i * 19) % 7) - 3.0f) * 0.018f;
+    pushOpaque(m_pathStoneMeshId,
+               cubeWorld(width, 0.12f, length, x, 0.035f, z, yaw));
+  }
+
+  pushOpaque(m_pathEdgeMeshId,
+             cubeWorld(0.22f, 0.12f, pathLength, -pathEdgeWidth, 0.075f, 0.0f));
+  pushOpaque(m_pathEdgeMeshId,
+             cubeWorld(0.22f, 0.12f, pathLength, pathEdgeWidth, 0.075f, 0.0f));
+  for (float side : kSides) {
+    pushOpaque(m_mossBankMeshId,
+               cubeWorld(4.4f, 0.075f, pathLength, side * 7.55f, 0.02f,
+                         0.0f));
+    pushOpaque(m_mossBankMeshId,
+               cubeWorld(3.2f, 0.06f, pathLength, side * 13.0f, 0.015f,
+                         0.0f));
+  }
+
+  frame.transparentItems.push_back(
+      {m_pathGlowMeshId,
+       XMMatrixScaling(pathHalfWidth * 2.0f, 1.0f, pathLength) *
+           XMMatrixTranslation(0.0f, 0.046f, 0.0f)});
+  frame.transparentItems.push_back(
+      {m_pathGlowMeshId,
+       XMMatrixScaling(1.15f + pulse * 0.35f, 1.0f, pathLength) *
+           XMMatrixTranslation(0.0f, 0.052f, 0.0f)});
+
+  for (float side : kSides) {
+    frame.transparentItems.push_back(
+        {m_sideMistMeshId,
+         XMMatrixScaling(5.6f, 1.0f, pathLength) *
+             XMMatrixTranslation(side * 10.7f, 0.043f, 0.0f)});
+    frame.transparentItems.push_back(
+        {m_sideMistMeshId,
+         XMMatrixScaling(3.2f, 1.0f, pathLength) *
+             XMMatrixTranslation(side * 14.4f, 0.049f, 0.0f)});
+  }
+
+  const float sealPulse = 1.0f + 0.08f * SmoothPulse(time, 5.8f, 0.0f);
+  frame.transparentItems.push_back(
+      {m_bossSealMeshId,
+       XMMatrixScaling(5.9f * sealPulse, 1.0f, 5.9f * sealPulse) *
+           XMMatrixTranslation(0.0f, 0.058f, kArenaHalfExtent - 3.5f)});
+
+  constexpr int kFlowLineCount = 12;
+  for (int i = 0; i < kFlowLineCount; ++i) {
+    float z = -kArenaHalfExtent +
+              std::fmod(scroll + static_cast<float>(i) * 3.0f, pathLength);
+    const float centerFade =
+        1.0f - std::min(1.0f, std::abs(z) / (kArenaHalfExtent + 0.01f));
+    const XMFLOAT4 flowColor{0.36f, 1.0f, 0.88f, 0.18f + centerFade * 0.24f};
+    PushLine(frame, {-0.65f, 0.092f, z}, {0.65f, 0.092f, z + 0.55f},
+             flowColor);
+  }
+
+  for (int i = 0; i < 4; ++i) {
+    const float z = -14.0f + static_cast<float>(i) * 8.3f;
+    const float scale = 0.84f + static_cast<float>(i % 2) * 0.12f;
+    addTorii(-11.5f, z, scale, 0.0f);
+    addTorii(11.5f, z + 4.2f, scale * 0.92f, 0.0f);
+  }
+  if (!m_shrineGateMeshIds.empty()) {
+    pushMeshGroup(m_shrineGateMeshIds,
+                  XMMatrixScaling(0.24f, 0.24f, 0.24f) *
+                      XMMatrixTranslation(0.0f, 0.76f,
+                                          kArenaHalfExtent + 2.6f));
+  } else {
+    addTorii(0.0f, kArenaHalfExtent - 1.2f, 1.92f, 0.0f);
+  }
+
+  if (m_shrineGateMeshIds.empty() && !m_shrineMeshIds.empty()) {
+    pushMeshGroup(m_shrineMeshIds,
+                  XMMatrixScaling(0.034f, 0.034f, 0.034f) *
+                      XMMatrixRotationY(XM_PI) *
+                      XMMatrixTranslation(0.0f, -0.05f,
+                                          kArenaHalfExtent + 5.6f));
+  }
+
+  constexpr int kLanternPairs = 3;
+  for (int i = 0; i < kLanternPairs; ++i) {
+    const float z = -11.0f + static_cast<float>(i) * 10.2f;
+    const float lampPulse = 0.85f + 0.15f * std::sin(time * 4.2f + i * 1.7f);
+    for (float side : kSides) {
+      const float x = side * 5.7f;
+      if (!m_lanternMeshIds.empty()) {
+        pushMeshGroup(m_lanternMeshIds,
+                      XMMatrixScaling(0.72f, 0.72f, 0.72f) *
+                          XMMatrixRotationY(side > 0.0f ? -0.22f : 0.22f) *
+                          XMMatrixTranslation(x, 0.0f, z));
+      } else {
+        addProceduralLantern(x, z, 1.0f);
+      }
+      GPUPointLight lamp{};
+      lamp.position = {x, 1.35f, z};
+      lamp.range = 5.2f;
+      lamp.color = {1.0f, 0.48f, 0.18f};
+      lamp.intensity = 1.55f * lampPulse;
+      frame.pointLights.push_back(lamp);
+    }
+  }
 }
 
 void BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
@@ -570,6 +887,9 @@ void BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
   ImGui::Text("Timer: %.1f", std::max(0.0f, m_phaseTimer));
   ImGui::Text("R: Restart");
   ImGui::Text("Phone: SPACE");
+  ImGui::Separator();
+  ImGui::Checkbox("No Clip", &m_debugNoClip);
+  ImGui::Checkbox("Invisible", &m_debugInvisible);
   if (m_mirrorPuzzleReady)
     ImGui::Text("Mizukagami: READY");
   ImGui::End();
@@ -602,10 +922,10 @@ void BossArenaScene::StartNextAttack() {
 
   if (pattern == 0) {
     m_attack = AttackType::MeteorAoE;
-    const float x = (m_attackIndex % 2 == 0) ? -5.5f : 5.5f;
-    const float z = -5.0f + static_cast<float>((m_attackIndex * 4) % 14);
+    const float x = (m_attackIndex % 2 == 0) ? -3.75f : 3.75f;
+    const float z = -7.0f + static_cast<float>((m_attackIndex * 5) % 16);
     m_attackCenter = {x, 0.02f, z};
-    m_attackRadius = 4.0f;
+    m_attackRadius = 3.85f;
     m_phaseTimer = 1.8f;
   } else if (pattern == 1) {
     m_attack = AttackType::LaserLine;
@@ -635,7 +955,8 @@ void BossArenaScene::ResolveAttack(PlayerAnimationPreview &player) {
   if (m_attack == AttackType::Knockback) {
     const XMFLOAT3 playerPos = player.Position();
     const float dangerRadius = m_attackRadius + kPlayerHitRadius;
-    if (DistanceSq2D(playerPos, m_attackCenter) <= dangerRadius * dangerRadius) {
+    if (!m_debugNoClip &&
+        DistanceSq2D(playerPos, m_attackCenter) <= dangerRadius * dangerRadius) {
       m_lastHitPosition = playerPos;
       m_lastHitPosition.y = 0.04f;
       m_hitFlashTimer = 0.54f;
@@ -645,13 +966,14 @@ void BossArenaScene::ResolveAttack(PlayerAnimationPreview &player) {
         m_failed = true;
       }
     }
-    ApplyKnockback(player);
+    if (!m_debugNoClip)
+      ApplyKnockback(player);
     if (!m_failed)
       PrepareMirrorPuzzle(m_attack);
     return;
   }
 
-  if (IsPlayerInCurrentAttack(player.Position())) {
+  if (!m_debugNoClip && IsPlayerInCurrentAttack(player.Position())) {
     m_lastHitPosition = player.Position();
     m_lastHitPosition.y = 0.04f;
     m_hitFlashTimer = 0.54f;
