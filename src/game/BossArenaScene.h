@@ -52,6 +52,7 @@ private:
   void CompleteMirrorPuzzle();
   bool AreMirrorDotsPlaced() const;
   float MirrorRandom01(uint32_t salt) const;
+  float TelegraphDuration() const;
 
   uint32_t m_floorMeshId = UINT32_MAX;
   uint32_t m_bossMeshId = UINT32_MAX;

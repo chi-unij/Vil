@@ -31,6 +31,13 @@ void PushCircle(FrameData &frame, const XMFLOAT3 &center, float radius,
   }
 }
 
+void PushThickCircle(FrameData &frame, const XMFLOAT3 &center, float radius,
+                     const XMFLOAT4 &color, int bands = 3) {
+  for (int i = 0; i < bands; ++i) {
+    PushCircle(frame, center, radius + static_cast<float>(i) * 0.10f, color);
+  }
+}
+
 void PushRect(FrameData &frame, float minX, float minZ, float maxX, float maxZ,
               float y, const XMFLOAT4 &color) {
   const XMFLOAT3 a{minX, y, minZ};
@@ -61,6 +68,11 @@ float EaseOutCubic(float t) {
 
 ImU32 Rgba(float r, float g, float b, float a) {
   return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
+}
+
+float SmoothPulse(float time, float speed, float floor = 0.0f) {
+  const float wave = 0.5f + 0.5f * std::sin(time * speed);
+  return floor + (1.0f - floor) * wave;
 }
 
 float DistanceSq(const ImVec2 &a, const ImVec2 &b) {
@@ -185,16 +197,16 @@ void BossArenaScene::Initialize(DxContext &dx) {
 
   m_aoeTelegraphMeshId = dx.CreateMeshResources(
       diskMesh, {},
-      MakeTelegraphMaterial({1.0f, 0.04f, 0.02f, 0.34f},
-                            {1.0f, 0.04f, 0.02f}));
+      MakeTelegraphMaterial({1.0f, 0.04f, 0.02f, 0.42f},
+                            {1.65f, 0.05f, 0.02f}));
   m_laserTelegraphMeshId = dx.CreateMeshResources(
       telegraphPlane, {},
-      MakeTelegraphMaterial({1.0f, 0.02f, 0.02f, 0.28f},
-                            {0.85f, 0.02f, 0.02f}));
+      MakeTelegraphMaterial({1.0f, 0.02f, 0.02f, 0.36f},
+                            {1.55f, 0.02f, 0.02f}));
   m_knockbackTelegraphMeshId = dx.CreateMeshResources(
       diskMesh, {},
-      MakeTelegraphMaterial({1.0f, 0.58f, 0.05f, 0.30f},
-                            {1.0f, 0.42f, 0.02f}));
+      MakeTelegraphMaterial({1.0f, 0.58f, 0.05f, 0.38f},
+                            {1.55f, 0.55f, 0.04f}));
   m_flameMeshId = dx.CreateMeshResources(
       flameCardMesh, {},
       MakeTelegraphMaterial({1.0f, 0.22f, 0.02f, 0.78f},
@@ -211,7 +223,7 @@ void BossArenaScene::Reset(PlayerAnimationPreview &player) {
   m_attack = AttackType::MeteorAoE;
   m_phase = AttackPhase::Telegraph;
   m_attackIndex = 0;
-  m_phaseTimer = 1.2f;
+  m_phaseTimer = 1.6f;
   m_resolved = false;
   m_attackCenter = {0.0f, 0.02f, 6.0f};
   m_attackRadius = 4.0f;
@@ -264,7 +276,7 @@ void BossArenaScene::Update(float dt, const Input &input,
     m_failed = true;
     m_lastHitPosition = playerPos;
     m_lastHitPosition.y = 0.04f;
-    m_hitFlashTimer = 0.45f;
+    m_hitFlashTimer = 0.65f;
     return;
   }
 
@@ -281,7 +293,7 @@ void BossArenaScene::Update(float dt, const Input &input,
   m_phaseTimer -= dt;
   if (m_phase == AttackPhase::Telegraph && m_phaseTimer <= 0.0f) {
     m_phase = AttackPhase::Resolve;
-    m_phaseTimer = 0.18f;
+    m_phaseTimer = 0.24f;
     m_resolved = false;
   }
 
@@ -292,7 +304,7 @@ void BossArenaScene::Update(float dt, const Input &input,
 
   if (m_phase == AttackPhase::Resolve && m_phaseTimer <= 0.0f) {
     m_phase = AttackPhase::Recovery;
-    m_phaseTimer = 0.65f;
+    m_phaseTimer = 0.76f;
   }
 
   if (m_phase == AttackPhase::Recovery && m_phaseTimer <= 0.0f) {
@@ -306,10 +318,10 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
 
   frame.opaqueItems.push_back({m_floorMeshId, XMMatrixIdentity()});
 
-  const float bossHitT = std::clamp(m_bossHitShakeTimer / 0.42f, 0.0f, 1.0f);
+  const float bossHitT = std::clamp(m_bossHitShakeTimer / 0.62f, 0.0f, 1.0f);
   const float bossShake =
-      bossHitT * 0.42f * std::sin(frame.gameTime * 92.0f);
-  const float bossSquash = 1.0f + bossHitT * 0.10f;
+      bossHitT * 0.72f * std::sin(frame.gameTime * 116.0f);
+  const float bossSquash = 1.0f + bossHitT * 0.16f;
   const XMMATRIX bossWorld =
       XMMatrixScaling(2.2f * bossSquash, 3.8f * (1.0f - bossHitT * 0.04f),
                       2.2f * bossSquash) *
@@ -324,9 +336,13 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
       m_phase != AttackPhase::Recovery || m_phaseTimer > 0.42f;
   if (drawTelegraphSurface) {
     constexpr float telegraphY = 0.055f;
+    const float telegraphRemain =
+        std::clamp(m_phaseTimer / TelegraphDuration(), 0.0f, 1.0f);
+    const float dangerPulse = SmoothPulse(frame.gameTime, 13.5f, 0.35f);
+    const float panicPulse = 1.0f + (1.0f - telegraphRemain) * 0.16f;
     const float pulse =
         (m_phase == AttackPhase::Telegraph)
-            ? 1.0f + 0.035f * std::sin(frame.gameTime * 9.0f)
+            ? panicPulse + 0.055f * dangerPulse
             : 1.0f + 0.10f * std::clamp((m_phaseTimer - 0.42f) / 0.23f,
                                       0.0f, 1.0f);
 
@@ -364,7 +380,9 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
   AppendTelegraphLines(frame);
 
   if (m_impactTimer > 0.0f) {
-    const float impactT = 1.0f - (m_impactTimer / 0.42f);
+    const float impactDuration = m_impactMaxRadius > 7.5f ? 0.78f : 0.58f;
+    const float impactLife = std::clamp(m_impactTimer / impactDuration, 0.0f, 1.0f);
+    const float impactT = 1.0f - impactLife;
     const float radius = std::lerp(0.25f, m_impactMaxRadius, impactT);
     const XMMATRIX impactWorld = XMMatrixScaling(radius, 1.0f, radius) *
                                   XMMatrixTranslation(m_impactPosition.x,
@@ -372,8 +390,8 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
                                                       m_impactPosition.z);
     frame.transparentItems.push_back({m_knockbackTelegraphMeshId, impactWorld});
 
-    const XMFLOAT4 impactColor{1.0f, 0.58f, 0.08f, 1.0f};
-    constexpr int kImpactRays = 12;
+    const XMFLOAT4 impactColor{1.0f, 0.68f, 0.10f, impactLife};
+    constexpr int kImpactRays = 18;
     for (int i = 0; i < kImpactRays; ++i) {
       const float a = (static_cast<float>(i) / kImpactRays) * XM_2PI;
       const XMFLOAT3 end{m_impactPosition.x + std::cos(a) * radius,
@@ -384,16 +402,16 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
 
     GPUPointLight impactLight{};
     impactLight.position = {m_impactPosition.x, 1.0f, m_impactPosition.z};
-    impactLight.range = radius + 5.0f;
-    impactLight.color = {1.0f, 0.30f, 0.06f};
-    impactLight.intensity = 7.0f * (m_impactTimer / 0.42f);
+    impactLight.range = radius + 7.0f;
+    impactLight.color = {1.0f, 0.38f, 0.08f};
+    impactLight.intensity = 10.0f * impactLife;
     frame.pointLights.push_back(impactLight);
   }
 
 
   if (m_attack == AttackType::MeteorAoE && m_impactTimer > 0.0f) {
     constexpr int kFlameCount = 28;
-    const float burnT = std::clamp(m_impactTimer / 0.42f, 0.0f, 1.0f);
+    const float burnT = std::clamp(m_impactTimer / 0.58f, 0.0f, 1.0f);
     for (int i = 0; i < kFlameCount; ++i) {
       const float seed = static_cast<float>(i);
       const float angle = seed * 2.39996323f;
@@ -418,7 +436,7 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
     }
   }
   if (m_hitFlashTimer > 0.0f) {
-    const float hitT = m_hitFlashTimer / 0.32f;
+    const float hitT = std::clamp(m_hitFlashTimer / 0.54f, 0.0f, 1.0f);
     const float ringRadius = std::lerp(1.8f, 0.55f, hitT);
     const XMFLOAT4 hitColor{1.0f, 0.16f, 0.05f, 1.0f};
     PushCircle(frame, m_lastHitPosition, ringRadius, hitColor);
@@ -426,20 +444,20 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
   }
 
   if (m_counterVfxTimer > 0.0f) {
-    const float counterT = std::clamp(m_counterVfxTimer / 0.58f, 0.0f, 1.0f);
+    const float counterT = std::clamp(m_counterVfxTimer / 0.78f, 0.0f, 1.0f);
     const XMFLOAT3 bossBase{0.0f, 0.12f, kArenaHalfExtent - 3.5f};
-    const float ringA = std::lerp(1.2f, 8.5f, 1.0f - counterT);
+    const float ringA = std::lerp(1.2f, 10.5f, 1.0f - counterT);
     const float ringB = ringA + 1.15f;
     const XMFLOAT4 mirrorColor{0.36f, 1.0f, 0.86f, counterT};
-    PushCircle(frame, bossBase, ringA, mirrorColor);
-    PushCircle(frame, bossBase, ringB, mirrorColor);
+    PushThickCircle(frame, bossBase, ringA, mirrorColor, 3);
+    PushThickCircle(frame, bossBase, ringB, mirrorColor, 2);
 
-    constexpr int kCounterRays = 16;
+    constexpr int kCounterRays = 24;
     for (int i = 0; i < kCounterRays; ++i) {
       const float a = (static_cast<float>(i) / kCounterRays) * XM_2PI +
                       frame.gameTime * 2.8f;
       const float inner = 1.2f + (1.0f - counterT) * 1.4f;
-      const float outer = 7.8f + (1.0f - counterT) * 2.4f;
+      const float outer = 9.4f + (1.0f - counterT) * 3.2f;
       const XMFLOAT3 start{bossBase.x + std::cos(a) * inner, 0.18f,
                            bossBase.z + std::sin(a) * inner};
       const XMFLOAT3 end{bossBase.x + std::cos(a) * outer, 0.20f,
@@ -451,7 +469,7 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
     counterLight.position = {0.0f, 4.0f, kArenaHalfExtent - 3.5f};
     counterLight.range = 20.0f;
     counterLight.color = {0.34f, 1.0f, 0.82f};
-    counterLight.intensity = 11.0f * counterT;
+    counterLight.intensity = 16.0f * counterT;
     frame.pointLights.push_back(counterLight);
   }
 
@@ -459,28 +477,97 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
   bossLight.position = {0.0f, 4.5f, kArenaHalfExtent - 3.5f};
   bossLight.range = 16.0f;
   bossLight.color = {1.0f, 0.15f, 0.08f};
-  bossLight.intensity = 4.5f;
+  bossLight.intensity = 5.2f + bossHitT * 4.0f;
   frame.pointLights.push_back(bossLight);
 }
 
 void BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
-  ImGui::SetNextWindowPos(ImVec2(18.0f, 18.0f), ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(330.0f, 0.0f), ImGuiCond_Always);
+  const float vw = static_cast<float>(viewportWidth);
+  const float vh = static_cast<float>(viewportHeight);
+  ImDrawList *draw = ImGui::GetForegroundDrawList();
+
+  const float bossBarWidth = std::clamp(vw * 0.48f, 420.0f, 720.0f);
+  const float bossBarHeight = 18.0f;
+  const ImVec2 bossBarMin((vw - bossBarWidth) * 0.5f, 24.0f);
+  const ImVec2 bossBarMax(bossBarMin.x + bossBarWidth,
+                          bossBarMin.y + bossBarHeight);
+  const float bossHpRate = std::clamp(static_cast<float>(m_bossHp) / 5.0f,
+                                      0.0f, 1.0f);
+  draw->AddRectFilled(ImVec2(bossBarMin.x - 10.0f, bossBarMin.y - 18.0f),
+                      ImVec2(bossBarMax.x + 10.0f, bossBarMax.y + 28.0f),
+                      Rgba(0.02f, 0.015f, 0.014f, 0.72f), 7.0f);
+  draw->AddText(ImVec2(bossBarMin.x, bossBarMin.y - 15.0f),
+                Rgba(0.98f, 0.88f, 0.76f, 0.96f), "INK ONI");
+  const char *phaseText = m_bossHp <= 2 ? "PHASE 2" : "PHASE 1";
+  draw->AddText(ImVec2(bossBarMax.x - 74.0f, bossBarMin.y - 15.0f),
+                Rgba(1.0f, 0.72f, 0.38f, 0.96f), phaseText);
+  draw->AddRectFilled(bossBarMin, bossBarMax, Rgba(0.14f, 0.04f, 0.035f, 0.96f),
+                      4.0f);
+  draw->AddRectFilled(
+      bossBarMin,
+      ImVec2(bossBarMin.x + bossBarWidth * bossHpRate, bossBarMax.y),
+      m_bossHp <= 2 ? Rgba(1.0f, 0.26f, 0.12f, 1.0f)
+                    : Rgba(0.82f, 0.12f, 0.08f, 1.0f),
+      4.0f);
+  draw->AddRect(bossBarMin, bossBarMax, Rgba(1.0f, 0.52f, 0.28f, 0.84f), 4.0f,
+                0, 2.0f);
+  for (int i = 1; i < 5; ++i) {
+    const float x = bossBarMin.x + bossBarWidth * static_cast<float>(i) / 5.0f;
+    draw->AddLine(ImVec2(x, bossBarMin.y), ImVec2(x, bossBarMax.y),
+                  Rgba(0.02f, 0.015f, 0.014f, 0.72f), 1.4f);
+  }
+
+  const float playerPanelX = 24.0f;
+  const float playerPanelY = vh - 82.0f;
+  draw->AddRectFilled(ImVec2(playerPanelX, playerPanelY),
+                      ImVec2(playerPanelX + 188.0f, playerPanelY + 46.0f),
+                      Rgba(0.015f, 0.020f, 0.024f, 0.72f), 6.0f);
+  draw->AddText(ImVec2(playerPanelX + 14.0f, playerPanelY + 7.0f),
+                Rgba(0.76f, 0.92f, 0.88f, 0.96f), "PLAYER");
+  for (int i = 0; i < 3; ++i) {
+    const bool alive = i < m_playerHp;
+    const ImVec2 p(playerPanelX + 82.0f + i * 28.0f, playerPanelY + 27.0f);
+    draw->AddCircleFilled(p, alive ? 8.0f : 6.0f,
+                          alive ? Rgba(0.35f, 1.0f, 0.74f, 0.96f)
+                                : Rgba(0.18f, 0.22f, 0.22f, 0.72f),
+                          18);
+  }
+
+  if (!m_failed && !m_cleared && !IsPhoneOverlayActive()) {
+    const char *banner =
+        m_counterVfxTimer > 0.0f
+            ? "MIZUKAGAMI COUNTER"
+            : (m_phase == AttackPhase::Telegraph ? "DANGER - READ THE FIELD"
+                                                  : "IMPACT");
+    const ImVec2 textSize = ImGui::CalcTextSize(banner);
+    const ImVec2 center(vw * 0.5f, vh * 0.18f);
+    const float alpha = m_counterVfxTimer > 0.0f ? 0.94f : 0.70f;
+    draw->AddRectFilled(ImVec2(center.x - textSize.x * 0.5f - 18.0f,
+                               center.y - 8.0f),
+                        ImVec2(center.x + textSize.x * 0.5f + 18.0f,
+                               center.y + textSize.y + 10.0f),
+                        Rgba(0.02f, 0.016f, 0.014f, alpha * 0.70f), 5.0f);
+    draw->AddText(ImVec2(center.x - textSize.x * 0.5f, center.y),
+                  m_counterVfxTimer > 0.0f
+                      ? Rgba(0.40f, 1.0f, 0.86f, alpha)
+                      : Rgba(1.0f, 0.72f, 0.26f, alpha),
+                  banner);
+  }
+
+  ImGui::SetNextWindowPos(ImVec2(18.0f, 78.0f), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(250.0f, 0.0f), ImGuiCond_Always);
   ImGui::Begin("##BossArenaHud", nullptr,
                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                    ImGuiWindowFlags_NoSavedSettings |
                    ImGuiWindowFlags_NoFocusOnAppearing);
-  ImGui::Text("Boss Arena");
+  ImGui::Text("Boss Arena Debug");
   ImGui::Separator();
-  ImGui::Text("HP: %d / 3", m_playerHp);
-  ImGui::Text("Boss HP: %d / 5", m_bossHp);
   ImGui::Text("Mechanic: %s", AttackName());
   ImGui::Text("Phase: %s",
               m_phase == AttackPhase::Telegraph
                   ? "Telegraph"
                   : (m_phase == AttackPhase::Resolve ? "Resolve" : "Recovery"));
   ImGui::Text("Timer: %.1f", std::max(0.0f, m_phaseTimer));
-  ImGui::Text("Survive: %.1f / 45.0", m_surviveTimer);
   ImGui::Text("R: Restart");
   ImGui::Text("Phone: SPACE");
   if (m_mirrorPuzzleReady)
@@ -519,30 +606,30 @@ void BossArenaScene::StartNextAttack() {
     const float z = -5.0f + static_cast<float>((m_attackIndex * 4) % 14);
     m_attackCenter = {x, 0.02f, z};
     m_attackRadius = 4.0f;
-    m_phaseTimer = 1.6f;
+    m_phaseTimer = 1.8f;
   } else if (pattern == 1) {
     m_attack = AttackType::LaserLine;
     m_laserVertical = (m_attackIndex % 2) == 0;
     m_laserHalfWidth = 1.45f;
-    m_phaseTimer = 1.4f;
+    m_phaseTimer = 1.65f;
   } else {
     m_attack = AttackType::Knockback;
     m_attackCenter = {0.0f, 0.02f, 0.0f};
     m_attackRadius = 5.0f;
-    m_phaseTimer = 1.8f;
+    m_phaseTimer = 2.0f;
   }
 }
 
 void BossArenaScene::ResolveAttack(PlayerAnimationPreview &player) {
-  m_impactTimer = 0.42f;
-  m_impactMaxRadius = (m_attack == AttackType::Knockback) ? 7.0f : 3.4f;
+  m_impactTimer = 0.58f;
+  m_impactMaxRadius = (m_attack == AttackType::Knockback) ? 8.2f : 4.4f;
   m_impactPosition = m_attackCenter;
   m_impactPosition.y = 0.07f;
 
   if (m_attack == AttackType::LaserLine) {
     m_impactPosition = player.Position();
     m_impactPosition.y = 0.07f;
-    m_impactMaxRadius = 2.6f;
+    m_impactMaxRadius = 3.8f;
   }
 
   if (m_attack == AttackType::Knockback) {
@@ -551,7 +638,7 @@ void BossArenaScene::ResolveAttack(PlayerAnimationPreview &player) {
     if (DistanceSq2D(playerPos, m_attackCenter) <= dangerRadius * dangerRadius) {
       m_lastHitPosition = playerPos;
       m_lastHitPosition.y = 0.04f;
-      m_hitFlashTimer = 0.32f;
+      m_hitFlashTimer = 0.54f;
       --m_playerHp;
       if (m_playerHp <= 0) {
         m_playerHp = 0;
@@ -567,7 +654,7 @@ void BossArenaScene::ResolveAttack(PlayerAnimationPreview &player) {
   if (IsPlayerInCurrentAttack(player.Position())) {
     m_lastHitPosition = player.Position();
     m_lastHitPosition.y = 0.04f;
-    m_hitFlashTimer = 0.32f;
+    m_hitFlashTimer = 0.54f;
     --m_playerHp;
     if (m_playerHp <= 0) {
       m_playerHp = 0;
@@ -628,12 +715,21 @@ void BossArenaScene::AppendTelegraphLines(FrameData &frame) const {
   if (m_phase == AttackPhase::Recovery)
     return;
 
+  const float telegraphRemain =
+      std::clamp(m_phaseTimer / TelegraphDuration(), 0.0f, 1.0f);
+  const float chargeT = 1.0f - telegraphRemain;
+  const float scanRadius =
+      m_attackRadius * std::lerp(0.35f, 1.0f, chargeT);
   const XMFLOAT4 warnColor =
-      m_phase == AttackPhase::Telegraph ? XMFLOAT4{1.0f, 0.05f, 0.02f, 1.0f}
-                                        : XMFLOAT4{1.0f, 0.85f, 0.15f, 1.0f};
+      m_phase == AttackPhase::Telegraph
+          ? XMFLOAT4{1.0f, 0.08f + chargeT * 0.34f, 0.02f, 1.0f}
+          : XMFLOAT4{1.0f, 0.92f, 0.18f, 1.0f};
+  const XMFLOAT4 innerColor{1.0f, 0.92f, 0.22f, 0.92f};
 
   if (m_attack == AttackType::MeteorAoE) {
-    PushCircle(frame, m_attackCenter, m_attackRadius, warnColor);
+    PushThickCircle(frame, m_attackCenter, m_attackRadius, warnColor, 3);
+    PushCircle(frame, m_attackCenter, scanRadius, innerColor);
+    PushCircle(frame, m_attackCenter, m_attackRadius * 0.62f, warnColor);
     PushLine(frame, {m_attackCenter.x - m_attackRadius, 0.03f, m_attackCenter.z},
              {m_attackCenter.x + m_attackRadius, 0.03f, m_attackCenter.z},
              warnColor);
@@ -641,20 +737,39 @@ void BossArenaScene::AppendTelegraphLines(FrameData &frame) const {
              {m_attackCenter.x, 0.03f, m_attackCenter.z + m_attackRadius},
              warnColor);
   } else if (m_attack == AttackType::LaserLine) {
+    const float focusWidth = std::max(0.18f, m_laserHalfWidth * (1.0f - chargeT * 0.78f));
     if (m_laserVertical) {
       PushRect(frame, -m_laserHalfWidth, -kArenaHalfExtent, m_laserHalfWidth,
                kArenaHalfExtent, 0.03f, warnColor);
+      PushRect(frame, -focusWidth, -kArenaHalfExtent, focusWidth,
+               kArenaHalfExtent, 0.045f, innerColor);
+      PushLine(frame, {0.0f, 0.055f, -kArenaHalfExtent},
+               {0.0f, 0.055f, kArenaHalfExtent}, innerColor);
     } else {
       PushRect(frame, -kArenaHalfExtent, -m_laserHalfWidth, kArenaHalfExtent,
                m_laserHalfWidth, 0.03f, warnColor);
+      PushRect(frame, -kArenaHalfExtent, -focusWidth, kArenaHalfExtent,
+               focusWidth, 0.045f, innerColor);
+      PushLine(frame, {-kArenaHalfExtent, 0.055f, 0.0f},
+               {kArenaHalfExtent, 0.055f, 0.0f}, innerColor);
     }
   } else if (m_attack == AttackType::Knockback) {
-    PushCircle(frame, m_attackCenter, m_attackRadius, warnColor);
-    PushCircle(frame, m_attackCenter, m_attackRadius + 2.0f, warnColor);
+    PushThickCircle(frame, m_attackCenter, m_attackRadius, warnColor, 3);
+    PushThickCircle(frame, m_attackCenter, m_attackRadius + 2.0f, warnColor, 2);
+    PushCircle(frame, m_attackCenter, scanRadius + 1.0f, innerColor);
     PushLine(frame, {-m_attackRadius, 0.03f, 0.0f},
              {m_attackRadius, 0.03f, 0.0f}, warnColor);
     PushLine(frame, {0.0f, 0.03f, -m_attackRadius},
              {0.0f, 0.03f, m_attackRadius}, warnColor);
+    constexpr int kSpokes = 12;
+    for (int i = 0; i < kSpokes; ++i) {
+      const float a = (static_cast<float>(i) / kSpokes) * XM_2PI;
+      const XMFLOAT3 start{std::cos(a) * (m_attackRadius * 0.35f), 0.05f,
+                           std::sin(a) * (m_attackRadius * 0.35f)};
+      const XMFLOAT3 end{std::cos(a) * (m_attackRadius + 2.0f), 0.05f,
+                         std::sin(a) * (m_attackRadius + 2.0f)};
+      PushLine(frame, start, end, innerColor);
+    }
   }
 }
 
@@ -730,11 +845,11 @@ void BossArenaScene::CompleteMirrorPuzzle() {
   m_mirrorMessageTimer = 1.4f;
   m_dragMirrorDot = -1;
   m_bossHp = std::max(0, m_bossHp - 1);
-  m_counterVfxTimer = 0.58f;
-  m_bossHitShakeTimer = 0.42f;
+  m_counterVfxTimer = 0.78f;
+  m_bossHitShakeTimer = 0.62f;
 
-  m_impactTimer = 0.58f;
-  m_impactMaxRadius = 7.4f;
+  m_impactTimer = 0.78f;
+  m_impactMaxRadius = 10.2f;
   m_impactPosition = {0.0f, 0.07f, kArenaHalfExtent - 3.5f};
 
   if (m_bossHp <= 0)
@@ -756,6 +871,16 @@ float BossArenaScene::MirrorRandom01(uint32_t salt) const {
   x *= 3266489917u;
   x ^= x >> 16;
   return static_cast<float>(x & 0x00FFFFFFu) / 16777215.0f;
+}
+
+float BossArenaScene::TelegraphDuration() const {
+  if (m_attack == AttackType::MeteorAoE)
+    return 1.8f;
+  if (m_attack == AttackType::LaserLine)
+    return 1.65f;
+  if (m_attack == AttackType::Knockback)
+    return 2.0f;
+  return 1.6f;
 }
 
 void BossArenaScene::DrawPhoneOverlay(int viewportWidth, int viewportHeight) {
