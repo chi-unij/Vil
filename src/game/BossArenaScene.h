@@ -32,7 +32,6 @@ public:
     return m_phoneOpen || m_phoneSlide > 0.05f;
   }
   bool DebugNoClipEnabled() const { return m_debugNoClip; }
-  bool DebugInvisibleEnabled() const { return m_debugInvisible; }
 
 private:
   enum class AttackPhase {
@@ -107,7 +106,6 @@ private:
   bool m_failed = false;
   bool m_cleared = false;
   bool m_debugNoClip = false;
-  bool m_debugInvisible = false;
 
   bool m_phoneOpen = false;
   bool m_phoneSpaceWasDown = false;

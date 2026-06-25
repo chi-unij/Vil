@@ -770,6 +770,7 @@ void BossArenaScene::AppendWorldPolish(FrameData &frame) const {
     pushMeshGroup(m_shrineMeshIds,
                   XMMatrixScaling(0.034f, 0.034f, 0.034f) *
                       XMMatrixRotationY(XM_PI) *
+                      XMMatrixRotationZ(XM_PI) *
                       XMMatrixTranslation(0.0f, -0.05f,
                                           kArenaHalfExtent + 5.6f));
   }
@@ -889,7 +890,8 @@ void BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
   ImGui::Text("Phone: SPACE");
   ImGui::Separator();
   ImGui::Checkbox("No Clip", &m_debugNoClip);
-  ImGui::Checkbox("Invisible", &m_debugInvisible);
+  if (m_debugNoClip)
+    ImGui::Text("Q/E: Fly | No damage");
   if (m_mirrorPuzzleReady)
     ImGui::Text("Mizukagami: READY");
   ImGui::End();

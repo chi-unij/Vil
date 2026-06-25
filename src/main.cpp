@@ -824,7 +824,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
               inBossArena ? emptyMeshTriangles
                           : (useModelMeshCollision
                                  ? overworldScene.StageCollisionTriangles()
-                                 : emptyMeshTriangles));
+                                 : emptyMeshTriangles),
+              inBossArena && bossArenaScene.DebugNoClipEnabled());
           if (!inBossArena &&
               overworldScene.IsPlayerInsideBossWarp(
                   playerPreview.Position())) {
@@ -838,8 +839,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         if (inBossArena)
           bossArenaScene.Update(dt, input, playerPreview);
         const DirectX::XMFLOAT3 playerPos = playerPreview.Position();
-        const DirectX::XMFLOAT3 targetCameraPos = {playerPos.x, 3.2f,
-                                                   playerPos.z - 5.8f};
+        const DirectX::XMFLOAT3 targetCameraPos = {
+            playerPos.x,
+            (inBossArena && bossArenaScene.DebugNoClipEnabled())
+                ? playerPos.y + 3.2f
+                : 3.2f,
+            playerPos.z - 5.8f};
         const float cameraFollowT = std::clamp(dt * 7.5f, 0.0f, 1.0f);
         gameCameraPosition = LerpFloat3(gameCameraPosition, targetCameraPos,
                                         cameraFollowT);
@@ -1290,8 +1295,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         frame.exposure = gamePostExposure;
       } else if (appMode == AppMode::BossArena) {
         bossArenaScene.BuildFrame(frame);
-        if (!bossArenaScene.DebugInvisibleEnabled())
-          playerPreview.BuildFrame(frame);
+        playerPreview.BuildFrame(frame);
         frame.skyExposure = gameSkyExposure;
         frame.lighting.lightDir = gameLighting.sunDirection;
         frame.lighting.lightColor = gameLighting.sunColor;

@@ -28,7 +28,8 @@ public:
   void Update(float dt, const Input &input, float worldHalfExtentMeters,
               const std::vector<CollisionSystem::Collider> &colliders,
               const std::vector<CollisionSystem::MeshTriangle>
-                  &meshTriangles);
+                  &meshTriangles,
+              bool debugFly = false);
   void BuildFrame(FrameData &frame) const;
   void DrawDebugUi();
 

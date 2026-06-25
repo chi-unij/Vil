@@ -115,13 +115,15 @@ void PlayerAnimationPreview::Update(float dt, const Input &input,
                                         &colliders,
                                     const std::vector<
                                         CollisionSystem::MeshTriangle>
-                                        &meshTriangles) {
+                                        &meshTriangles,
+                                    bool debugFly) {
   if (!m_ready) {
     Update(dt);
     return;
   }
 
   float moveX = 0.0f;
+  float moveY = 0.0f;
   float moveZ = 0.0f;
   if (input.IsKeyDown('W') || input.IsKeyDown(VK_UP))
     moveZ += 1.0f;
@@ -131,15 +133,20 @@ void PlayerAnimationPreview::Update(float dt, const Input &input,
     moveX += 1.0f;
   if (input.IsKeyDown('A') || input.IsKeyDown(VK_LEFT))
     moveX -= 1.0f;
+  if (debugFly && input.IsKeyDown('E'))
+    moveY += 1.0f;
+  if (debugFly && input.IsKeyDown('Q'))
+    moveY -= 1.0f;
 
   moveX += input.LeftStickX();
   moveZ += input.LeftStickY();
 
-  const float moveLenSq = moveX * moveX + moveZ * moveZ;
+  const float moveLenSq = moveX * moveX + moveY * moveY + moveZ * moveZ;
   const bool isMoving = moveLenSq > 0.0001f;
   if (isMoving) {
     const float invLen = 1.0f / std::sqrt(moveLenSq);
     moveX *= invLen;
+    moveY *= invLen;
     moveZ *= invLen;
 
     const bool running = input.IsKeyDown(VK_SHIFT) ||
@@ -147,15 +154,24 @@ void PlayerAnimationPreview::Update(float dt, const Input &input,
     const float moveSpeed = running ? 6.0f : 3.2f;
     XMFLOAT3 desiredPosition = m_previewPosition;
     desiredPosition.x += moveX * moveSpeed * dt;
+    desiredPosition.y += moveY * moveSpeed * dt;
     desiredPosition.z += moveZ * moveSpeed * dt;
 
-    CollisionSystem::Capsule capsule{};
-    m_previewPosition =
-        CollisionSystem::ResolveCapsuleAgainstCollidersAndMesh(
-            desiredPosition, capsule, colliders, meshTriangles,
-            worldHalfExtentMeters);
+    if (debugFly) {
+      const float bounds = std::max(0.0f, worldHalfExtentMeters);
+      desiredPosition.x = std::clamp(desiredPosition.x, -bounds, bounds);
+      desiredPosition.z = std::clamp(desiredPosition.z, -bounds, bounds);
+      m_previewPosition = desiredPosition;
+    } else {
+      CollisionSystem::Capsule capsule{};
+      m_previewPosition =
+          CollisionSystem::ResolveCapsuleAgainstCollidersAndMesh(
+              desiredPosition, capsule, colliders, meshTriangles,
+              worldHalfExtentMeters);
+    }
 
-    m_previewYaw = std::atan2(moveX, moveZ);
+    if (moveX * moveX + moveZ * moveZ > 0.0001f)
+      m_previewYaw = std::atan2(moveX, moveZ);
     m_activeSlot = running ? ClipSlot::Run : ClipSlot::Walk;
   } else if (!m_autoCycle) {
     m_activeSlot = ClipSlot::Idle;
@@ -179,7 +195,8 @@ void PlayerAnimationPreview::BuildFrame(FrameData &frame) const {
   const XMMATRIX world =
       XMMatrixScaling(m_previewScale, m_previewScale, m_previewScale) *
       XMMatrixRotationY(m_previewYaw) *
-      XMMatrixTranslation(m_previewPosition.x, 0.01f, m_previewPosition.z);
+      XMMatrixTranslation(m_previewPosition.x, m_previewPosition.y + 0.01f,
+                          m_previewPosition.z);
   frame.opaqueItems.push_back({m_meshId, world});
 
   GPUPointLight light{};
