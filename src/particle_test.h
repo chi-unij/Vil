@@ -109,4 +109,79 @@ protected:
 	Particle* createParticle() override;
 };
 
+class SparkBurstEmitter : public BurstEmitter
+{
+private:
+	std::mt19937 m_mt{ std::random_device{}() };
+
+public:
+	SparkBurstEmitter(size_t capacity, const DirectX::XMVECTOR& position, size_t burstCount)
+		: BurstEmitter(capacity, position, burstCount)
+	{
+	}
+
+protected:
+	Particle* createParticle() override;
+};
+
+class RiverMistParticle : public Particle
+{
+private:
+	float m_scale{ 0.55f };
+	float m_alpha{ 0.0f };
+
+public:
+	RiverMistParticle(const DirectX::XMVECTOR& position, const DirectX::XMVECTOR& velocity, double life_time)
+		: Particle(position, velocity, life_time) {
+	}
+
+	void Update(double elapsed_time) override;
+	ParticleVisual GetVisual() const override;
+};
+
+class RiverMistEmitter : public Emitter
+{
+private:
+	std::mt19937 m_mt{ std::random_device{}() };
+
+public:
+	RiverMistEmitter(size_t capacity, const DirectX::XMVECTOR& position, double particles_per_second, bool is_emmit)
+		: Emitter(capacity, position, particles_per_second, is_emmit)
+	{
+	}
+
+protected:
+	Particle* createParticle() override;
+};
+
+class MirrorSparkParticle : public Particle
+{
+private:
+	float m_scale{ 0.20f };
+	float m_alpha{ 1.0f };
+
+public:
+	MirrorSparkParticle(const DirectX::XMVECTOR& position, const DirectX::XMVECTOR& velocity, double life_time)
+		: Particle(position, velocity, life_time) {
+	}
+
+	void Update(double elapsed_time) override;
+	ParticleVisual GetVisual() const override;
+};
+
+class MirrorSparkBurstEmitter : public BurstEmitter
+{
+private:
+	std::mt19937 m_mt{ std::random_device{}() };
+
+public:
+	MirrorSparkBurstEmitter(size_t capacity, const DirectX::XMVECTOR& position, size_t burstCount)
+		: BurstEmitter(capacity, position, burstCount)
+	{
+	}
+
+protected:
+	Particle* createParticle() override;
+};
+
 #endif // PARTICLE_TEST_H

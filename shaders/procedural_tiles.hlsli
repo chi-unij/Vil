@@ -394,6 +394,61 @@ ProceduralResult ProceduralWater(float2 worldXZ, float time)
     return r;
 }
 
+// ---- 8: Clear River ----
+ProceduralResult ProceduralClearRiver(float2 worldXZ, float time)
+{
+    ProceduralResult r;
+
+    float2 uv = worldXZ * 0.32f;
+    float flow = time * 0.72f;
+    float longWave = sin(uv.y * 4.2f - flow * 2.4f) * 0.5f + 0.5f;
+    float crossWave = sin((uv.x * 2.1f + uv.y * 1.3f) + flow * 1.15f) * 0.5f + 0.5f;
+    float ripple = warpedFbm(uv * 1.15f + float2(time * 0.035f, -time * 0.16f),
+                             time * 0.22f, 3);
+    float foam = smoothstep(0.86f, 0.98f, longWave * 0.44f + crossWave * 0.20f + ripple * 0.34f);
+    float centerGlow = 1.0f - smoothstep(1.2f, 4.8f, abs(worldXZ.x));
+    float currentUv = uv.y * 5.8f - flow * 5.6f + sin(uv.x * 2.4f + time * 0.8f) * 0.35f;
+    float currentLine = 1.0f - abs(frac(currentUv) * 2.0f - 1.0f);
+    float currentStreak = pow(saturate(currentLine * 1.28f - 0.30f), 4.0f) * centerGlow;
+    float causticA = abs(sin(uv.x * 7.1f + uv.y * 4.3f - flow * 4.5f));
+    float causticB = abs(sin(uv.x * -5.2f + uv.y * 6.6f + flow * 3.8f));
+    float caustic = pow(saturate(causticA * causticB), 4.6f) * centerGlow;
+
+    float3 deep = float3(0.025f, 0.135f, 0.205f);
+    float3 clearBlue = float3(0.11f, 0.42f, 0.56f);
+    float3 skyTint = float3(0.36f, 0.66f, 0.72f);
+    float3 highlight = float3(0.84f, 0.96f, 1.0f);
+    float3 mirrorCyan = float3(0.36f, 1.0f, 0.88f);
+    float mixWater = saturate(ripple * 0.42f + longWave * 0.34f + crossWave * 0.18f);
+
+    r.albedo = lerp(deep, clearBlue, mixWater);
+    r.albedo = lerp(r.albedo, skyTint, 0.24f);
+    r.albedo = lerp(r.albedo, highlight, foam * 0.22f);
+    r.albedo = lerp(r.albedo, mirrorCyan, currentStreak * 0.18f + caustic * 0.12f);
+    r.emissive = float3(0.0f, 0.010f, 0.020f) + highlight * foam * 0.035f +
+                 mirrorCyan * (currentStreak * 0.045f + caustic * 0.030f);
+
+    float hL = warpedFbm((worldXZ + float2(-0.18f, 0.0f)) * 0.58f + float2(0.0f, -flow * 0.18f),
+                         time * 0.20f, 3);
+    float hR = warpedFbm((worldXZ + float2(0.18f, 0.0f)) * 0.58f + float2(0.0f, -flow * 0.18f),
+                         time * 0.20f, 3);
+    float hD = warpedFbm((worldXZ + float2(0.0f, -0.18f)) * 0.58f + float2(0.0f, -flow * 0.18f),
+                         time * 0.20f, 3);
+    float hU = warpedFbm((worldXZ + float2(0.0f, 0.18f)) * 0.58f + float2(0.0f, -flow * 0.18f),
+                         time * 0.20f, 3);
+    r.normalTS = normalize(float3((hL - hR) * (0.28f + currentStreak * 0.08f),
+                                  (hD - hU) * (0.38f + caustic * 0.06f),
+                                  1.0f));
+
+    r.metallic = 0.0f;
+    r.roughness = lerp(0.014f, 0.052f,
+                       saturate(ripple * 0.50f + foam * 0.18f -
+                                currentStreak * 0.10f));
+    r.ao = 1.0f;
+
+    return r;
+}
+
 float ComputeWaterImpactWetness(float2 worldXZ, float time, float4 wetParams)
 {
     float strength = saturate(wetParams.x);
@@ -507,6 +562,8 @@ bool ApplyProceduralTile(float3 worldPos, float time, float typeId,
         result = ProceduralCrumble(xz, time);
     else if (id == 6)
         result = ProceduralWater(xz, time);
+    else if (id == 8)
+        result = ProceduralClearRiver(xz, time);
     else
         return false;
 

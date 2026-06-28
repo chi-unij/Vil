@@ -363,6 +363,42 @@ static GameTimeLightingProfile BuildGameTimeLighting(float hour) {
   return profile;
 }
 
+static ImU32 UiColor(float r, float g, float b, float a) {
+  return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
+}
+
+static bool DrawSettingsChoice(ImDrawList *draw, const char *id,
+                               const char *title, const char *note,
+                               const ImVec2 &min, const ImVec2 &max,
+                               bool selected) {
+  ImGui::PushID(id);
+  ImGui::SetCursorScreenPos(min);
+  const bool clicked =
+      ImGui::InvisibleButton("##hit", ImVec2(max.x - min.x, max.y - min.y));
+  const bool hovered = ImGui::IsItemHovered();
+  ImGui::PopID();
+
+  draw->AddRectFilled(min, max,
+                      selected ? UiColor(0.08f, 0.24f, 0.23f, 0.94f)
+                               : (hovered ? UiColor(0.08f, 0.12f, 0.13f, 0.94f)
+                                          : UiColor(0.035f, 0.055f, 0.060f, 0.90f)),
+                      8.0f);
+  draw->AddRect(min, max,
+                selected ? UiColor(0.36f, 1.0f, 0.84f, 0.88f)
+                         : UiColor(0.42f, 0.62f, 0.62f, hovered ? 0.70f : 0.36f),
+                8.0f, 0, selected ? 2.0f : 1.2f);
+
+  const ImVec2 dot(min.x + 24.0f, (min.y + max.y) * 0.5f);
+  draw->AddCircle(dot, 8.5f, UiColor(0.44f, 0.92f, 0.84f, 0.74f), 20, 1.5f);
+  if (selected)
+    draw->AddCircleFilled(dot, 5.0f, UiColor(0.38f, 1.0f, 0.84f, 0.96f), 20);
+  draw->AddText(ImVec2(min.x + 46.0f, min.y + 13.0f),
+                UiColor(0.86f, 1.0f, 0.94f, 0.96f), title);
+  draw->AddText(ImVec2(min.x + 46.0f, min.y + 36.0f),
+                UiColor(0.52f, 0.70f, 0.68f, 0.88f), note);
+  return clicked;
+}
+
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
   try {
     {
@@ -800,7 +836,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
           sparkEmitter.Update(static_cast<double>(dt));
       }
 
-      if (appMode == AppMode::Game && rainEnabled) {
+      if ((appMode == AppMode::Game || appMode == AppMode::BossArena) &&
+          rainEnabled) {
         rainEmitter.Update(static_cast<double>(dt));
       }
 
@@ -848,8 +885,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         const float cameraFollowT = std::clamp(dt * 7.5f, 0.0f, 1.0f);
         gameCameraPosition = LerpFloat3(gameCameraPosition, targetCameraPos,
                                         cameraFollowT);
-        cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
-                        gameCameraPosition.z);
+        DirectX::XMFLOAT3 finalCameraPosition = gameCameraPosition;
+        if (inBossArena && !bossPhoneActive) {
+          const float shake = bossArenaScene.CameraImpulseAmount();
+          if (shake > 0.0001f) {
+            finalCameraPosition.x +=
+                std::sin(gameRuntimeSeconds * 78.0f) * shake;
+            finalCameraPosition.y +=
+                std::cos(gameRuntimeSeconds * 91.0f) * shake * 0.55f;
+          }
+        }
+        cam.SetPosition(finalCameraPosition.x, finalCameraPosition.y,
+                        finalCameraPosition.z);
         cam.SetYawPitch(0.0f, -0.28f);
       } else if (appMode == AppMode::Game || appMode == AppMode::BossArena ||
                  appMode == AppMode::Editor) {
@@ -917,90 +964,116 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
 
       // ---- Settings window (Phase 12.6) ----
       if (showSettings) {
-        ImGui::SetNextWindowSize(ImVec2(300, 0), ImGuiCond_Once);
-        ImGui::Begin("Settings", &showSettings);
+        const float vw = static_cast<float>(window.Width());
+        const float vh = static_cast<float>(window.Height());
+        ImDrawList *draw = ImGui::GetForegroundDrawList();
+        draw->AddRectFilled(ImVec2(0.0f, 0.0f), ImVec2(vw, vh),
+                            UiColor(0.0f, 0.025f, 0.030f, 0.66f));
 
-        ImGui::Text("Display Mode");
-        ImGui::Separator();
+        const float panelW = std::clamp(vw * 0.34f, 460.0f, 620.0f);
+        const float panelH = std::clamp(vh * 0.58f, 470.0f, 620.0f);
+        const ImVec2 panelMin(vw - panelW - 54.0f, (vh - panelH) * 0.5f);
+        const ImVec2 panelMax(panelMin.x + panelW, panelMin.y + panelH);
+
+        ImGui::SetNextWindowPos(panelMin, ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(panelW, panelH), ImGuiCond_Always);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::Begin("##GameSettingsOverlay", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoBackground |
+                         ImGuiWindowFlags_NoScrollWithMouse |
+                         ImGuiWindowFlags_NoScrollbar);
+
+        draw->AddRectFilled(ImVec2(panelMin.x + 12.0f, panelMin.y + 18.0f),
+                            ImVec2(panelMax.x + 12.0f, panelMax.y + 18.0f),
+                            UiColor(0.0f, 0.0f, 0.0f, 0.28f), 12.0f);
+        draw->AddRectFilled(panelMin, panelMax,
+                            UiColor(0.012f, 0.020f, 0.024f, 0.96f), 12.0f);
+        draw->AddRect(panelMin, panelMax, UiColor(0.38f, 0.92f, 0.82f, 0.70f),
+                      12.0f, 0, 2.0f);
+        draw->AddText(ImVec2(panelMin.x + 34.0f, panelMin.y + 28.0f),
+                      UiColor(0.86f, 1.0f, 0.94f, 0.98f), "SETTINGS");
+        draw->AddText(ImVec2(panelMin.x + 34.0f, panelMin.y + 54.0f),
+                      UiColor(0.52f, 0.70f, 0.68f, 0.88f),
+                      "Display and gameplay options");
+        draw->AddLine(ImVec2(panelMin.x + 34.0f, panelMin.y + 86.0f),
+                      ImVec2(panelMax.x - 34.0f, panelMin.y + 86.0f),
+                      UiColor(0.36f, 1.0f, 0.84f, 0.46f), 1.5f);
 
         const bool isFS = window.IsFullscreen();
         const uint32_t curW = window.Width();
         const uint32_t curH = window.Height();
 
-        if (ImGui::RadioButton("Fullscreen", isFS)) {
-          if (!isFS) window.SetFullscreen(true);
+        const float optionX = panelMin.x + 34.0f;
+        const float optionW = panelW - 68.0f;
+        float y = panelMin.y + 112.0f;
+        draw->AddText(ImVec2(optionX, y), UiColor(0.72f, 0.95f, 0.88f, 0.96f),
+                      "DISPLAY MODE");
+        y += 28.0f;
+        if (DrawSettingsChoice(draw, "fullscreen", "Fullscreen",
+                               "Use the whole display for presentation.",
+                               ImVec2(optionX, y),
+                               ImVec2(optionX + optionW, y + 64.0f), isFS) &&
+            !isFS) {
+          window.SetFullscreen(true);
         }
-        if (ImGui::RadioButton("1080p (Windowed)", !isFS && curW == 1920 && curH == 1080)) {
+        y += 76.0f;
+        if (DrawSettingsChoice(draw, "window1080", "1080p Windowed",
+                               "1920 x 1080 capture-friendly window.",
+                               ImVec2(optionX, y),
+                               ImVec2(optionX + optionW, y + 64.0f),
+                               !isFS && curW == 1920 && curH == 1080)) {
           window.SetWindowedResolution(1920, 1080);
         }
-        if (ImGui::RadioButton("720p (Windowed)", !isFS && curW == 1280 && curH == 720)) {
+        y += 76.0f;
+        if (DrawSettingsChoice(draw, "window720", "720p Windowed",
+                               "1280 x 720 lightweight test window.",
+                               ImVec2(optionX, y),
+                               ImVec2(optionX + optionW, y + 64.0f),
+                               !isFS && curW == 1280 && curH == 720)) {
           window.SetWindowedResolution(1280, 720);
         }
 
-        if (appMode == AppMode::Game) {
-          ImGui::Separator();
-          ImGui::Text("Camera");
-          if (ImGui::Checkbox("Free Camera / No Clip", &gameFreeCameraEnabled) &&
-              gameFreeCameraEnabled) {
-            cam.SetMode(CameraMode::FreeFly);
+        y += 88.0f;
+        if (appMode == AppMode::Game || appMode == AppMode::BossArena) {
+          draw->AddText(ImVec2(optionX, y), UiColor(0.72f, 0.95f, 0.88f, 0.96f),
+                        "CAMERA");
+          y += 28.0f;
+          if (DrawSettingsChoice(draw, "freecamera", "Free Camera",
+                                 "Right mouse + WASD debug camera.",
+                                 ImVec2(optionX, y),
+                                 ImVec2(optionX + optionW, y + 64.0f),
+                                 gameFreeCameraEnabled)) {
+            gameFreeCameraEnabled = !gameFreeCameraEnabled;
+            if (gameFreeCameraEnabled)
+              cam.SetMode(CameraMode::FreeFly);
           }
-          float freeCamSpeed = cam.MoveSpeed();
-          if (ImGui::SliderFloat("Free Camera Speed", &freeCamSpeed, 1.0f,
-                                 30.0f, "%.1f")) {
-            cam.SetMoveSpeed(freeCamSpeed);
-          }
-        ImGui::Separator();
-        ImGui::Text("Overworld");
-        ImGui::Checkbox("Show Collision", &showCollisionDebug);
-        ImGui::Checkbox("Use Model Mesh Collision", &useModelMeshCollision);
-        ImGui::Checkbox("Show Model Collision", &showModelCollisionDebug);
-        ImGui::Text("Model collision tris: %zu",
-                    overworldScene.StageCollisionTriangles().size());
-        if (ImGui::Button("Reset Collision Defaults")) {
-          overworldCollisionShapes =
-              overworldScene.BuildDefaultCollisionShapes();
-        }
-        ImGui::Text("Collision shapes: %zu", overworldCollisionShapes.size());
-        if (ImGui::CollapsingHeader("Collision Shape Editor",
-                                    ImGuiTreeNodeFlags_DefaultOpen)) {
-          for (size_t i = 0; i < overworldCollisionShapes.size(); ++i) {
-            auto &box = overworldCollisionShapes[i];
-            ImGui::PushID(static_cast<int>(i));
-            if (ImGui::TreeNode(box.label.c_str())) {
-              ImGui::Checkbox("Enabled", &box.enabled);
-              const char *shapeNames[] = {"Box", "Circle", "Triangle"};
-              int shapeIndex = static_cast<int>(box.shape);
-              if (ImGui::Combo("Shape", &shapeIndex, shapeNames,
-                               IM_ARRAYSIZE(shapeNames))) {
-                box.shape = static_cast<CollisionSystem::ShapeType>(shapeIndex);
-              }
-              ImGui::DragFloat3("Center", &box.center.x, 0.05f, -40.0f, 40.0f,
-                                "%.2f");
-              ImGui::DragFloat3("Size", &box.size.x, 0.05f, 0.05f, 80.0f,
-                                "%.2f");
-              float yawDegrees = box.yawRadians * 180.0f / DirectX::XM_PI;
-              if (ImGui::DragFloat("Yaw deg", &yawDegrees, 1.0f, -180.0f,
-                                   180.0f, "%.1f")) {
-                box.yawRadians = yawDegrees * DirectX::XM_PI / 180.0f;
-              }
-              ImGui::Text("Default line:");
-              ImGui::Text("%s: shape %s, center {%.2ff, %.2ff, %.2ff}, size {%.2ff, %.2ff, %.2ff}, yaw %.1f",
-                          box.label.c_str(), shapeNames[shapeIndex],
-                          box.center.x, box.center.y,
-                          box.center.z, box.size.x, box.size.y, box.size.z,
-                          yawDegrees);
-              ImGui::TreePop();
-            }
-            ImGui::PopID();
-          }
-        }
-        if (ImGui::Button("Reload Placements")) {
-          overworldScene.ReloadPlacements(dx);
-        }
-          ImGui::Text("File: %s", overworldScene.PlacementPath().c_str());
         }
 
+        const char *closeText = "ESC / CLICK HERE TO CLOSE";
+        const ImVec2 closeSize = ImGui::CalcTextSize(closeText);
+        const ImVec2 closeMin(panelMax.x - closeSize.x - 72.0f,
+                              panelMax.y - 58.0f);
+        const ImVec2 closeMax(panelMax.x - 34.0f, panelMax.y - 24.0f);
+        ImGui::SetCursorScreenPos(closeMin);
+        if (ImGui::InvisibleButton("##settings-close",
+                                   ImVec2(closeMax.x - closeMin.x,
+                                          closeMax.y - closeMin.y))) {
+          showSettings = false;
+        }
+        const bool closeHovered = ImGui::IsItemHovered();
+        draw->AddRectFilled(closeMin, closeMax,
+                            closeHovered
+                                ? UiColor(0.12f, 0.25f, 0.24f, 0.92f)
+                                : UiColor(0.04f, 0.08f, 0.085f, 0.86f),
+                            6.0f);
+        draw->AddRect(closeMin, closeMax, UiColor(0.36f, 1.0f, 0.84f, 0.58f),
+                      6.0f, 0, 1.2f);
+        draw->AddText(ImVec2(closeMin.x + 20.0f, closeMin.y + 9.0f),
+                      UiColor(0.80f, 1.0f, 0.94f, 0.96f), closeText);
         ImGui::End();
+        ImGui::PopStyleVar();
       }
 
       if (appMode == AppMode::Game || appMode == AppMode::BossArena) {
@@ -1213,7 +1286,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       }
 
       // ---- TAA jitter (Phase 10.4) ----
-      cam.EnableJitter(editorScene.PostProcessSettings().taaEnabled);
+      cam.EnableJitter(editorScene.PostProcessSettings().taaEnabled ||
+                       (appMode == AppMode::BossArena &&
+                        bossArenaScene.TechShowcaseTAAEnabled()));
       cam.AdvanceJitter(dx.Width(), dx.Height());
 
       // ---- Build FrameData (Phase 8) ----
@@ -1255,7 +1330,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         frame.emitters.push_back(&smokeEmitter);
       if (particlesEnabled && sparkEnabled)
         frame.emitters.push_back(&sparkEmitter);
-      if (appMode == AppMode::Game && rainEnabled)
+      if ((appMode == AppMode::Game || appMode == AppMode::BossArena) &&
+          rainEnabled)
         frame.emitters.push_back(&rainEmitter);
 
       // Motion blur view-projection matrices (camera-dependent).
@@ -1294,14 +1370,32 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         frame.lighting.iblIntensity = kGameIblIntensity;
         frame.exposure = gamePostExposure;
       } else if (appMode == AppMode::BossArena) {
+        frame.gridEnabled = false;
+        frame.waterWaveParams = {0.46f, 1.85f, 1.55f, 0.0f};
+        frame.ssrReflectionParams = {1.35f, 44.0f, 0.58f, 0.24f};
         bossArenaScene.BuildFrame(frame);
+        const DirectX::XMFLOAT3 gameplayPlayerPos = playerPreview.Position();
+        playerPreview.SetPosition(
+            bossArenaScene.VisualPositionForGameplayPosition(gameplayPlayerPos));
         playerPreview.BuildFrame(frame);
-        frame.skyExposure = gameSkyExposure;
-        frame.lighting.lightDir = gameLighting.sunDirection;
-        frame.lighting.lightColor = gameLighting.sunColor;
-        frame.lighting.lightIntensity = gameLighting.sunIntensity;
-        frame.lighting.iblIntensity = kGameIblIntensity;
-        frame.exposure = gamePostExposure;
+        playerPreview.SetPosition(gameplayPlayerPos);
+        const bool bossPhaseTwo = bossArenaScene.PhaseTwoActive();
+        frame.clearColor[0] = bossPhaseTwo ? 0.070f : 0.028f;
+        frame.clearColor[1] = bossPhaseTwo ? 0.030f : 0.045f;
+        frame.clearColor[2] = bossPhaseTwo ? 0.040f : 0.058f;
+        frame.clearColor[3] = 1.0f;
+        frame.skyExposure = 0.055f;
+        frame.lighting.lightDir = {-0.34f, -0.72f, 0.44f};
+        frame.lighting.lightColor =
+            bossPhaseTwo ? DirectX::XMFLOAT3{0.90f, 0.42f, 0.38f}
+                         : DirectX::XMFLOAT3{0.42f, 0.70f, 0.92f};
+        frame.lighting.lightIntensity = bossPhaseTwo ? 1.46f : 1.28f;
+        frame.lighting.iblIntensity = 0.36f;
+        frame.exposure = bossPhaseTwo ? 1.12f : 1.05f;
+        frame.bloomThreshold = bossPhaseTwo ? 0.56f : 0.62f;
+        frame.bloomIntensity =
+            std::max(frame.bloomIntensity, bossPhaseTwo ? 1.02f : 0.88f);
+        bossArenaScene.ApplyTechShowcase(frame);
       } else if (scenePlayMode) {
         // Scene play mode (Phase 8): build frame data but skip editor UI.
         editorScene.BuildFrameData(frame);
@@ -1442,7 +1536,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         TraceAppEvent("game frame: end");
 
       // Swap TAA ping-pong so next frame reads our output as history.
-      if (editorScene.PostProcessSettings().taaEnabled) {
+      if (frame.taaEnabled) {
         dx.SwapTaaBuffers();
       }
 

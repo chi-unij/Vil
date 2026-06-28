@@ -91,7 +91,8 @@ void SkyPass::Execute(DxContext &dx, const FrameData &frame) {
 // ============================================================================
 void OpaquePass::Execute(DxContext &dx, const FrameData &frame) {
   // Draw grid/axes first (lines).
-  m_grid.Draw(dx, frame.view, frame.proj);
+  if (frame.gridEnabled)
+    m_grid.Draw(dx, frame.view, frame.proj);
 
   // Build shadow params from FrameData + ShadowMap state (CSM).
   MeshShadowParams shadowParams{};
@@ -475,7 +476,8 @@ void GridPass::Execute(DxContext &dx, const FrameData &frame) {
   auto hdrRtv = dx.HdrRtv();
   auto dsv = dx.Dsv();
   dx.CmdList()->OMSetRenderTargets(1, &hdrRtv, FALSE, &dsv);
-  m_grid.Draw(dx, frame.view, frame.proj);
+  if (frame.gridEnabled)
+    m_grid.Draw(dx, frame.view, frame.proj);
   m_grid.DrawLines(dx, frame.view, frame.proj, frame.debugLines);
 }
 
@@ -619,6 +621,9 @@ std::string SSRPass::ReloadShaders(DxContext &dx) {
 }
 
 void SSRPass::Execute(DxContext &dx, const FrameData &frame) {
+  if (!frame.ssrEnabled)
+    return;
+
   CreatePipelineOnce(dx);
 
   dx.Transition(dx.HdrTarget(), D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -646,7 +651,7 @@ void SSRPass::Execute(DxContext &dx, const FrameData &frame) {
   cb.screenParams = {static_cast<float>(dx.Width()), static_cast<float>(dx.Height()),
                      1.0f / static_cast<float>(dx.Width()),
                      1.0f / static_cast<float>(dx.Height())};
-  cb.reflectionParams = {0.85f, 28.0f, 0.35f, 0.35f};
+  cb.reflectionParams = frame.ssrReflectionParams;
 
   void *cbCpu = nullptr;
   D3D12_GPU_VIRTUAL_ADDRESS cbGpu = dx.AllocFrameConstants(sizeof(SSRCB), &cbCpu);

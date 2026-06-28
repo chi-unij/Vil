@@ -70,6 +70,7 @@ struct FrameData {
 
   // Runtime debug line overlay.
   std::vector<DebugLine> debugLines;
+  bool gridEnabled = true;
 
   // Particles
   bool particlesEnabled = false;
@@ -123,6 +124,8 @@ struct FrameData {
   DirectX::XMFLOAT4 wetSurfaceParams = {0.9f, 4.0f, 4.5f, 5.5f};
   DirectX::XMFLOAT4 puddleParams = {0.85f, 5.0f, 3.2f, 1.0f};
   DirectX::XMFLOAT4 puddleVisualParams = {0.25f, 0.60f, 1.0f, 0.0f};
+  bool ssrEnabled = true;
+  DirectX::XMFLOAT4 ssrReflectionParams = {0.85f, 28.0f, 0.35f, 0.35f};
 };
 
 // Base class for all render passes.

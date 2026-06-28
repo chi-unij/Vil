@@ -7,6 +7,7 @@
 // ======================================
 
 #include "particle_test.h"
+#include <algorithm>
 using namespace DirectX;
 
 void NormalParticle::Update(double elapsed_time)
@@ -166,4 +167,121 @@ Particle* SparkEmitter::createParticle()
 	);
 
 	return new SparkParticle(spawnPos, velocity, lifetime_dist(m_mt));
+}
+
+Particle* SparkBurstEmitter::createParticle()
+{
+	std::uniform_real_distribution<float> angle_dist{ -DirectX::XM_PI, DirectX::XM_PI };
+	std::uniform_real_distribution<float> ring_dist{ 0.0f, 1.0f };
+	std::uniform_real_distribution<float> elev_dist{ 0.18f, 0.82f };
+	std::uniform_real_distribution<float> speed_dist{ 4.2f, 8.4f };
+	std::uniform_real_distribution<float> lifetime_dist{ 0.42f, 0.95f };
+
+	const float angle = angle_dist(m_mt);
+	const float ring = ring_dist(m_mt);
+	const float elevation = elev_dist(m_mt);
+	const float speed = speed_dist(m_mt);
+
+	const XMVECTOR spawnPos = XMVectorAdd(
+		GetPosition(),
+		XMVectorSet(cosf(angle) * ring * 0.52f, 0.04f,
+		            sinf(angle) * ring * 0.52f, 0.0f));
+	const XMVECTOR velocity = XMVectorSet(
+		cosf(angle) * speed * (1.0f - elevation * 0.45f),
+		speed * elevation,
+		sinf(angle) * speed * (1.0f - elevation * 0.45f),
+		0.0f);
+
+	return new SparkParticle(spawnPos, velocity, lifetime_dist(m_mt));
+}
+
+void RiverMistParticle::Update(double elapsed_time)
+{
+	float ratio = static_cast<float>(std::min(GetAccumulatedTime() / GetLifeTime(), 1.0));
+	const float fadeIn = std::min(ratio * 3.0f, 1.0f);
+	const float fadeOut = 1.0f - ratio;
+
+	m_scale = 0.48f + ratio * 1.35f;
+	m_alpha = fadeIn * fadeOut * 0.38f;
+
+	AddPosition(XMVectorScale(GetVelocity(), static_cast<float>(elapsed_time)));
+	AddVelocity(XMVectorScale(XMVectorSet(0.0f, 0.035f, 0.0f, 0.0f), static_cast<float>(elapsed_time)));
+
+	Particle::Update(elapsed_time);
+}
+
+ParticleVisual RiverMistParticle::GetVisual() const
+{
+	ParticleVisual v{};
+	XMStoreFloat3(&v.position, GetPosition());
+	v.scale = m_scale;
+	v.color = XMFLOAT4{ 0.58f, 0.95f, 1.0f, m_alpha };
+	return v;
+}
+
+Particle* RiverMistEmitter::createParticle()
+{
+	std::uniform_real_distribution<float> offset_x{ -1.55f, 1.55f };
+	std::uniform_real_distribution<float> offset_z{ -0.42f, 0.42f };
+	std::uniform_real_distribution<float> drift_x{ -0.045f, 0.045f };
+	std::uniform_real_distribution<float> drift_z{ -0.030f, 0.030f };
+	std::uniform_real_distribution<float> up_speed{ 0.035f, 0.12f };
+	std::uniform_real_distribution<float> lifetime{ 2.8f, 4.8f };
+
+	const XMVECTOR spawnPos = XMVectorAdd(
+		GetPosition(),
+		XMVectorSet(offset_x(m_mt), 0.0f, offset_z(m_mt), 0.0f));
+	const XMVECTOR velocity = XMVectorSet(
+		drift_x(m_mt), up_speed(m_mt), drift_z(m_mt), 0.0f);
+
+	return new RiverMistParticle(spawnPos, velocity, lifetime(m_mt));
+}
+
+void MirrorSparkParticle::Update(double elapsed_time)
+{
+	float ratio = static_cast<float>(std::min(GetAccumulatedTime() / GetLifeTime(), 1.0));
+
+	m_scale = 0.20f - ratio * 0.17f;
+	m_alpha = 1.0f - ratio;
+
+	AddPosition(XMVectorScale(GetVelocity(), static_cast<float>(elapsed_time)));
+	AddVelocity(XMVectorScale(XMVectorSet(0.0f, -3.2f, 0.0f, 0.0f), static_cast<float>(elapsed_time)));
+
+	Particle::Update(elapsed_time);
+}
+
+ParticleVisual MirrorSparkParticle::GetVisual() const
+{
+	ParticleVisual v{};
+	XMStoreFloat3(&v.position, GetPosition());
+	v.scale = m_scale;
+	const float ratio = static_cast<float>(std::min(GetAccumulatedTime() / GetLifeTime(), 1.0));
+	v.color = XMFLOAT4{ 0.42f + ratio * 0.36f, 1.0f, 0.92f, m_alpha };
+	return v;
+}
+
+Particle* MirrorSparkBurstEmitter::createParticle()
+{
+	std::uniform_real_distribution<float> angle_dist{ -DirectX::XM_PI, DirectX::XM_PI };
+	std::uniform_real_distribution<float> ring_dist{ 0.1f, 1.0f };
+	std::uniform_real_distribution<float> elev_dist{ 0.18f, 0.92f };
+	std::uniform_real_distribution<float> speed_dist{ 5.2f, 11.5f };
+	std::uniform_real_distribution<float> lifetime_dist{ 0.34f, 0.82f };
+
+	const float angle = angle_dist(m_mt);
+	const float ring = ring_dist(m_mt);
+	const float elevation = elev_dist(m_mt);
+	const float speed = speed_dist(m_mt);
+
+	const XMVECTOR spawnPos = XMVectorAdd(
+		GetPosition(),
+		XMVectorSet(cosf(angle) * ring * 0.76f, 0.10f,
+		            sinf(angle) * ring * 0.76f, 0.0f));
+	const XMVECTOR velocity = XMVectorSet(
+		cosf(angle) * speed * (0.55f + elevation * 0.25f),
+		speed * elevation,
+		sinf(angle) * speed * (0.55f + elevation * 0.25f),
+		0.0f);
+
+	return new MirrorSparkParticle(spawnPos, velocity, lifetime_dist(m_mt));
 }
