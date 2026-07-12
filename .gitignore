@@ -42,3 +42,8 @@ Desktop.ini
 
 # Local agent settings
 .claude/settings.local.json
+
+# Private planning and interview notes
+interview.md
+Plan.md
+SPEC.md

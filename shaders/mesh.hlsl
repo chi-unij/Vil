@@ -222,6 +222,17 @@ PSOut PSMain(PSIn i)
     // BaseColor sampled as SRGB view => returned as LINEAR here.
     float4 baseColorSample = gBaseColorMap.Sample(gSam, uv);
     float alpha = baseColorSample.a * gBaseColorFactor.a;
+    if ((int)(gAnimParams.y + 0.5f) == 9)
+    {
+        float sideFade = smoothstep(0.0f, 0.24f, uv.x)
+                       * (1.0f - smoothstep(0.76f, 1.0f, uv.x));
+        float endFade = smoothstep(0.0f, 0.12f, uv.y)
+                      * (1.0f - smoothstep(0.82f, 1.0f, uv.y));
+        float veilNoise = lerp(0.72f, 1.0f,
+            fbm(uv * float2(3.0f, 1.4f)
+                + float2(gAnimParams.x * 0.025f, -gAnimParams.x * 0.055f), 3));
+        alpha *= sideFade * endFade * veilNoise;
+    }
     if (gAnimParams.w > 0.5f && alpha < gAnimParams.z)
         discard;
     float3 albedo = baseColorSample.rgb * gBaseColorFactor.rgb;

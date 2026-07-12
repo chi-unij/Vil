@@ -249,12 +249,12 @@ void OverworldScene::Initialize(DxContext &dx) {
   m_lanternCapMeshId =
       dx.CreateMeshResources(lanternCapMesh, {}, lanternCapMaterial);
 
-  const LoadedMesh lanternGlowMesh = ProceduralMesh::CreateSphere(0.5f, 8, 16);
+  const LoadedMesh lanternGlowMesh = ProceduralMesh::CreateCube(1.0f);
   Material lanternGlowMaterial{};
-  lanternGlowMaterial.baseColorFactor = {1.0f, 0.62f, 0.22f, 0.42f};
+  lanternGlowMaterial.baseColorFactor = {1.0f, 0.40f, 0.08f, 0.90f};
   lanternGlowMaterial.metallicFactor = 0.0f;
-  lanternGlowMaterial.roughnessFactor = 0.18f;
-  lanternGlowMaterial.emissiveFactor = {1.6f, 0.70f, 0.22f};
+  lanternGlowMaterial.roughnessFactor = 0.16f;
+  lanternGlowMaterial.emissiveFactor = {3.2f, 0.68f, 0.10f};
   m_lanternGlowMeshId =
       dx.CreateMeshResources(lanternGlowMesh, {}, lanternGlowMaterial);
 
@@ -524,14 +524,13 @@ void OverworldScene::AppendWorldPolishProps(FrameData &frame) const {
       pushOpaque(m_lanternCapMeshId, 0.62f, 0.18f, 0.62f, lantern.x, 1.68f,
                  lantern.z, lantern.yaw + 0.35f);
     }
-    pushTransparent(m_lanternGlowMeshId, 0.46f, 0.46f, 0.46f, lantern.x,
-                    1.12f, lantern.z, 0.0f);
-
+    pushTransparent(m_lanternGlowMeshId, 0.24f, 0.20f, 0.24f, lantern.x,
+                    0.92f, lantern.z, lantern.yaw);
     GPUPointLight light{};
-    light.position = {lantern.x, 1.12f, lantern.z};
-    light.range = 3.7f;
+    light.position = {lantern.x, 0.92f, lantern.z};
+    light.range = 4.6f;
     light.color = {1.0f, 0.58f, 0.22f};
-    light.intensity = lantern.intensity * 0.88f;
+    light.intensity = lantern.intensity * 2.8f;
     frame.pointLights.push_back(light);
   }
 

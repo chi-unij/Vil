@@ -365,11 +365,7 @@ void BossArenaScene::Initialize(DxContext &dx) {
       telegraphPlane, {},
       MakeTelegraphMaterial({0.10f, 0.56f, 0.82f, 0.22f},
                             {0.05f, 0.28f, 0.44f}));
-  m_sideMistMeshId = dx.CreateMeshResources(
-      telegraphPlane, {},
-      MakeTelegraphMaterial({0.18f, 0.26f, 0.28f, 0.17f},
-                            {0.05f, 0.10f, 0.12f}));
-  m_sideFogMeshId = dx.CreateMeshResources(
+  m_attackSmokeMeshId = dx.CreateMeshResources(
       telegraphPlane, {},
       MakeTelegraphMaterial({0.32f, 0.46f, 0.50f, 0.26f},
                             {0.08f, 0.18f, 0.22f}));
@@ -385,10 +381,12 @@ void BossArenaScene::Initialize(DxContext &dx) {
       diskMesh, {},
       MakeTelegraphMaterial({0.44f, 0.86f, 1.0f, 0.30f},
                             {0.40f, 1.10f, 1.35f}));
-  m_moonRayMeshId = dx.CreateMeshResources(
-      telegraphPlane, {},
-      MakeTelegraphMaterial({0.62f, 0.95f, 1.0f, 0.16f},
-                            {0.30f, 0.86f, 1.10f}));
+  Material moonRayMaterial =
+      MakeTelegraphMaterial({0.46f, 0.74f, 0.82f, 0.085f},
+                            {0.06f, 0.18f, 0.23f});
+  moonRayMaterial.proceduralTypeId = 9.0f;
+  m_moonRayMeshId =
+      dx.CreateMeshResources(telegraphPlane, {}, moonRayMaterial);
   m_bossSealMeshId = dx.CreateMeshResources(
       diskMesh, {},
       MakeTelegraphMaterial({0.95f, 0.12f, 0.04f, 0.30f},
@@ -436,9 +434,9 @@ void BossArenaScene::Initialize(DxContext &dx) {
       dx.CreateMeshResources(cubeMesh, {}, lanternCapMaterial);
 
   Material lanternGlowMaterial{};
-  lanternGlowMaterial.baseColorFactor = {1.0f, 0.48f, 0.18f, 0.62f};
-  lanternGlowMaterial.emissiveFactor = {1.4f, 0.42f, 0.08f};
-  lanternGlowMaterial.roughnessFactor = 0.24f;
+  lanternGlowMaterial.baseColorFactor = {1.0f, 0.42f, 0.10f, 0.82f};
+  lanternGlowMaterial.emissiveFactor = {2.6f, 0.72f, 0.14f};
+  lanternGlowMaterial.roughnessFactor = 0.18f;
   m_lanternGlowMeshId =
       dx.CreateMeshResources(lanternGlowMesh, {}, lanternGlowMaterial);
 
@@ -497,8 +495,14 @@ void BossArenaScene::Initialize(DxContext &dx) {
                             m_shrineGateMeshIds);
   m_aoeSparkBurst = std::make_unique<SparkBurstEmitter>(
       192, XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f), 72);
+  m_meteorFlameEmitter = std::make_unique<MeteorFlameEmitter>(
+      320, XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f));
+  m_lineRiftEmitter = std::make_unique<LineRiftEmitter>(
+      420, XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f));
   m_counterSparkBurst = std::make_unique<MirrorSparkBurstEmitter>(
       256, XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f), 120);
+  m_mirrorPickupBurst = std::make_unique<MirrorPickupBurstEmitter>(
+      256, XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f), 88);
   const XMFLOAT3 bossSmokePos = CurvePoint(0.0f, 1.4f, kArenaHalfExtent - 3.5f);
   m_bossSmokeEmitter = std::make_unique<SmokeEmitter>(
       180, XMVectorSet(bossSmokePos.x, bossSmokePos.y, bossSmokePos.z, 0.0f),
@@ -509,13 +513,23 @@ void BossArenaScene::Initialize(DxContext &dx) {
     m_riverMistEmitters[i] = std::make_unique<RiverMistEmitter>(
         96, XMVectorSet(mistPos.x, mistPos.y, mistPos.z, 0.0f), 15.0, true);
   }
-  constexpr float sideFogZs[4] = {-15.4f, -12.2f, -9.0f, -5.8f};
-  for (int i = 0; i < 8; ++i) {
+  constexpr float sideFogZs[6] = {-15.0f, -9.0f, -3.0f,
+                                  3.0f,   9.0f,  14.5f};
+  for (int i = 0; i < 12; ++i) {
     const float side = (i % 2 == 0) ? -1.0f : 1.0f;
     const float z = sideFogZs[i / 2];
-    const XMFLOAT3 fogPos = CurvePoint(side * 10.6f, 0.30f, z);
-    m_sideFogEmitters[i] = std::make_unique<RiverMistEmitter>(
-        112, XMVectorSet(fogPos.x, fogPos.y, fogPos.z, 0.0f), 13.0, true);
+    const XMFLOAT3 fogPos = CurvePoint(side * 10.8f, 0.16f, z);
+    m_sideFogEmitters[i] = std::make_unique<ShrineFogEmitter>(
+        160, XMVectorSet(fogPos.x, fogPos.y, fogPos.z, 0.0f), side, 22.0,
+        true);
+    m_sideFogEmitters[i]->WarmStart(6.0);
+  }
+  constexpr float electricZs[7] = {-15.0f, -10.0f, -5.0f, 0.0f,
+                                   5.0f,   10.0f,  15.0f};
+  for (int i = 0; i < 7; ++i) {
+    const XMFLOAT3 electricPos = CurvePoint(0.0f, 0.18f, electricZs[i]);
+    m_readyRiverElectricEmitters[i] = std::make_unique<RiverElectricEmitter>(
+        96, XMVectorSet(electricPos.x, electricPos.y, electricPos.z, 0.0f));
   }
 
   m_ready = (m_floorMeshId != UINT32_MAX && m_bossMeshId != UINT32_MAX &&
@@ -524,8 +538,7 @@ void BossArenaScene::Initialize(DxContext &dx) {
              m_knockbackTelegraphMeshId != UINT32_MAX &&
              m_flameMeshId != UINT32_MAX &&
              m_pathGlowMeshId != UINT32_MAX &&
-             m_sideMistMeshId != UINT32_MAX &&
-             m_sideFogMeshId != UINT32_MAX &&
+             m_attackSmokeMeshId != UINT32_MAX &&
              m_spiritVeilMeshId != UINT32_MAX &&
              m_laserRiftMeshId != UINT32_MAX &&
              m_moonDiscMeshId != UINT32_MAX &&
@@ -580,6 +593,15 @@ void BossArenaScene::Reset(PlayerAnimationPreview &player) {
   m_memoryFailTimer = 0.0f;
   m_mirrorCharge = 0;
   m_memoryInputIndex = 0;
+  m_readyRiverElectricWasActive = false;
+  if (m_meteorFlameEmitter)
+    m_meteorFlameEmitter->Emmit(false);
+  if (m_lineRiftEmitter)
+    m_lineRiftEmitter->Emmit(false);
+  for (auto &electricEmitter : m_readyRiverElectricEmitters) {
+    if (electricEmitter)
+      electricEmitter->Emmit(false);
+  }
   m_mirrorChargeActive = {false, false, false};
   SpawnMirrorCharges();
   player.SetPosition({0.0f, 0.0f, -12.0f});
@@ -611,6 +633,59 @@ void BossArenaScene::Update(float dt, const Input &input,
     m_aoeSparkBurst->Update(static_cast<double>(dt));
   if (m_counterSparkBurst && m_counterVfxTimer > 0.0f)
     m_counterSparkBurst->Update(static_cast<double>(dt));
+  if (m_mirrorPickupBurst && m_mirrorPickupVfxTimer > 0.0f &&
+      !m_mirrorPickupBurst->IsFinished())
+    m_mirrorPickupBurst->Update(static_cast<double>(dt));
+  if (m_meteorFlameEmitter) {
+    float meteorFlameIntensity = 0.0f;
+    const bool meteorVisible =
+        m_attack == AttackType::MeteorAoE && !m_phoneOpen && !m_failed &&
+        !m_cleared;
+    if (meteorVisible && m_phase == AttackPhase::Telegraph) {
+      const float charge = 1.0f -
+          std::clamp(m_phaseTimer / TelegraphDuration(), 0.0f, 1.0f);
+      meteorFlameIntensity = 0.24f + charge * 0.66f;
+    } else if (meteorVisible && m_impactTimer > 0.0f) {
+      meteorFlameIntensity =
+          0.52f + std::clamp(m_impactTimer / 0.58f, 0.0f, 1.0f) * 0.58f;
+    }
+    const XMFLOAT3 flamePosition =
+        CurvePoint(m_attackCenter.x, 0.12f, m_attackCenter.z);
+    m_meteorFlameEmitter->SetPosition(XMVectorSet(
+        flamePosition.x, flamePosition.y, flamePosition.z, 0.0f));
+    m_meteorFlameEmitter->SetRadius(m_attackRadius * 0.92f);
+    m_meteorFlameEmitter->SetIntensity(meteorFlameIntensity);
+    m_meteorFlameEmitter->Emmit(meteorFlameIntensity > 0.001f);
+    m_meteorFlameEmitter->Update(static_cast<double>(dt));
+  }
+  if (m_lineRiftEmitter) {
+    float lineRiftIntensity = 0.0f;
+    const bool lineVisible =
+        m_attack == AttackType::LaserLine && !m_phoneOpen && !m_failed &&
+        !m_cleared;
+    if (lineVisible && m_phase == AttackPhase::Telegraph) {
+      const float charge = 1.0f -
+          std::clamp(m_phaseTimer / TelegraphDuration(), 0.0f, 1.0f);
+      lineRiftIntensity = 0.18f + charge * 0.76f;
+    } else if (lineVisible && m_impactTimer > 0.0f) {
+      lineRiftIntensity =
+          0.72f + std::clamp(m_impactTimer / 0.58f, 0.0f, 1.0f) * 0.68f;
+    }
+    const float lineCenterZ =
+        m_laserVertical ? (kRunnerMinZ + kRunnerMaxZ) * 0.5f
+                        : m_attackCenter.z;
+    const XMFLOAT3 linePosition = CurvePoint(0.0f, 0.08f, lineCenterZ);
+    m_lineRiftEmitter->SetPosition(XMVectorSet(
+        linePosition.x, linePosition.y, linePosition.z, 0.0f));
+    m_lineRiftEmitter->SetLine(
+        m_laserVertical,
+        m_laserVertical ? (kRunnerMaxZ - kRunnerMinZ) * 0.5f + 0.6f
+                        : kLaneHalfWidth + 0.8f,
+        m_laserHalfWidth * 0.72f);
+    m_lineRiftEmitter->SetIntensity(lineRiftIntensity);
+    m_lineRiftEmitter->Emmit(lineRiftIntensity > 0.001f);
+    m_lineRiftEmitter->Update(static_cast<double>(dt));
+  }
   if (m_bossSmokeEmitter)
     m_bossSmokeEmitter->Update(static_cast<double>(dt));
   for (auto &mistEmitter : m_riverMistEmitters) {
@@ -621,6 +696,19 @@ void BossArenaScene::Update(float dt, const Input &input,
     if (fogEmitter)
       fogEmitter->Update(static_cast<double>(dt));
   }
+  const bool readyRiverElectricActive =
+      m_mirrorCharge >= kMirrorChargeMax && m_counterVfxTimer <= 0.0f &&
+      !m_phoneOpen && !m_failed && !m_cleared;
+  for (auto &electricEmitter : m_readyRiverElectricEmitters) {
+    if (!electricEmitter)
+      continue;
+    electricEmitter->SetIntensity(m_readyRiverElectricIntensity);
+    electricEmitter->Emmit(readyRiverElectricActive);
+    if (readyRiverElectricActive && !m_readyRiverElectricWasActive)
+      electricEmitter->Prime();
+    electricEmitter->Update(static_cast<double>(dt));
+  }
+  m_readyRiverElectricWasActive = readyRiverElectricActive;
   if (IsPhoneOverlayActive())
     return;
 
@@ -679,34 +767,6 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
     const float pickupT = std::clamp(m_mirrorPickupVfxTimer / 0.72f, 0.0f,
                                      1.0f);
     const float pickupAge = 1.0f - pickupT;
-    const XMFLOAT3 pickupCenter =
-        CurvePoint(m_lastMirrorPickupPosition.x, 0.20f,
-                   m_lastMirrorPickupPosition.z);
-    const XMFLOAT4 pickupColor{0.36f, 1.0f, 0.86f, 0.78f * pickupT};
-    PushThickCircle(frame, pickupCenter, 0.65f + pickupAge * 2.65f,
-                    pickupColor, 3);
-    PushThickCircle(frame, pickupCenter, 1.15f + pickupAge * 3.35f,
-                    XMFLOAT4{0.20f, 0.72f, 1.0f, 0.34f * pickupT}, 2);
-    frame.transparentItems.push_back(
-        {m_spiritVeilMeshId,
-         CurveWorld(1.15f + pickupAge * 1.35f, 1.0f,
-                    2.8f + pickupAge * 2.2f, m_lastMirrorPickupPosition.x,
-                    1.35f + pickupAge * 0.8f,
-                    m_lastMirrorPickupPosition.z,
-                    frame.gameTime * 0.65f)});
-    for (int i = 0; i < 5; ++i) {
-      const float fi = static_cast<float>(i);
-      const float a = fi / 5.0f * XM_2PI + frame.gameTime * 1.2f;
-      PushCurvedRibbon(frame, m_counterRibbonMeshId,
-                       m_lastMirrorPickupPosition.x, 0.26f,
-                       m_lastMirrorPickupPosition.z,
-                       m_lastMirrorPickupPosition.x + std::cos(a) *
-                                                        (1.2f + pickupAge),
-                       0.38f + pickupAge * 0.34f,
-                       m_lastMirrorPickupPosition.z + std::sin(a) *
-                                                        (1.2f + pickupAge),
-                       0.08f + pickupT * 0.08f, 3);
-    }
     GPUPointLight pickupLight{};
     pickupLight.position = CurvePoint(m_lastMirrorPickupPosition.x, 1.05f,
                                       m_lastMirrorPickupPosition.z);
@@ -777,6 +837,10 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
   if (m_aoeSparkBurst && m_aoeSparkTimer > 0.0f &&
       !m_aoeSparkBurst->IsFinished())
     frame.emitters.push_back(m_aoeSparkBurst.get());
+  if (m_meteorFlameEmitter)
+    frame.emitters.push_back(m_meteorFlameEmitter.get());
+  if (m_lineRiftEmitter)
+    frame.emitters.push_back(m_lineRiftEmitter.get());
   if (m_bossSmokeEmitter && !m_cleared)
     frame.emitters.push_back(m_bossSmokeEmitter.get());
   for (const auto &mistEmitter : m_riverMistEmitters) {
@@ -787,6 +851,13 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
     if (fogEmitter)
       frame.emitters.push_back(fogEmitter.get());
   }
+  for (const auto &electricEmitter : m_readyRiverElectricEmitters) {
+    if (electricEmitter)
+      frame.emitters.push_back(electricEmitter.get());
+  }
+  if (m_mirrorPickupBurst && m_mirrorPickupVfxTimer > 0.0f &&
+      !m_mirrorPickupBurst->IsFinished())
+    frame.emitters.push_back(m_mirrorPickupBurst.get());
   if (m_counterSparkBurst && m_counterVfxTimer > 0.0f &&
       !m_counterSparkBurst->IsFinished()) {
     frame.emitters.push_back(m_counterSparkBurst.get());
@@ -917,15 +988,6 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
                        side * 8.4f, 0.34f, z - 1.4f,
                        0.12f + phasePulse * 0.12f, 5);
     }
-    for (int i = 0; i < 4; ++i) {
-      const float z = std::lerp(-kArenaHalfExtent + 2.0f,
-                                kArenaHalfExtent - 4.0f,
-                                (static_cast<float>(i) + 0.5f) / 4.0f);
-      frame.transparentItems.push_back(
-          {m_laserRiftMeshId,
-           CurveWorld(8.4f + phasePulse * 2.2f, 1.0f, 1.3f, 0.0f, 0.155f,
-                      z)});
-    }
   }
 
   if (bossHitT > 0.0f) {
@@ -1006,46 +1068,13 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
                      m_attackCenter.x, telegraphY, m_attackCenter.z);
       frame.transparentItems.push_back({m_aoeTelegraphMeshId, world});
       const float charge = 1.0f - telegraphRemain;
-      constexpr int kChargePillars = 12;
-      for (int i = 0; i < kChargePillars; ++i) {
-        const float fi = static_cast<float>(i);
-        const float angle = fi / static_cast<float>(kChargePillars) * XM_2PI +
-                            frame.gameTime * 0.75f;
-        const float radius = m_attackRadius * (0.34f + 0.52f * (fi / 11.0f));
-        const float x = m_attackCenter.x + std::cos(angle) * radius;
-        const float z = m_attackCenter.z + std::sin(angle) * radius;
-        const float height = 1.0f + charge * 3.2f +
-                             0.45f * std::sin(frame.gameTime * 12.0f + fi);
-        const XMFLOAT3 p = CurvePoint(x, 0.18f + height * 0.5f, z);
-        const XMMATRIX pillar =
-            XMMatrixScaling(0.36f + charge * 0.20f, 1.0f, height) *
-            XMMatrixRotationX(-XM_PIDIV2) *
-            XMMatrixRotationY(angle + XM_PIDIV2) *
-            XMMatrixRotationX(CurveAngle(z)) *
-            XMMatrixTranslation(p.x, p.y, p.z);
-        frame.transparentItems.push_back({m_flameMeshId, pillar});
-      }
-
       GPUPointLight meteorLight{};
       meteorLight.position =
-          CurvePoint(m_attackCenter.x, 2.2f + charge * 1.4f, m_attackCenter.z);
-      meteorLight.range = 7.5f + charge * 6.5f;
+          CurvePoint(m_attackCenter.x, 1.2f + charge * 0.8f, m_attackCenter.z);
+      meteorLight.range = 5.5f + charge * 3.5f;
       meteorLight.color = {1.0f, 0.26f, 0.08f};
-      meteorLight.intensity = 2.8f + charge * 7.5f;
+      meteorLight.intensity = 1.4f + charge * 3.6f;
       frame.pointLights.push_back(meteorLight);
-      for (int i = 0; i < 3; ++i) {
-        const float smokePulse =
-            SmoothPulse(frame.gameTime + static_cast<float>(i) * 0.23f, 4.4f,
-                        0.20f);
-        const float smokeSize =
-            m_attackRadius * (1.35f + 0.26f * static_cast<float>(i)) +
-            smokePulse * 0.45f;
-        frame.transparentItems.push_back(
-            {m_sideFogMeshId,
-             CurveWorld(smokeSize, 1.0f, smokeSize, m_attackCenter.x,
-                        0.075f + i * 0.04f, m_attackCenter.z,
-                        std::sin(frame.gameTime * 0.9f + i) * 0.18f)});
-      }
     } else if (m_attack == AttackType::LaserLine) {
       const float width = m_laserHalfWidth * 2.0f;
       const float runnerLength = kRunnerMaxZ - kRunnerMinZ;
@@ -1059,37 +1088,11 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
                            m_attackCenter.z);
       frame.transparentItems.push_back({m_laserTelegraphMeshId, world});
       const float charge = 1.0f - telegraphRemain;
-      const float beamWidth = 0.22f + charge * 0.42f;
-      if (m_laserVertical) {
-        for (int i = 0; i < 5; ++i) {
-          const float offset = (static_cast<float>(i) - 2.0f) * 0.34f;
-          const float wobble = std::sin(frame.gameTime * 18.0f +
-                                        static_cast<float>(i) * 1.7f) *
-                               (0.08f + charge * 0.16f);
-          PushCurvedRibbon(frame, m_laserRiftMeshId, offset + wobble, 0.34f,
-                           kRunnerMinZ - 0.7f, -offset * 0.2f - wobble, 0.46f,
-                           kRunnerMaxZ + 0.9f, beamWidth, 16);
-        }
-      } else {
-        for (int i = 0; i < 5; ++i) {
-          const float offset = (static_cast<float>(i) - 2.0f) * 0.34f;
-          const float wobble = std::sin(frame.gameTime * 18.0f +
-                                        static_cast<float>(i) * 1.7f) *
-                               (0.08f + charge * 0.16f);
-          PushCurvedRibbon(frame, m_laserRiftMeshId,
-                           -kLaneHalfWidth - 1.0f, 0.34f,
-                           m_attackCenter.z + offset + wobble,
-                           kLaneHalfWidth + 1.0f, 0.46f,
-                           m_attackCenter.z - offset * 0.2f - wobble,
-                           beamWidth, 10);
-        }
-      }
-
       GPUPointLight riftLight{};
-      riftLight.position = CurvePoint(0.0f, 1.7f, m_attackCenter.z);
-      riftLight.range = 9.0f + charge * 5.0f;
+      riftLight.position = CurvePoint(0.0f, 1.0f, m_attackCenter.z);
+      riftLight.range = 5.5f + charge * 3.5f;
       riftLight.color = {1.0f, 0.08f, 0.16f};
-      riftLight.intensity = 3.0f + charge * 6.0f;
+      riftLight.intensity = 1.2f + charge * 3.4f;
       frame.pointLights.push_back(riftLight);
     }
   }
@@ -1101,123 +1104,23 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
     const float impactLife = std::clamp(m_impactTimer / impactDuration, 0.0f, 1.0f);
     const float impactT = 1.0f - impactLife;
     const float radius = std::lerp(0.25f, m_impactMaxRadius, impactT);
-    const XMMATRIX impactWorld =
-        CurveWorld(radius, 1.0f, radius, m_impactPosition.x,
-                   m_impactPosition.y, m_impactPosition.z);
-    frame.transparentItems.push_back({m_knockbackTelegraphMeshId, impactWorld});
-
-    const XMFLOAT4 impactColor{1.0f, 0.68f, 0.10f, impactLife};
-    constexpr int kImpactRays = 18;
-    const XMFLOAT3 impactCenter =
-        CurvePoint(m_impactPosition.x, m_impactPosition.y, m_impactPosition.z);
-    for (int i = 0; i < kImpactRays; ++i) {
-      const float a = (static_cast<float>(i) / kImpactRays) * XM_2PI;
-      const XMFLOAT3 end =
-          CurvePoint(m_impactPosition.x + std::cos(a) * radius, 0.10f,
-                     m_impactPosition.z + std::sin(a) * radius);
-      PushLine(frame, impactCenter, end, impactColor);
-    }
-
     GPUPointLight impactLight{};
     impactLight.position = CurvePoint(m_impactPosition.x, 1.0f,
                                       m_impactPosition.z);
-    impactLight.range = radius + 7.0f;
+    impactLight.range =
+        radius + (m_attack == AttackType::MeteorAoE ? 4.5f : 7.0f);
     impactLight.color = {1.0f, 0.38f, 0.08f};
-    impactLight.intensity = 10.0f * impactLife;
+    impactLight.intensity =
+        (m_attack == AttackType::MeteorAoE ? 5.0f : 10.0f) * impactLife;
     frame.pointLights.push_back(impactLight);
   }
-
-
-  if (m_attack == AttackType::MeteorAoE && m_impactTimer > 0.0f) {
-    constexpr int kFlameCount = 28;
-    const float burnT = std::clamp(m_impactTimer / 0.58f, 0.0f, 1.0f);
-    for (int i = 0; i < kFlameCount; ++i) {
-      const float seed = static_cast<float>(i);
-      const float angle = seed * 2.39996323f;
-      const float lane = static_cast<float>((i % 5) + 1) / 5.5f;
-      const float radius = m_attackRadius * lane * (0.55f + 0.08f * (i % 3));
-      const float x = m_attackCenter.x + std::cos(angle) * radius;
-      const float z = m_attackCenter.z + std::sin(angle) * radius;
-      const float flicker = 0.78f + 0.22f * std::sin(frame.gameTime * 18.0f + seed);
-      const float width = 0.55f * flicker;
-      const float height = (1.35f + 0.55f * static_cast<float>(i % 4)) * burnT;
-      const float yaw = angle + frame.gameTime * 2.5f;
-      const XMMATRIX base = XMMatrixScaling(width, 1.0f, height) *
-                            XMMatrixRotationX(-XM_PIDIV2) *
-                            XMMatrixRotationY(yaw) *
-                            XMMatrixRotationX(CurveAngle(z)) *
-                            XMMatrixTranslation(CurvePoint(x, 0.10f, z).x,
-                                                CurvePoint(x, 0.10f, z).y,
-                                                CurvePoint(x, 0.10f, z).z);
-      const XMMATRIX cross = XMMatrixScaling(width * 0.82f, 1.0f, height * 0.9f) *
-                             XMMatrixRotationX(-XM_PIDIV2) *
-                             XMMatrixRotationY(yaw + XM_PIDIV2) *
-                             XMMatrixRotationX(CurveAngle(z)) *
-                             XMMatrixTranslation(CurvePoint(x, 0.11f, z).x,
-                                                 CurvePoint(x, 0.11f, z).y,
-                                                 CurvePoint(x, 0.11f, z).z);
-      frame.transparentItems.push_back({m_flameMeshId, base});
-      frame.transparentItems.push_back({m_flameMeshId, cross});
-    }
-    for (int i = 0; i < 3; ++i) {
-      const float ring = m_attackRadius * (0.55f + 0.25f * i);
-      const float alpha = burnT * (0.70f - 0.12f * i);
-      PushThickCircle(frame,
-                      CurvePoint(m_attackCenter.x, 0.18f + 0.12f * i,
-                                 m_attackCenter.z),
-                      ring + (1.0f - burnT) * 1.8f,
-                      XMFLOAT4{1.0f, 0.36f, 0.08f, alpha}, 3);
-    }
-    for (int i = 0; i < 10; ++i) {
-      const float fi = static_cast<float>(i);
-      const float a = fi / 10.0f * XM_2PI + frame.gameTime * 0.55f;
-      const float crackLength = m_attackRadius * (0.62f + 0.08f * (i % 4)) *
-                                (0.65f + (1.0f - burnT) * 0.55f);
-      PushCurvedRibbon(frame, m_laserRiftMeshId, m_attackCenter.x, 0.14f,
-                       m_attackCenter.z,
-                       m_attackCenter.x + std::cos(a) * crackLength, 0.18f,
-                       m_attackCenter.z + std::sin(a) * crackLength,
-                       0.07f + burnT * 0.10f, 4);
-    }
-    for (int i = 0; i < 2; ++i) {
-      const float smokeSize =
-          m_attackRadius * (1.55f + static_cast<float>(i) * 0.42f) +
-          (1.0f - burnT) * 1.1f;
-      frame.transparentItems.push_back(
-          {m_sideFogMeshId,
-           CurveWorld(smokeSize, 1.0f, smokeSize, m_attackCenter.x,
-                      0.13f + i * 0.08f, m_attackCenter.z,
-                      frame.gameTime * (0.22f + i * 0.11f))});
-    }
-  } else if (m_attack == AttackType::LaserLine && m_impactTimer > 0.0f) {
+  if (m_attack == AttackType::LaserLine && m_impactTimer > 0.0f) {
     const float zapT = std::clamp(m_impactTimer / 0.58f, 0.0f, 1.0f);
-    const int beamCount = 9;
-    for (int i = 0; i < beamCount; ++i) {
-      const float fi = static_cast<float>(i);
-      const float jitter = std::sin(frame.gameTime * 28.0f + fi * 2.1f) *
-                           (0.10f + zapT * 0.18f);
-      const float offset =
-          (fi / static_cast<float>(beamCount - 1) - 0.5f) * m_laserHalfWidth *
-          1.7f;
-      if (m_laserVertical) {
-        PushCurvedRibbon(frame, m_laserRiftMeshId, offset + jitter, 0.42f,
-                         kRunnerMinZ - 1.0f, -offset * 0.22f - jitter, 0.58f,
-                         kRunnerMaxZ + 1.2f, 0.24f + zapT * 0.28f, 18);
-      } else {
-        PushCurvedRibbon(frame, m_laserRiftMeshId,
-                         -kLaneHalfWidth - 1.15f, 0.42f,
-                         m_attackCenter.z + offset + jitter,
-                         kLaneHalfWidth + 1.15f, 0.58f,
-                         m_attackCenter.z - offset * 0.22f - jitter,
-                         0.24f + zapT * 0.28f, 12);
-      }
-    }
-
     GPUPointLight zapLight{};
-    zapLight.position = CurvePoint(0.0f, 2.2f, m_attackCenter.z);
-    zapLight.range = 13.0f;
+    zapLight.position = CurvePoint(0.0f, 1.35f, m_attackCenter.z);
+    zapLight.range = 9.0f;
     zapLight.color = {1.0f, 0.12f, 0.22f};
-    zapLight.intensity = 8.5f * zapT;
+    zapLight.intensity = 5.0f * zapT;
     frame.pointLights.push_back(zapLight);
   }
   if (m_hitFlashTimer > 0.0f) {
@@ -1308,61 +1211,6 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
                                3.5f + endPulse * 0.8f,
                                kArenaHalfExtent - 3.2f, x * 0.05f)});
       }
-    }
-  }
-
-  if (m_mirrorCharge >= kMirrorChargeMax && m_counterVfxTimer <= 0.0f &&
-      !m_phoneOpen && !m_failed && !m_cleared) {
-    const float readyPulse = SmoothPulse(frame.gameTime, 6.8f, 0.35f);
-    constexpr int kReadyGlowSegments = 8;
-    const float segmentLength =
-        (kArenaHalfExtent * 2.0f) / static_cast<float>(kReadyGlowSegments);
-    for (int i = 0; i < kReadyGlowSegments; ++i) {
-      const float z = -kArenaHalfExtent +
-                      (static_cast<float>(i) + 0.5f) * segmentLength;
-      const float localPulse =
-          0.72f + 0.28f * std::sin(frame.gameTime * 4.5f +
-                                   static_cast<float>(i) * 0.85f);
-      frame.transparentItems.push_back(
-          {m_counterRibbonMeshId,
-           CurveWorld(8.9f + readyPulse * 0.85f, 1.0f,
-                      segmentLength + 0.34f, 0.0f, 0.122f, z)});
-      frame.transparentItems.push_back(
-          {m_pathGlowMeshId,
-           CurveWorld(10.2f + localPulse * 0.65f, 1.0f,
-                      segmentLength + 0.18f, 0.0f, 0.148f, z)});
-    }
-
-    constexpr int kReadyLights = 5;
-    for (int i = 0; i < kReadyLights; ++i) {
-      const float t =
-          (static_cast<float>(i) + 0.5f) / static_cast<float>(kReadyLights);
-      const float z = std::lerp(-kArenaHalfExtent + 2.0f,
-                                kArenaHalfExtent - 5.2f, t);
-      GPUPointLight readyLight{};
-      readyLight.position = CurvePoint(0.0f, 1.25f, z);
-      readyLight.range = 7.2f + readyPulse * 1.4f;
-      readyLight.color = {0.28f, 1.0f, 0.82f};
-      readyLight.intensity = 2.4f + readyPulse * 2.8f;
-      frame.pointLights.push_back(readyLight);
-    }
-
-    constexpr int kReadyCurrentCount = 9;
-    for (int i = 0; i < kReadyCurrentCount; ++i) {
-      const float fi = static_cast<float>(i);
-      const float t =
-          (fi + 0.5f) / static_cast<float>(kReadyCurrentCount);
-      const float z = std::lerp(kRunnerMinZ + 0.8f, kRunnerMaxZ - 0.8f, t);
-      const float wave = std::sin(frame.gameTime * 4.2f + fi * 1.13f);
-      const float side = (i % 2 == 0) ? -1.0f : 1.0f;
-      PushCurvedRibbon(frame, m_counterRibbonMeshId,
-                       side * (4.35f - readyPulse * 0.35f), 0.24f,
-                       z + wave * 0.45f, side * wave * 0.35f, 0.34f,
-                       z - 1.05f, 0.13f + readyPulse * 0.10f, 5);
-      PushCurvedRibbon(frame, m_pathGlowMeshId,
-                       -side * (4.35f - readyPulse * 0.35f), 0.20f,
-                       z - wave * 0.42f, -side * wave * 0.28f, 0.30f,
-                       z + 0.86f, 0.10f + readyPulse * 0.07f, 5);
     }
   }
 
@@ -1649,12 +1497,6 @@ void BossArenaScene::AppendWorldPolish(FrameData &frame) const {
     pushOpaque(m_lanternCapMeshId,
                cubeWorld(0.58f * scale, 0.44f * scale, 0.58f * scale, x,
                          1.38f * scale, z));
-    pushTransparent(m_lanternGlowMeshId,
-                    cubeWorld(0.36f * scale, 0.36f * scale, 0.36f * scale,
-                              x, 1.38f * scale, z));
-    pushTransparent(m_lanternHaloMeshId,
-                    cubeWorld(1.10f * scale, 1.10f * scale, 1.10f * scale,
-                              x, 1.38f * scale, z));
   };
 
   constexpr int kSpiritVeilCount = 7;
@@ -1699,9 +1541,9 @@ void BossArenaScene::AppendWorldPolish(FrameData &frame) const {
       const float rayPulse = SmoothPulse(time + fi * 0.13f, 1.65f, 0.35f);
       const float x = u * (4.8f + rayPulse * 1.1f);
       const float z = kArenaHalfExtent - 3.3f - std::abs(u) * 2.2f;
-      const float height = 7.8f + rayPulse * 1.6f - std::abs(u) * 1.2f;
+      const float height = 7.4f + rayPulse * 1.2f - std::abs(u) * 1.1f;
       pushTransparent(m_moonRayMeshId,
-                      VerticalVeilWorld(0.82f + rayPulse * 0.26f, height, x,
+                      VerticalVeilWorld(0.48f + rayPulse * 0.16f, height, x,
                                         4.15f + rayPulse * 0.28f, z,
                                         u * 0.26f));
     }
@@ -1739,20 +1581,6 @@ void BossArenaScene::AppendWorldPolish(FrameData &frame) const {
       pushOpaque(m_mossBankMeshId,
                  cubeWorld(3.2f, 0.06f, segmentLength + 0.12f,
                            side * 13.0f, 0.015f, z));
-      pushTransparent(m_sideMistMeshId,
-                      cubeWorld(5.6f, 1.0f, segmentLength + 0.12f,
-                                side * 10.7f, 0.043f, z));
-      pushTransparent(m_sideMistMeshId,
-                      cubeWorld(3.2f, 1.0f, segmentLength + 0.12f,
-                                side * 14.4f, 0.049f, z));
-      pushTransparent(m_sideFogMeshId,
-                      cubeWorld(8.8f, 1.0f, segmentLength + 0.42f,
-                                side * 10.85f, 0.105f, z,
-                                side * 0.045f));
-      pushTransparent(m_sideFogMeshId,
-                      cubeWorld(5.6f, 1.0f, segmentLength + 0.36f,
-                                side * 15.0f, 0.18f, z,
-                                side * -0.035f));
     }
   }
 
@@ -1799,54 +1627,6 @@ void BossArenaScene::AppendWorldPolish(FrameData &frame) const {
     shardLight.color = {0.22f, 0.96f, 0.88f};
     shardLight.intensity = 0.65f + pulse * 0.45f;
     frame.pointLights.push_back(shardLight);
-  }
-
-  constexpr int kMistRibbonCount = 18;
-  for (int i = 0; i < kMistRibbonCount; ++i) {
-    const float fi = static_cast<float>(i);
-    const float baseZ = -18.0f + fi * 2.45f;
-    const float z = LoopZ(baseZ, scroll * 1.38f + std::sin(fi) * 0.8f,
-                          loopMinZ, pathLength);
-    const float edgeFade = LoopEdgeFade(z, loopMinZ, loopMaxZ, 3.2f);
-    const float wave = std::sin(time * 2.6f + fi * 1.31f);
-    for (float side : kSides) {
-      const float x = side * (6.9f + static_cast<float>(i % 3) * 1.35f +
-                              wave * 0.35f);
-      pushTransparent(m_sideMistMeshId,
-                      cubeWorld(2.25f + edgeFade * 0.75f, 1.0f, 1.72f, x,
-                                0.16f + edgeFade * 0.035f, z,
-                                side * (0.10f + wave * 0.045f)));
-      pushTransparent(m_sideFogMeshId,
-                      cubeWorld(4.8f + edgeFade * 1.65f, 1.0f,
-                                2.35f + edgeFade * 0.45f,
-                                side * (9.2f + wave * 0.55f),
-                                0.24f + edgeFade * 0.055f, z,
-                                side * (0.08f + wave * 0.035f)));
-    }
-  }
-
-  for (float side : kSides) {
-    pushTransparent(m_sideFogMeshId,
-                    cubeWorld(10.8f, 1.0f, 9.6f, side * 10.8f, 0.30f,
-                              kArenaHalfExtent - 1.0f, side * 0.02f));
-  }
-
-  constexpr int kSideLightColumns = 8;
-  for (int i = 0; i < kSideLightColumns; ++i) {
-    const float fi = static_cast<float>(i);
-    const float z = LoopZ(-18.0f + fi * 5.0f, scroll * 0.58f, loopMinZ,
-                          pathLength);
-    const float edgeFade = LoopEdgeFade(z, loopMinZ, loopMaxZ, 3.8f);
-    const float columnPulse = SmoothPulse(time + fi * 0.21f, 2.2f, 0.28f);
-    for (float side : kSides) {
-      const float x = side * (8.0f + static_cast<float>(i % 3) * 1.45f);
-      pushTransparent(m_moonRayMeshId,
-                      VerticalVeilWorld((0.72f + columnPulse * 0.24f) *
-                                            (0.72f + edgeFade * 0.28f),
-                                        5.8f + columnPulse * 1.1f, x,
-                                        2.85f + columnPulse * 0.20f, z,
-                                        side * (0.18f + 0.04f * fi)));
-    }
   }
 
   const float sealPulse = 1.0f + 0.08f * SmoothPulse(time, 5.8f, 0.0f);
@@ -1938,35 +1718,6 @@ void BossArenaScene::AppendWorldPolish(FrameData &frame) const {
                    z - 0.32f, sprayColor, 3);
   }
 
-  constexpr int kFloatingLanterns = 12;
-  for (int i = 0; i < kFloatingLanterns; ++i) {
-    const float fi = static_cast<float>(i);
-    const float side = (i % 2 == 0) ? -1.0f : 1.0f;
-    const float z = LoopZ(-18.6f + fi * 3.25f,
-                          scroll * (0.74f + 0.035f * (i % 4)), loopMinZ,
-                          pathLength);
-    const float edgeFade = LoopEdgeFade(z, loopMinZ, loopMaxZ, 3.3f);
-    const float drift = std::sin(time * 0.72f + fi * 1.47f);
-    const float x = side * (2.65f + static_cast<float>((i * 5) % 4) * 0.36f) +
-                    drift * 0.22f;
-    const float y = 0.20f + std::sin(time * 1.6f + fi) * 0.035f;
-    const float yaw = side * 0.22f + drift * 0.16f;
-    pushTransparent(m_ofudaMeshId,
-                    cubeWorld(0.30f, 0.22f, 0.30f, x, y, z, yaw));
-    pushTransparent(m_lanternGlowMeshId,
-                    cubeWorld(0.18f, 0.18f, 0.18f, x, y + 0.10f, z, yaw));
-    pushTransparent(m_lanternHaloMeshId,
-                    cubeWorld(0.86f, 0.86f, 0.86f, x, y + 0.10f, z, yaw));
-
-    GPUPointLight floatLamp{};
-    floatLamp.position = CurvePoint(x, 0.42f, z);
-    floatLamp.range = 3.0f + edgeFade * 2.6f;
-    floatLamp.color = {1.0f, 0.48f, 0.18f};
-    floatLamp.intensity = (0.85f + 0.35f * SmoothPulse(time + fi, 3.6f)) *
-                           edgeFade;
-    frame.pointLights.push_back(floatLamp);
-  }
-
   constexpr int kSpiritEmbers = 28;
   for (int i = 0; i < kSpiritEmbers; ++i) {
     const float fi = static_cast<float>(i);
@@ -1989,23 +1740,6 @@ void BossArenaScene::AppendWorldPolish(FrameData &frame) const {
                               warm ? 0.16f + emberPulse * 0.08f
                                    : 0.10f + emberPulse * 0.06f,
                               x, y, z));
-  }
-
-  constexpr int kOfudaCount = 26;
-  for (int i = 0; i < kOfudaCount; ++i) {
-    const float fi = static_cast<float>(i);
-    const float side = (i % 2 == 0) ? -1.0f : 1.0f;
-    const float z = LoopZ(-19.0f + fi * 1.85f,
-                          scroll * (0.48f + 0.018f * (i % 6)), loopMinZ,
-                          pathLength);
-    const float drift = std::sin(time * 1.05f + fi * 0.77f);
-    const float x = side * (5.8f + static_cast<float>((i * 5) % 6) * 1.12f) +
-                    drift * 0.35f;
-    const float y = 1.45f + static_cast<float>((i * 7) % 9) * 0.22f +
-                    std::sin(time * 1.7f + fi) * 0.18f;
-    const float yaw = side * 0.38f + std::sin(time * 1.2f + fi) * 0.32f;
-    frame.transparentItems.push_back(
-        {m_ofudaMeshId, CurveWorld(0.055f, 0.54f, 0.20f, x, y, z, yaw)});
   }
 
   for (int i = 0; i < 6; ++i) {
@@ -2060,24 +1794,12 @@ void BossArenaScene::AppendWorldPolish(FrameData &frame) const {
       } else {
         addProceduralLantern(x, z, 0.70f + edgeFade * 0.30f);
       }
-      pushTransparent(m_lanternHaloMeshId,
-                      cubeWorld(1.05f * lanternScale, 1.05f * lanternScale,
-                                1.05f * lanternScale, x, 1.30f, z));
-      pushTransparent(m_lanternHaloMeshId,
-                      cubeWorld(2.05f * lanternScale, 2.05f * lanternScale,
-                                2.05f * lanternScale, x, 1.30f, z));
       GPUPointLight lamp{};
-      lamp.position = CurvePoint(x, 1.35f, z);
+      lamp.position = CurvePoint(x, 0.92f, z);
       lamp.range = 7.8f;
       lamp.color = {1.0f, 0.48f, 0.18f};
       lamp.intensity = 3.35f * lampPulse * edgeFade;
       frame.pointLights.push_back(lamp);
-      const XMFLOAT4 lampTrail{1.0f, 0.48f, 0.16f, 0.32f * edgeFade};
-      PushCurvedLine(frame, x, 1.30f, z + 0.35f, x * 0.92f, 0.95f,
-                     z - 1.55f, lampTrail, 5);
-      const XMFLOAT4 lampAura{1.0f, 0.62f, 0.28f, 0.18f * edgeFade};
-      PushCurvedLine(frame, x - side * 0.92f, 1.52f, z + 0.62f,
-                     x + side * 0.42f, 1.12f, z - 1.90f, lampAura, 6);
     }
   }
 }
@@ -2433,6 +2155,9 @@ void BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
       ImGui::Text("Q/E: Fly | No damage");
     if (m_mirrorPuzzleReady)
       ImGui::Text("Mizukagami: READY");
+    ImGui::SliderFloat("水鏡準備・電流粒子",
+                       &m_readyRiverElectricIntensity,
+                       0.0f, 1.5f, "%.2f");
     ImGui::Separator();
     ImGui::Text("Tech Showcase");
     ImGui::Checkbox("Override BossArena Render", &m_techShowcaseOverride);
@@ -2451,7 +2176,7 @@ void BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
     ImGui::Text("Major VFX Stack");
     ImGui::BulletText("Night fog / spirit veil");
     ImGui::BulletText("Lantern bloom / shrine gate aura");
-    ImGui::BulletText("Moon rays / floating river lanterns");
+    ImGui::BulletText("Moon rays / side spirit embers");
     ImGui::BulletText("Meteor pillars / laser rift");
     ImGui::BulletText("River currents / counter moon flash");
     ImGui::BulletText("Phone rune trace puzzle");
@@ -2913,6 +2638,13 @@ void BossArenaScene::UpdateMirrorCharges(const PlayerAnimationPreview &player) {
     m_mirrorPickupToastTimer = 0.72f;
     m_mirrorPickupVfxTimer = 0.72f;
     m_lastMirrorPickupPosition = m_mirrorChargePositions[i];
+    if (m_mirrorPickupBurst) {
+      const XMFLOAT3 burstPosition =
+          CurvePoint(m_lastMirrorPickupPosition.x, 0.62f,
+                     m_lastMirrorPickupPosition.z);
+      m_mirrorPickupBurst->Fire(XMVectorSet(
+          burstPosition.x, burstPosition.y, burstPosition.z, 0.0f));
+    }
     m_memoryFailTimer = 0.0f;
     collected = true;
     break;

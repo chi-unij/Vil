@@ -84,8 +84,7 @@ private:
   uint32_t m_knockbackTelegraphMeshId = UINT32_MAX;
   uint32_t m_flameMeshId = UINT32_MAX;
   uint32_t m_pathGlowMeshId = UINT32_MAX;
-  uint32_t m_sideMistMeshId = UINT32_MAX;
-  uint32_t m_sideFogMeshId = UINT32_MAX;
+  uint32_t m_attackSmokeMeshId = UINT32_MAX;
   uint32_t m_spiritVeilMeshId = UINT32_MAX;
   uint32_t m_laserRiftMeshId = UINT32_MAX;
   uint32_t m_moonDiscMeshId = UINT32_MAX;
@@ -110,10 +109,15 @@ private:
   std::vector<uint32_t> m_toriiGateMeshIds;
   std::vector<uint32_t> m_shrineGateMeshIds;
   std::unique_ptr<SparkBurstEmitter> m_aoeSparkBurst;
+  std::unique_ptr<MeteorFlameEmitter> m_meteorFlameEmitter;
+  std::unique_ptr<LineRiftEmitter> m_lineRiftEmitter;
   std::unique_ptr<MirrorSparkBurstEmitter> m_counterSparkBurst;
+  std::unique_ptr<MirrorPickupBurstEmitter> m_mirrorPickupBurst;
   std::unique_ptr<SmokeEmitter> m_bossSmokeEmitter;
   std::array<std::unique_ptr<RiverMistEmitter>, 5> m_riverMistEmitters;
-  std::array<std::unique_ptr<RiverMistEmitter>, 8> m_sideFogEmitters;
+  std::array<std::unique_ptr<ShrineFogEmitter>, 12> m_sideFogEmitters;
+  std::array<std::unique_ptr<RiverElectricEmitter>, 7>
+      m_readyRiverElectricEmitters;
   bool m_ready = false;
 
   AttackType m_attack = AttackType::MeteorAoE;
@@ -158,6 +162,8 @@ private:
   bool m_showcaseDOF = true;
   bool m_showcaseRain = true;
   bool m_showcaseClimaxVfx = true;
+  float m_readyRiverElectricIntensity = 0.70f;
+  bool m_readyRiverElectricWasActive = false;
 
   bool m_phoneOpen = false;
   bool m_phoneSpaceWasDown = false;
