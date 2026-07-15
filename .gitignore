@@ -47,6 +47,7 @@ Desktop.ini
 /output/
 /tmp/
 /app_trace_log.txt
+/docs/discovery/url.md
 
 # Local agent settings
 .claude/settings.local.json
