@@ -250,6 +250,96 @@ protected:
 	Particle* createParticle() override;
 };
 
+class SakuraPetalParticle : public Particle
+{
+private:
+	float m_width{ 0.20f };
+	float m_height{ 0.34f };
+	float m_alpha{ 0.0f };
+	float m_rotation{ 0.0f };
+	float m_spinSpeed{ 0.0f };
+	float m_swayPhase{ 0.0f };
+	DirectX::XMFLOAT3 m_color{ 1.0f, 0.72f, 0.82f };
+
+public:
+	SakuraPetalParticle(const DirectX::XMVECTOR& position,
+	                    const DirectX::XMVECTOR& velocity, double life_time,
+	                    float width, float height, float rotation,
+	                    float spin_speed, float sway_phase,
+	                    const DirectX::XMFLOAT3& color)
+		: Particle(position, velocity, life_time)
+		, m_width(width)
+		, m_height(height)
+		, m_rotation(rotation)
+		, m_spinSpeed(spin_speed)
+		, m_swayPhase(sway_phase)
+		, m_color(color) {
+	}
+
+	void Update(double elapsed_time) override;
+	ParticleVisual GetVisual() const override;
+};
+
+class SakuraPetalBurstEmitter : public BurstEmitter
+{
+private:
+	std::mt19937 m_mt{ std::random_device{}() };
+
+public:
+	SakuraPetalBurstEmitter(size_t capacity,
+	                        const DirectX::XMVECTOR& position,
+	                        size_t burst_count)
+		: BurstEmitter(capacity, position, burst_count)
+	{
+	}
+
+protected:
+	Particle* createParticle() override;
+};
+
+class DamageDropletParticle : public Particle
+{
+private:
+	float m_width{ 0.10f };
+	float m_height{ 0.28f };
+	float m_alpha{ 0.0f };
+	float m_rotation{ 0.0f };
+	DirectX::XMFLOAT3 m_color{ 0.82f, 0.015f, 0.02f };
+
+public:
+	DamageDropletParticle(const DirectX::XMVECTOR& position,
+	                      const DirectX::XMVECTOR& velocity,
+	                      double life_time, float width, float height,
+	                      float rotation,
+	                      const DirectX::XMFLOAT3& color)
+		: Particle(position, velocity, life_time)
+		, m_width(width)
+		, m_height(height)
+		, m_rotation(rotation)
+		, m_color(color) {
+	}
+
+	void Update(double elapsed_time) override;
+	ParticleVisual GetVisual() const override;
+};
+
+class DamageDropletBurstEmitter : public BurstEmitter
+{
+private:
+	std::mt19937 m_mt{ std::random_device{}() };
+
+public:
+	DamageDropletBurstEmitter(size_t capacity,
+	                          const DirectX::XMVECTOR& position,
+	                          size_t burst_count)
+		: BurstEmitter(capacity, position, burst_count)
+	{
+	}
+
+protected:
+	Particle* createParticle() override;
+};
+
 class MeteorFlameParticle : public Particle
 {
 private:

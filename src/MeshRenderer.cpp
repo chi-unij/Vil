@@ -666,7 +666,7 @@ void MeshRenderer::DrawMeshGBufferInstanced(
     DirectX::XMFLOAT4X4 viewMat;
     DirectX::XMFLOAT4X4 projMat;
     DirectX::XMFLOAT4 cameraPosV;
-    DirectX::XMFLOAT4 materialFactors; // x=metallic, y=roughness
+    DirectX::XMFLOAT4 materialFactors; // x=metallic, y=roughness, z=SSR exclusion
     DirectX::XMFLOAT4 emissiveFactor;
     DirectX::XMFLOAT4 pomParams;
     DirectX::XMFLOAT4 baseColorFactor; // rgba multiplier
@@ -684,7 +684,8 @@ void MeshRenderer::DrawMeshGBufferInstanced(
   cb.cameraPosV = {cameraPos.x, cameraPos.y, cameraPos.z, 0.0f};
 
   const auto &mat = mesh.material;
-  cb.materialFactors = {mat.metallicFactor, mat.roughnessFactor, 0.0f, 0.0f};
+  cb.materialFactors = {mat.metallicFactor, mat.roughnessFactor,
+                        mat.ssrExcluded ? 1.0f : 0.0f, 0.0f};
   cb.emissiveFactor = {mat.emissiveFactor.x, mat.emissiveFactor.y,
                        mat.emissiveFactor.z, 0.0f};
   cb.pomParams = {mat.heightScale, mat.pomMinLayers, mat.pomMaxLayers,

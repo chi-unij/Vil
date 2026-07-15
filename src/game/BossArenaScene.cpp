@@ -39,6 +39,36 @@ XMMATRIX CurveWorld(float sx, float sy, float sz, float x, float y, float z,
          XMMatrixRotationX(angle) * XMMatrixTranslation(p.x, p.y, p.z);
 }
 
+LoadedMesh CreateCurvedRiverSurface(float width, float minZ, float maxZ,
+                                    float surfaceY) {
+  constexpr uint32_t kWidthSegments = 8;
+  constexpr uint32_t kLengthSegments = 160;
+  const float depth = maxZ - minZ;
+  const float centerZ = (minZ + maxZ) * 0.5f;
+  LoadedMesh mesh = ProceduralMesh::CreateTessellatedPlane(
+      width, depth, kWidthSegments, kLengthSegments);
+
+  // 一枚の連続面を arena の曲率へ沿わせ、頂点法線も同じ曲率で滑らかにする。
+  // 分割した平面を並べる方式では SSR が各面で折れ、長い縞に見えてしまう。
+  for (MeshVertex &vertex : mesh.vertices) {
+    const float logicalZ = centerZ + vertex.pos[2];
+    const float angle = CurveAngle(logicalZ);
+    const XMFLOAT3 curved =
+        CurvePoint(vertex.pos[0], surfaceY, logicalZ);
+    vertex.pos[0] = curved.x;
+    vertex.pos[1] = curved.y;
+    vertex.pos[2] = curved.z;
+    vertex.normal[0] = 0.0f;
+    vertex.normal[1] = std::cos(angle);
+    vertex.normal[2] = std::sin(angle);
+    vertex.tangent[0] = 1.0f;
+    vertex.tangent[1] = 0.0f;
+    vertex.tangent[2] = 0.0f;
+    vertex.tangent[3] = 1.0f;
+  }
+  return mesh;
+}
+
 XMMATRIX VerticalVeilWorld(float sx, float sy, float x, float y, float z,
                            float yaw = 0.0f) {
   const float angle = CurveAngle(z);
@@ -339,8 +369,9 @@ void BossArenaScene::Initialize(DxContext &dx) {
   const LoadedMesh telegraphPlane = ProceduralMesh::CreatePlane(1.0f, 1.0f);
   const LoadedMesh flameCardMesh = CreateFlameCardMesh();
   const LoadedMesh cubeMesh = ProceduralMesh::CreateCube(1.0f);
-  const LoadedMesh riverWaterMesh =
-      ProceduralMesh::CreateTessellatedPlane(1.0f, 1.0f, 128, 128);
+  constexpr float kRiverHalfWidth = 5.15f - 0.28f;
+  const LoadedMesh riverWaterMesh = CreateCurvedRiverSurface(
+      kRiverHalfWidth * 2.0f, -kArenaHalfExtent, kArenaHalfExtent, 0.018f);
   const LoadedMesh lanternPostMesh =
       ProceduralMesh::CreateCylinder(0.5f, 1.0f, 12);
   const LoadedMesh lanternGlowMesh = ProceduralMesh::CreateSphere(0.5f, 8, 16);
@@ -401,12 +432,14 @@ void BossArenaScene::Initialize(DxContext &dx) {
   pathStoneMaterial.emissiveFactor = {0.010f, 0.016f, 0.018f};
   pathStoneMaterial.roughnessFactor = 0.72f;
   pathStoneMaterial.proceduralTypeId = 7.0f;
+  pathStoneMaterial.ssrExcluded = true;
   m_pathStoneMeshId = dx.CreateMeshResources(cubeMesh, {}, pathStoneMaterial);
 
   Material pathEdgeMaterial{};
   pathEdgeMaterial.baseColorFactor = {0.10f, 0.34f, 0.31f, 1.0f};
   pathEdgeMaterial.emissiveFactor = {0.04f, 0.22f, 0.18f};
   pathEdgeMaterial.roughnessFactor = 0.58f;
+  pathEdgeMaterial.ssrExcluded = true;
   m_pathEdgeMeshId = dx.CreateMeshResources(cubeMesh, {}, pathEdgeMaterial);
 
   Material toriiWoodMaterial{};
@@ -481,7 +514,7 @@ void BossArenaScene::Initialize(DxContext &dx) {
   riverWaterMaterial.emissiveFactor = {0.0f, 0.006f, 0.014f};
   riverWaterMaterial.uvTiling = {1.0f, 1.0f};
   riverWaterMaterial.proceduralTypeId = 8.0f;
-  riverWaterMaterial.vertexDeformTypeId = 6.0f;
+  riverWaterMaterial.vertexDeformTypeId = 0.0f;
   m_riverWaterMeshId =
       dx.CreateMeshResources(riverWaterMesh, {}, riverWaterMaterial);
 
@@ -489,8 +522,6 @@ void BossArenaScene::Initialize(DxContext &dx) {
                             m_lanternMeshIds);
   LoadBossArenaModelMeshIds(dx, "Assets/models/japanese_shrine/scene.gltf",
                             m_shrineMeshIds);
-  LoadBossArenaModelMeshIds(dx, "Assets/models/torii-gate/source/Test1.glb",
-                            m_toriiGateMeshIds);
   LoadBossArenaModelMeshIds(dx, "Assets/models/shrine_gate.glb",
                             m_shrineGateMeshIds);
   m_aoeSparkBurst = std::make_unique<SparkBurstEmitter>(
@@ -500,9 +531,17 @@ void BossArenaScene::Initialize(DxContext &dx) {
   m_lineRiftEmitter = std::make_unique<LineRiftEmitter>(
       420, XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f));
   m_counterSparkBurst = std::make_unique<MirrorSparkBurstEmitter>(
-      256, XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f), 120);
+      192, XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f), 72);
   m_mirrorPickupBurst = std::make_unique<MirrorPickupBurstEmitter>(
       256, XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f), 88);
+  constexpr float petalZs[4] = {-13.0f, -4.0f, 5.0f, 13.0f};
+  for (int i = 0; i < 4; ++i) {
+    const XMFLOAT3 petalPos = CurvePoint(0.0f, 8.6f, petalZs[i]);
+    m_counterPetalEmitters[i] = std::make_unique<SakuraPetalBurstEmitter>(
+        72, XMVectorSet(petalPos.x, petalPos.y, petalPos.z, 0.0f), 42);
+  }
+  m_playerHitBurst = std::make_unique<DamageDropletBurstEmitter>(
+      96, XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f), 36);
   const XMFLOAT3 bossSmokePos = CurvePoint(0.0f, 1.4f, kArenaHalfExtent - 3.5f);
   m_bossSmokeEmitter = std::make_unique<SmokeEmitter>(
       180, XMVectorSet(bossSmokePos.x, bossSmokePos.y, bossSmokePos.z, 0.0f),
@@ -511,7 +550,7 @@ void BossArenaScene::Initialize(DxContext &dx) {
   for (int i = 0; i < 5; ++i) {
     const XMFLOAT3 mistPos = CurvePoint(0.0f, 0.22f, mistZs[i]);
     m_riverMistEmitters[i] = std::make_unique<RiverMistEmitter>(
-        96, XMVectorSet(mistPos.x, mistPos.y, mistPos.z, 0.0f), 15.0, true);
+        96, XMVectorSet(mistPos.x, mistPos.y, mistPos.z, 0.0f), 15.0, false);
   }
   constexpr float sideFogZs[6] = {-15.0f, -9.0f, -3.0f,
                                   3.0f,   9.0f,  14.5f};
@@ -574,10 +613,13 @@ void BossArenaScene::Reset(PlayerAnimationPreview &player) {
   m_battleTimer = 0.0f;
   m_countersUsed = 0;
   m_damageTaken = 0;
+  m_hitFlashTimer = 0.0f;
+  m_playerHitParticleTimer = 0.0f;
   m_failed = false;
   m_cleared = false;
   m_aoeSparkTimer = 0.0f;
   m_counterVfxTimer = 0.0f;
+  m_counterPetalTimer = 0.0f;
   m_bossHitShakeTimer = 0.0f;
   m_phaseShiftVfxTimer = 0.0f;
   m_phoneOpen = false;
@@ -610,10 +652,15 @@ void BossArenaScene::Reset(PlayerAnimationPreview &player) {
 
 void BossArenaScene::Update(float dt, const Input &input,
                             PlayerAnimationPreview &player) {
+#if defined(_DEBUG)
   const bool debugPanelToggleDown = input.IsKeyDown(VK_F3);
   if (debugPanelToggleDown && !m_debugPanelToggleWasDown)
     m_showDebugPanel = !m_showDebugPanel;
   m_debugPanelToggleWasDown = debugPanelToggleDown;
+#else
+  m_showDebugPanel = false;
+  m_debugNoClip = false;
+#endif
 
   if (input.IsKeyDown('R')) {
     Reset(player);
@@ -633,6 +680,19 @@ void BossArenaScene::Update(float dt, const Input &input,
     m_aoeSparkBurst->Update(static_cast<double>(dt));
   if (m_counterSparkBurst && m_counterVfxTimer > 0.0f)
     m_counterSparkBurst->Update(static_cast<double>(dt));
+  m_counterPetalTimer = std::max(0.0f, m_counterPetalTimer - dt);
+  if (m_counterPetalTimer > 0.0f) {
+    for (auto &petalEmitter : m_counterPetalEmitters) {
+      if (petalEmitter && !petalEmitter->IsFinished())
+        petalEmitter->Update(static_cast<double>(dt));
+    }
+  }
+  m_playerHitParticleTimer =
+      std::max(0.0f, m_playerHitParticleTimer - dt);
+  if (m_playerHitParticleTimer > 0.0f && m_playerHitBurst &&
+      !m_playerHitBurst->IsFinished()) {
+    m_playerHitBurst->Update(static_cast<double>(dt));
+  }
   if (m_mirrorPickupBurst && m_mirrorPickupVfxTimer > 0.0f &&
       !m_mirrorPickupBurst->IsFinished())
     m_mirrorPickupBurst->Update(static_cast<double>(dt));
@@ -696,9 +756,8 @@ void BossArenaScene::Update(float dt, const Input &input,
     if (fogEmitter)
       fogEmitter->Update(static_cast<double>(dt));
   }
-  const bool readyRiverElectricActive =
-      m_mirrorCharge >= kMirrorChargeMax && m_counterVfxTimer <= 0.0f &&
-      !m_phoneOpen && !m_failed && !m_cleared;
+  // 水面の可読性を優先し、charge 完了時も river electric は表示しない。
+  const bool readyRiverElectricActive = false;
   for (auto &electricEmitter : m_readyRiverElectricEmitters) {
     if (!electricEmitter)
       continue;
@@ -861,6 +920,16 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
   if (m_counterSparkBurst && m_counterVfxTimer > 0.0f &&
       !m_counterSparkBurst->IsFinished()) {
     frame.emitters.push_back(m_counterSparkBurst.get());
+  }
+  if (m_counterPetalTimer > 0.0f) {
+    for (const auto &petalEmitter : m_counterPetalEmitters) {
+      if (petalEmitter && !petalEmitter->IsFinished())
+        frame.emitters.push_back(petalEmitter.get());
+    }
+  }
+  if (m_playerHitParticleTimer > 0.0f && m_playerHitBurst &&
+      !m_playerHitBurst->IsFinished()) {
+    frame.emitters.push_back(m_playerHitBurst.get());
   }
 
   const float bossHitT = std::clamp(m_bossHitShakeTimer / 0.62f, 0.0f, 1.0f);
@@ -1123,42 +1192,6 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
     zapLight.intensity = 5.0f * zapT;
     frame.pointLights.push_back(zapLight);
   }
-  if (m_hitFlashTimer > 0.0f) {
-    const float hitT = std::clamp(m_hitFlashTimer / 0.54f, 0.0f, 1.0f);
-    const float ringRadius = std::lerp(1.8f, 0.55f, hitT);
-    const XMFLOAT4 hitColor{1.0f, 0.16f, 0.05f, 1.0f};
-    const XMFLOAT3 hitCenter =
-        CurvePoint(m_lastHitPosition.x, m_lastHitPosition.y,
-                   m_lastHitPosition.z);
-    PushCircle(frame, hitCenter, ringRadius, hitColor);
-    PushCircle(frame, hitCenter, ringRadius + 0.35f, hitColor);
-    frame.transparentItems.push_back(
-        {m_laserRiftMeshId,
-         CurveWorld(2.4f + (1.0f - hitT) * 1.6f, 1.0f,
-                    2.4f + (1.0f - hitT) * 1.6f, m_lastHitPosition.x, 0.105f,
-                    m_lastHitPosition.z)});
-    constexpr int kHitCracks = 8;
-    for (int i = 0; i < kHitCracks; ++i) {
-      const float a = static_cast<float>(i) / kHitCracks * XM_2PI +
-                      frame.gameTime * 0.8f;
-      PushCurvedRibbon(frame, m_laserRiftMeshId, m_lastHitPosition.x, 0.18f,
-                       m_lastHitPosition.z,
-                       m_lastHitPosition.x + std::cos(a) *
-                                               (1.1f + (1.0f - hitT) * 1.6f),
-                       0.22f,
-                       m_lastHitPosition.z + std::sin(a) *
-                                               (1.1f + (1.0f - hitT) * 1.6f),
-                       0.08f + hitT * 0.10f, 4);
-    }
-  }
-
-  if (m_playerHp <= 1 && !m_failed && !m_cleared) {
-    const float dangerPulse = SmoothPulse(frame.gameTime, 7.6f, 0.25f);
-    PushThickCircle(frame, CurvePoint(0.0f, 0.14f, kRunnerMinZ + 1.4f),
-                    4.1f + dangerPulse * 0.9f,
-                    XMFLOAT4{1.0f, 0.05f, 0.04f, 0.38f * dangerPulse}, 3);
-  }
-
   if (m_cleared || m_failed) {
     const float endPulse = SmoothPulse(frame.gameTime, m_cleared ? 3.2f : 6.2f,
                                        0.25f);
@@ -1216,34 +1249,19 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
 
   if (m_counterVfxTimer > 0.0f) {
     const bool climaxVfx = !m_techShowcaseOverride || m_showcaseClimaxVfx;
-    const float counterDuration = climaxVfx ? 1.18f : 0.78f;
+    const float counterDuration = climaxVfx ? 0.92f : 0.68f;
     const float counterT =
         std::clamp(m_counterVfxTimer / counterDuration, 0.0f, 1.0f);
     const float counterAge = 1.0f - counterT;
     const XMFLOAT3 bossBase = CurvePoint(0.0f, 0.12f,
                                          kArenaHalfExtent - 3.5f);
-    const float ringA = std::lerp(1.2f, 10.5f, 1.0f - counterT);
-    const float ringB = ringA + 1.15f;
-    const XMFLOAT4 mirrorColor{0.36f, 1.0f, 0.86f, counterT};
+    const float ringA = std::lerp(1.2f, 5.8f, 1.0f - counterT);
+    const XMFLOAT4 mirrorColor{0.36f, 1.0f, 0.86f, counterT * 0.46f};
     PushThickCircle(frame, bossBase, ringA, mirrorColor, 3);
-    PushThickCircle(frame, bossBase, ringB, mirrorColor, 2);
 
-    const float ribbonPulse =
-        0.70f + 0.30f * std::sin(frame.gameTime * 20.0f);
-    PushCurvedRibbon(frame, m_counterRibbonMeshId, 0.0f, 0.24f,
-                     -kArenaHalfExtent + 2.4f, 0.0f, 0.34f,
-                     kArenaHalfExtent - 3.5f,
-                     0.48f * counterT + ribbonPulse * 0.16f, 18);
-    PushCurvedRibbon(frame, m_counterRibbonMeshId, -3.75f, 0.19f,
-                     -kArenaHalfExtent + 4.2f, -0.9f, 0.30f,
-                     kArenaHalfExtent - 4.05f,
-                     0.34f * counterT + ribbonPulse * 0.10f, 16);
-    PushCurvedRibbon(frame, m_counterRibbonMeshId, 3.75f, 0.19f,
-                     -kArenaHalfExtent + 4.2f, 0.9f, 0.30f,
-                     kArenaHalfExtent - 4.05f,
-                     0.34f * counterT + ribbonPulse * 0.10f, 16);
-
-    if (climaxVfx) {
+    // 全河面の発光は攻撃予兆を隠すため無効化し、成功演出は花びらへ移す。
+    constexpr bool kEnableLegacyRiverSurge = false;
+    if (climaxVfx && kEnableLegacyRiverSurge) {
       const float surgeAlpha = std::sin(std::clamp(counterAge * XM_PI, 0.0f,
                                                    XM_PI));
       const XMFLOAT3 moonPos = CurvePoint(0.0f, 7.2f, kArenaHalfExtent + 1.6f);
@@ -1350,25 +1368,25 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
       }
     }
 
-    constexpr int kCounterRays = 24;
+    constexpr int kCounterRays = 8;
     for (int i = 0; i < kCounterRays; ++i) {
       const float a = (static_cast<float>(i) / kCounterRays) * XM_2PI +
                       frame.gameTime * 2.8f;
       const float inner = 1.2f + (1.0f - counterT) * 1.4f;
-      const float outer = 9.4f + (1.0f - counterT) * 3.2f;
+      const float outer = 4.2f + (1.0f - counterT) * 1.6f;
       PushCurvedRibbon(frame, m_counterRibbonMeshId, std::cos(a) * inner,
                        0.18f, kArenaHalfExtent - 3.5f + std::sin(a) * inner,
                        std::cos(a) * outer, 0.22f,
                        kArenaHalfExtent - 3.5f + std::sin(a) * outer,
-                       0.08f + counterT * 0.12f, 2);
+                       0.025f + counterT * 0.045f, 2);
     }
 
     GPUPointLight counterLight{};
     counterLight.position = CurvePoint(0.0f, 4.0f,
                                        kArenaHalfExtent - 3.5f);
-    counterLight.range = 20.0f;
+    counterLight.range = 8.0f;
     counterLight.color = {0.34f, 1.0f, 0.82f};
-    counterLight.intensity = (climaxVfx ? 24.0f : 16.0f) * counterT;
+    counterLight.intensity = (climaxVfx ? 2.8f : 2.0f) * counterT;
     frame.pointLights.push_back(counterLight);
   }
 
@@ -1394,7 +1412,7 @@ float BossArenaScene::CameraImpulseAmount() const {
   const float bossShake =
       std::clamp(m_bossHitShakeTimer / 0.62f, 0.0f, 1.0f) * 0.040f;
   const float counterShake =
-      std::clamp(m_counterVfxTimer / 1.18f, 0.0f, 1.0f) * 0.055f;
+      std::clamp(m_counterVfxTimer / 0.92f, 0.0f, 1.0f) * 0.035f;
   const float pickupShake =
       std::clamp(m_mirrorPickupVfxTimer / 0.72f, 0.0f, 1.0f) * 0.018f;
   return std::max(std::max(hitShake, bossShake),
@@ -1425,13 +1443,10 @@ void BossArenaScene::ApplyTechShowcase(FrameData &frame) const {
 
 void BossArenaScene::AppendWorldPolish(FrameData &frame) const {
   constexpr float pathEdgeWidth = 5.15f;
-  constexpr float waterRoadHalfWidth = pathEdgeWidth - 0.28f;
-  constexpr float waterFlowHalfWidth = waterRoadHalfWidth * 0.78f;
   constexpr float pathLength = kArenaHalfExtent * 2.0f;
   constexpr float kSides[2] = {-1.0f, 1.0f};
   const float time = frame.gameTime;
   const float scroll = std::fmod(time * 6.1f, pathLength);
-  const float pulse = SmoothPulse(time, 3.1f, 0.45f);
   constexpr float loopMinZ = -kArenaHalfExtent;
   constexpr float loopMaxZ = kArenaHalfExtent;
 
@@ -1584,50 +1599,8 @@ void BossArenaScene::AppendWorldPolish(FrameData &frame) const {
     }
   }
 
-  constexpr int kWaterSurfaceSegments = 14;
-  const float waterSegmentLength =
-      pathLength / static_cast<float>(kWaterSurfaceSegments);
-  for (int i = 0; i < kWaterSurfaceSegments; ++i) {
-    const float baseZ = -kArenaHalfExtent + waterSegmentLength * (i + 0.5f);
-    const float z = LoopZ(baseZ, scroll * 1.34f, loopMinZ, pathLength);
-    const float edgeFade = LoopEdgeFade(z, loopMinZ, loopMaxZ, 3.0f);
-    pushOpaque(m_riverWaterMeshId,
-               cubeWorld(waterRoadHalfWidth * 2.0f, 1.0f,
-                         waterSegmentLength + 0.16f, 0.0f, 0.018f, z));
-    pushTransparent(m_pathGlowMeshId,
-                    cubeWorld(0.46f + pulse * 0.20f, 1.0f,
-                              waterSegmentLength + 0.16f,
-                              -waterRoadHalfWidth, 0.052f, z));
-    pushTransparent(m_pathGlowMeshId,
-                    cubeWorld(0.46f + pulse * 0.20f, 1.0f,
-                              waterSegmentLength + 0.16f, waterRoadHalfWidth,
-                              0.052f, z));
-    const XMFLOAT4 roadCurrentColor{0.34f, 0.86f, 1.0f,
-                                    0.08f + edgeFade * 0.10f};
-    PushCurvedLine(frame, -waterRoadHalfWidth * 0.82f, 0.082f, z + 0.84f,
-                   waterRoadHalfWidth * 0.82f, 0.082f, z - 0.34f,
-                   roadCurrentColor, 5);
-  }
-
-  constexpr int kMirrorShardCount = 8;
-  for (int i = 0; i < kMirrorShardCount; ++i) {
-    const float fi = static_cast<float>(i);
-    const float side = (i % 2 == 0) ? -1.0f : 1.0f;
-    const float baseZ = -16.4f + static_cast<float>(i / 2) * 4.2f;
-    const float z = LoopZ(baseZ, scroll * 0.72f, loopMinZ, pathLength);
-    const float bob = 0.08f * std::sin(time * 2.7f + fi);
-    const float yaw = side * 0.42f + std::sin(time * 0.9f + fi) * 0.10f;
-    pushTransparent(m_mirrorShardMeshId,
-                    cubeWorld(0.18f, 0.86f + 0.08f * pulse, 0.18f,
-                              side * 4.74f, 0.48f + bob, z, yaw));
-
-    GPUPointLight shardLight{};
-    shardLight.position = CurvePoint(side * 4.74f, 0.86f + bob, z);
-    shardLight.range = 3.8f;
-    shardLight.color = {0.22f, 0.96f, 0.88f};
-    shardLight.intensity = 0.65f + pulse * 0.45f;
-    frame.pointLights.push_back(shardLight);
-  }
+  // 河面は固定した一枚の連続曲面。SSR の反射を分割面ごとに折らない。
+  pushOpaque(m_riverWaterMeshId, XMMatrixIdentity());
 
   const float sealPulse = 1.0f + 0.08f * SmoothPulse(time, 5.8f, 0.0f);
   frame.transparentItems.push_back(
@@ -1651,71 +1624,6 @@ void BossArenaScene::AppendWorldPolish(FrameData &frame) const {
                      std::cos(angle + 0.8f) * 1.1f, 4.8f + gatePulse,
                      kArenaHalfExtent - 2.2f + std::sin(angle + 0.8f) * 1.1f,
                      0.28f + gatePulse * 0.12f, 8);
-  }
-
-  constexpr int kFlowLineCount = 22;
-  for (int i = 0; i < kFlowLineCount; ++i) {
-    const float fi = static_cast<float>(i);
-    float z = LoopZ(-kArenaHalfExtent + static_cast<float>(i) * 3.0f,
-                    scroll * 1.55f, loopMinZ, pathLength);
-    const float centerFade =
-        1.0f - std::min(1.0f, std::abs(z) / (kArenaHalfExtent + 0.01f));
-    const float wave = std::sin(time * 5.4f + fi * 0.73f);
-    const float x0 = wave * waterFlowHalfWidth * 0.55f;
-    const float x1 = -wave * waterFlowHalfWidth * 0.35f;
-    const XMFLOAT4 flowColor{0.18f, 0.76f, 1.0f, 0.20f + centerFade * 0.28f};
-    PushCurvedLine(frame, x0, 0.098f, z + 0.45f, x1, 0.098f, z - 1.10f,
-                   flowColor, 5);
-  }
-
-  constexpr int kRippleLineCount = 18;
-  for (int i = 0; i < kRippleLineCount; ++i) {
-    const float fi = static_cast<float>(i);
-    const float z = LoopZ(-18.0f + fi * 2.05f, scroll * 1.82f, loopMinZ,
-                          pathLength);
-    const float edgeFade = LoopEdgeFade(z, loopMinZ, loopMaxZ, 3.6f);
-    const float wave = std::sin(time * 4.8f + fi * 1.17f);
-    const float rippleWidth =
-        (0.42f + static_cast<float>((i * 3) % 5) * 0.11f) * edgeFade;
-    const float x = wave * waterFlowHalfWidth * 0.60f;
-    const XMFLOAT4 rippleColor{0.72f, 0.96f, 1.0f, 0.12f + edgeFade * 0.18f};
-    PushCurvedLine(frame, x - rippleWidth, 0.122f, z, x + rippleWidth,
-                   0.122f, z - 0.20f, rippleColor, 3);
-  }
-
-  constexpr int kSpiritDroplets = 18;
-  for (int i = 0; i < kSpiritDroplets; ++i) {
-    const float fi = static_cast<float>(i);
-    const float z = LoopZ(-18.0f + fi * 2.25f,
-                          scroll * (1.72f + 0.05f * (i % 4)), loopMinZ,
-                          pathLength);
-    const float x = std::sin(time * 1.6f + fi * 0.91f) * waterFlowHalfWidth *
-                    0.64f;
-    const float bob = 0.07f * std::sin(time * 4.2f + fi);
-    const float localPulse = SmoothPulse(time + fi * 0.2f, 5.2f, 0.25f);
-    pushTransparent(m_mirrorChargeMeshId,
-                    cubeWorld(0.16f + localPulse * 0.10f,
-                              0.16f + localPulse * 0.10f,
-                              0.16f + localPulse * 0.10f, x, 0.24f + bob, z));
-    if (i % 3 == 0) {
-      PushCurvedLine(frame, x - 0.52f, 0.16f, z + 0.34f, x + 0.52f,
-                     0.16f, z - 0.38f,
-                     XMFLOAT4{0.34f, 1.0f, 0.86f, 0.18f + localPulse * 0.16f},
-                     3);
-    }
-  }
-
-  constexpr int kWaterSprayCount = 10;
-  for (int i = 0; i < kWaterSprayCount; ++i) {
-    const float fi = static_cast<float>(i);
-    const float z = LoopZ(-17.0f + fi * 3.6f, scroll * 2.1f, loopMinZ,
-                          pathLength);
-    const float edgeFade = LoopEdgeFade(z, loopMinZ, loopMaxZ, 3.5f);
-    const float side = (i % 2 == 0) ? -1.0f : 1.0f;
-    const float x = side * (waterRoadHalfWidth - 0.20f);
-    const XMFLOAT4 sprayColor{0.64f, 0.92f, 1.0f, 0.10f + edgeFade * 0.16f};
-    PushCurvedLine(frame, x, 0.15f, z + 0.42f, x + side * 0.42f, 0.22f,
-                   z - 0.32f, sprayColor, 3);
   }
 
   constexpr int kSpiritEmbers = 28;
@@ -1888,7 +1796,7 @@ void BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
                   Rgba(0.02f, 0.015f, 0.014f, 0.72f), 1.4f);
   }
   if (!m_failed && m_counterVfxTimer > 0.0f && !IsPhoneOverlayActive()) {
-    const float counterT = std::clamp(m_counterVfxTimer / 1.18f, 0.0f, 1.0f);
+    const float counterT = std::clamp(m_counterVfxTimer / 0.92f, 0.0f, 1.0f);
     const float flash = EaseOutCubic(counterT);
     const float pulse = SmoothPulse(static_cast<float>(ImGui::GetTime()), 7.0f,
                                     0.0f);
@@ -1987,7 +1895,7 @@ void BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
     }
     if (m_counterVfxTimer > 0.0f) {
       const float impact =
-          std::clamp(m_counterVfxTimer / 1.18f, 0.0f, 1.0f);
+          std::clamp(m_counterVfxTimer / 0.92f, 0.0f, 1.0f);
       const float wave = 1.0f - impact;
       const ImVec2 screenCenter(vw * 0.5f, vh * 0.48f);
       draw->AddRectFilled(ImVec2(0.0f, 0.0f), ImVec2(vw, vh),
@@ -2148,14 +2056,14 @@ void BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
     ImGui::Text("Timer: %.1f", std::max(0.0f, m_phaseTimer));
     ImGui::Text("R: Restart");
     ImGui::Text("Phone: SPACE");
-    ImGui::Text("F3: Debug panel");
+    ImGui::Text("Open: F3 / Camera Position panel");
     ImGui::Separator();
     ImGui::Checkbox("No Clip", &m_debugNoClip);
     if (m_debugNoClip)
       ImGui::Text("Q/E: Fly | No damage");
     if (m_mirrorPuzzleReady)
       ImGui::Text("Mizukagami: READY");
-    ImGui::SliderFloat("水鏡準備・電流粒子",
+    ImGui::SliderFloat("Ready River Electric",
                        &m_readyRiverElectricIntensity,
                        0.0f, 1.5f, "%.2f");
     ImGui::Separator();
@@ -2164,7 +2072,7 @@ void BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
     ImGui::BeginDisabled(!m_techShowcaseOverride);
     ImGui::Checkbox("CSM Shadows", &m_showcaseShadows);
     ImGui::Checkbox("SSAO", &m_showcaseSSAO);
-    ImGui::Checkbox("SSR Water Reflection", &m_showcaseSSR);
+    ImGui::Checkbox("SSR Water Reflection (test only)", &m_showcaseSSR);
     ImGui::Checkbox("Bloom", &m_showcaseBloom);
     ImGui::Checkbox("FXAA", &m_showcaseFXAA);
     ImGui::Checkbox("TAA", &m_showcaseTAA);
@@ -2371,6 +2279,13 @@ void BossArenaScene::ResolveAttack(PlayerAnimationPreview &player) {
     m_lastHitPosition = player.Position();
     m_lastHitPosition.y = 0.04f;
     m_hitFlashTimer = 0.54f;
+    m_playerHitParticleTimer = 0.92f;
+    if (m_playerHitBurst) {
+      const XMFLOAT3 hitParticlePos =
+          CurvePoint(m_lastHitPosition.x, 1.05f, m_lastHitPosition.z);
+      m_playerHitBurst->Fire(XMVectorSet(
+          hitParticlePos.x, hitParticlePos.y, hitParticlePos.z, 0.0f));
+    }
     --m_playerHp;
     ++m_damageTaken;
     if (m_playerHp <= 0) {
@@ -2550,16 +2465,25 @@ void BossArenaScene::CompleteMirrorPuzzle() {
     m_phaseShiftVfxTimer = 1.25f;
   ++m_countersUsed;
   const bool climaxVfx = !m_techShowcaseOverride || m_showcaseClimaxVfx;
-  m_counterVfxTimer = climaxVfx ? 1.18f : 0.78f;
+  m_counterVfxTimer = climaxVfx ? 0.92f : 0.68f;
+  m_counterPetalTimer = 7.2f;
   m_bossHitShakeTimer = 0.62f;
 
-  m_impactTimer = climaxVfx ? 1.05f : 0.78f;
-  m_impactMaxRadius = climaxVfx ? 12.4f : 10.2f;
+  m_impactTimer = 0.55f;
+  m_impactMaxRadius = 5.4f;
   m_impactPosition = {0.0f, 0.07f, kArenaHalfExtent - 3.5f};
   if (m_counterSparkBurst) {
     const XMFLOAT3 sparkPos = CurvePoint(0.0f, 1.35f, kArenaHalfExtent - 3.5f);
     m_counterSparkBurst->Fire(
         XMVectorSet(sparkPos.x, sparkPos.y, sparkPos.z, 0.0f));
+  }
+  constexpr float petalZs[4] = {-13.0f, -4.0f, 5.0f, 13.0f};
+  for (int i = 0; i < 4; ++i) {
+    if (!m_counterPetalEmitters[i])
+      continue;
+    const XMFLOAT3 petalPos = CurvePoint(0.0f, 8.6f, petalZs[i]);
+    m_counterPetalEmitters[i]->Fire(
+        XMVectorSet(petalPos.x, petalPos.y, petalPos.z, 0.0f));
   }
 
   if (m_bossHp <= 0)

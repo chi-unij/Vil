@@ -34,6 +34,8 @@ public:
     return m_phoneOpen || m_phoneSlide > 0.05f;
   }
   bool DebugNoClipEnabled() const { return m_debugNoClip; }
+  bool DebugPanelVisible() const { return m_showDebugPanel; }
+  void SetDebugPanelVisible(bool visible) { m_showDebugPanel = visible; }
   bool PhaseTwoActive() const { return m_bossHp <= 2 && !m_cleared; }
   bool TechShowcaseTAAEnabled() const {
     return m_techShowcaseOverride && m_showcaseTAA;
@@ -113,6 +115,9 @@ private:
   std::unique_ptr<LineRiftEmitter> m_lineRiftEmitter;
   std::unique_ptr<MirrorSparkBurstEmitter> m_counterSparkBurst;
   std::unique_ptr<MirrorPickupBurstEmitter> m_mirrorPickupBurst;
+  std::array<std::unique_ptr<SakuraPetalBurstEmitter>, 4>
+      m_counterPetalEmitters;
+  std::unique_ptr<DamageDropletBurstEmitter> m_playerHitBurst;
   std::unique_ptr<SmokeEmitter> m_bossSmokeEmitter;
   std::array<std::unique_ptr<RiverMistEmitter>, 5> m_riverMistEmitters;
   std::array<std::unique_ptr<ShrineFogEmitter>, 12> m_sideFogEmitters;
@@ -137,12 +142,14 @@ private:
   int m_countersUsed = 0;
   int m_damageTaken = 0;
   float m_hitFlashTimer = 0.0f;
+  float m_playerHitParticleTimer = 0.0f;
   DirectX::XMFLOAT3 m_lastHitPosition = {0.0f, 0.04f, 0.0f};
   float m_impactTimer = 0.0f;
   float m_impactMaxRadius = 3.0f;
   DirectX::XMFLOAT3 m_impactPosition = {0.0f, 0.06f, 0.0f};
   float m_aoeSparkTimer = 0.0f;
   float m_counterVfxTimer = 0.0f;
+  float m_counterPetalTimer = 0.0f;
   float m_bossHitShakeTimer = 0.0f;
   float m_phaseShiftVfxTimer = 0.0f;
   bool m_failed = false;
@@ -154,7 +161,8 @@ private:
   bool m_techShowcaseOverride = true;
   bool m_showcaseShadows = true;
   bool m_showcaseSSAO = true;
-  bool m_showcaseSSR = true;
+  // 提出版では BossArena の screen-space artifact を避けるため既定で無効。
+  bool m_showcaseSSR = false;
   bool m_showcaseBloom = true;
   bool m_showcaseFXAA = true;
   bool m_showcaseTAA = false;

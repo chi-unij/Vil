@@ -378,6 +378,127 @@ Particle* MirrorPickupBurstEmitter::createParticle()
 	                                 1.25f);
 }
 
+void SakuraPetalParticle::Update(double elapsed_time)
+{
+	const float ratio = static_cast<float>(
+		std::min(GetAccumulatedTime() / GetLifeTime(), 1.0));
+	const float fadeIn = std::min(ratio * 5.0f, 1.0f);
+	const float fadeOut = 1.0f -
+		std::clamp((ratio - 0.80f) / 0.20f, 0.0f, 1.0f);
+	m_alpha = fadeIn * fadeOut * 0.58f;
+
+	const float time = static_cast<float>(GetAccumulatedTime());
+	const float dt = static_cast<float>(elapsed_time);
+	const float swayX = std::sin(time * 2.4f + m_swayPhase) * 0.34f;
+	const float swayZ = std::cos(time * 1.7f + m_swayPhase * 0.73f) * 0.18f;
+	AddPosition(XMVectorScale(GetVelocity(), dt));
+	AddPosition(XMVectorSet(swayX * dt, 0.0f, swayZ * dt, 0.0f));
+	m_rotation += m_spinSpeed * dt;
+
+	Particle::Update(elapsed_time);
+}
+
+ParticleVisual SakuraPetalParticle::GetVisual() const
+{
+	ParticleVisual v{};
+	XMStoreFloat3(&v.position, GetPosition());
+	v.size = XMFLOAT2{ m_width, m_height };
+	v.color = XMFLOAT4{ m_color.x, m_color.y, m_color.z, m_alpha };
+	v.shape = 5.0f;
+	v.slant = m_rotation;
+	return v;
+}
+
+Particle* SakuraPetalBurstEmitter::createParticle()
+{
+	std::uniform_real_distribution<float> offset_x{ -5.2f, 5.2f };
+	std::uniform_real_distribution<float> offset_y{ -0.8f, 1.4f };
+	std::uniform_real_distribution<float> offset_z{ -3.8f, 3.8f };
+	std::uniform_real_distribution<float> drift_x{ -0.48f, 0.48f };
+	std::uniform_real_distribution<float> fall_speed{ -1.85f, -1.25f };
+	std::uniform_real_distribution<float> drift_z{ -0.30f, 0.30f };
+	std::uniform_real_distribution<float> lifetime{ 5.3f, 7.1f };
+	std::uniform_real_distribution<float> width{ 0.14f, 0.25f };
+	std::uniform_real_distribution<float> height{ 0.22f, 0.42f };
+	std::uniform_real_distribution<float> rotation{ -XM_PI, XM_PI };
+	std::uniform_real_distribution<float> spin{ -2.6f, 2.6f };
+	std::uniform_real_distribution<float> phase{ -XM_PI, XM_PI };
+	std::uniform_real_distribution<float> tint{ 0.0f, 1.0f };
+
+	const XMVECTOR spawnPos = XMVectorAdd(
+		GetPosition(),
+		XMVectorSet(offset_x(m_mt), offset_y(m_mt), offset_z(m_mt), 0.0f));
+	const XMVECTOR velocity = XMVectorSet(
+		drift_x(m_mt), fall_speed(m_mt), drift_z(m_mt), 0.0f);
+	const float colorT = tint(m_mt);
+	const XMFLOAT3 color{
+		1.0f,
+		0.28f + colorT * 0.16f,
+		0.55f + colorT * 0.18f
+	};
+
+	return new SakuraPetalParticle(
+		spawnPos, velocity, lifetime(m_mt), width(m_mt), height(m_mt),
+		rotation(m_mt), spin(m_mt), phase(m_mt), color);
+}
+
+void DamageDropletParticle::Update(double elapsed_time)
+{
+	const float ratio = static_cast<float>(
+		std::min(GetAccumulatedTime() / GetLifeTime(), 1.0));
+	const float fadeOut = 1.0f -
+		std::clamp((ratio - 0.52f) / 0.48f, 0.0f, 1.0f);
+	m_alpha = fadeOut * 0.78f;
+
+	const float dt = static_cast<float>(elapsed_time);
+	AddPosition(XMVectorScale(GetVelocity(), dt));
+	AddVelocity(XMVectorScale(XMVectorSet(0.0f, -7.4f, 0.0f, 0.0f), dt));
+	Particle::Update(elapsed_time);
+}
+
+ParticleVisual DamageDropletParticle::GetVisual() const
+{
+	ParticleVisual v{};
+	XMStoreFloat3(&v.position, GetPosition());
+	v.size = XMFLOAT2{ m_width, m_height };
+	v.color = XMFLOAT4{ m_color.x, m_color.y, m_color.z, m_alpha };
+	v.shape = 6.0f;
+	v.slant = m_rotation;
+	return v;
+}
+
+Particle* DamageDropletBurstEmitter::createParticle()
+{
+	std::uniform_real_distribution<float> angle{ -XM_PI, XM_PI };
+	std::uniform_real_distribution<float> radius{ 0.0f, 0.22f };
+	std::uniform_real_distribution<float> horizontal_speed{ 1.4f, 4.2f };
+	std::uniform_real_distribution<float> up_speed{ 1.8f, 5.2f };
+	std::uniform_real_distribution<float> lifetime{ 0.45f, 0.86f };
+	std::uniform_real_distribution<float> width{ 0.07f, 0.15f };
+	std::uniform_real_distribution<float> height{ 0.18f, 0.38f };
+	std::uniform_real_distribution<float> rotation{ -1.1f, 1.1f };
+	std::uniform_real_distribution<float> tint{ 0.0f, 1.0f };
+
+	const float a = angle(m_mt);
+	const float r = radius(m_mt);
+	const float speed = horizontal_speed(m_mt);
+	const XMVECTOR spawnPos = XMVectorAdd(
+		GetPosition(), XMVectorSet(std::cos(a) * r, 0.0f,
+		                           std::sin(a) * r, 0.0f));
+	const XMVECTOR velocity = XMVectorSet(
+		std::cos(a) * speed, up_speed(m_mt), std::sin(a) * speed, 0.0f);
+	const float colorT = tint(m_mt);
+	const XMFLOAT3 color{
+		0.72f + colorT * 0.24f,
+		0.008f + colorT * 0.025f,
+		0.012f + colorT * 0.030f
+	};
+
+	return new DamageDropletParticle(
+		spawnPos, velocity, lifetime(m_mt), width(m_mt), height(m_mt),
+		rotation(m_mt), color);
+}
+
 void MeteorFlameParticle::Update(double elapsed_time)
 {
 	const float ratio = static_cast<float>(

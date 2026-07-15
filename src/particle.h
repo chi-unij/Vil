@@ -18,7 +18,7 @@ struct ParticleVisual {
 	float scale = 1.0f;
 	DirectX::XMFLOAT2 size{0.0f, 0.0f};
 	DirectX::XMFLOAT4 color{1.0f, 1.0f, 1.0f, 1.0f};
-	float shape = 0.0f; // 0=soft circle, 1=rain streak
+	float shape = 0.0f; // 0=soft circle, 1=rain, 2=electric, 3=flame, 4=rift, 5=sakura, 6=damage droplet
 	float slant = 0.0f;
 };
 

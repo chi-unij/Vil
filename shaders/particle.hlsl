@@ -39,7 +39,37 @@ float4 PSMain(PSInput input) : SV_TARGET
 {
     float alpha = 0.0;
 
-    if (input.params.x > 3.5)
+    if (input.params.x > 5.5)
+    {
+        float2 p = input.uv - 0.5;
+        float c = cos(input.params.y);
+        float s = sin(input.params.y);
+        float2 q = float2(c * p.x - s * p.y, s * p.x + c * p.y);
+        q.y += 0.08;
+        float roundHead = 1.0 - smoothstep(0.82, 1.0,
+            length(float2(q.x / 0.40, q.y / 0.48)));
+        float taper = saturate((0.52 - q.y) * 1.75);
+        float tipMask = 1.0 - smoothstep(0.34, 0.50,
+            abs(q.x) + max(0.0, -q.y - 0.12) * 0.72);
+        alpha = roundHead * taper * tipMask * input.color.a;
+    }
+    else if (input.params.x > 4.5)
+    {
+        float2 p = input.uv - 0.5;
+        float c = cos(input.params.y);
+        float s = sin(input.params.y);
+        float2 q = float2(c * p.x - s * p.y, s * p.x + c * p.y);
+        q.y += 0.035;
+        float body = 1.0 - smoothstep(0.84, 1.0,
+            length(float2(q.x / 0.42, q.y / 0.50)));
+        float taper = saturate((0.48 - q.y) * 2.1);
+        float notch = smoothstep(0.025, 0.11,
+            length(float2(q.x / 0.75, (q.y + 0.45) / 0.42)));
+        float centerVein = 1.0 - smoothstep(0.018, 0.075, abs(q.x));
+        alpha = body * taper * notch * (0.78 + centerVein * 0.22)
+              * input.color.a;
+    }
+    else if (input.params.x > 3.5)
     {
         float fracture = sin(input.uv.y * 18.0 + input.params.y * 8.0) * 0.052
                        + sin(input.uv.y * 47.0 - input.params.y * 13.0) * 0.021;

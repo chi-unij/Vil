@@ -27,6 +27,8 @@ struct Material {
   float proceduralTypeId = 0.0f;
   // 頂点変形タイプ。色の procedural 表現とは独立して使う。
   float vertexDeformTypeId = 0.0f;
+  // 細長い発光物など、screen-space 反射で不安定になる面を除外する。
+  bool ssrExcluded = false;
 
   // glTF alpha cutout for foliage/card materials.
   bool alphaCutout = false;

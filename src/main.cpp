@@ -410,12 +410,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
 
     Win32Window window;
     SetStartupStage(10);
-    window.Create(L"DX12 Tutorial 12", 1920, 1080);
+    window.Create(L"VILLIEN", 1920, 1080);
 
     DxContext dx;
     g_crashDxContext = &dx;
     SetStartupStage(20);
-    dx.Initialize(window.Handle(), window.Width(), window.Height(), true);
+#if defined(_DEBUG)
+    constexpr bool kEnableD3D12DebugLayer = true;
+#else
+    constexpr bool kEnableD3D12DebugLayer = false;
+#endif
+    dx.Initialize(window.Handle(), window.Width(), window.Height(),
+                  kEnableD3D12DebugLayer);
 
     Camera cam;
     cam.SetPosition(0.0f, 1.5f, -4.0f);
@@ -536,12 +542,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
     float wetSurfaceDrySeconds = 4.0f;
     float wetSurfaceImpactRadius = 4.5f;
     float wetSurfaceCycleSeconds = 5.5f;
-    float puddleStrength = 0.85f;
-    float puddleBuildSeconds = 5.0f;
+    float puddleStrength = 1.0f;
+    float puddleBuildSeconds = 0.0f;
     float puddleRadius = 3.2f;
-    float puddleClarity = 0.25f;
-    float puddleTint = 0.60f;
-    float puddleRippleStrength = 1.0f;
+    float puddleClarity = 0.90f;
+    float puddleTint = 0.28f;
+    float puddleRippleStrength = 0.35f;
     overworldScene.SetWaterTransparency(dx, waterTransparency);
 
     // IBL (Phase 10.2)
@@ -911,13 +917,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         fpsTimer = 0.0f;
         fpsFrames = 0;
 
+#if defined(_DEBUG)
         auto p = cam.GetPosition();
         std::wstringstream ss;
         ss.setf(std::ios::fixed);
         ss.precision(2);
-        ss << L"DX12 Tutorial 12 | FPS: " << fpsValue << L" | Cam: (" << p.x
+        ss << L"VILLIEN [Debug] | FPS: " << fpsValue << L" | Cam: (" << p.x
            << L", " << p.y << L", " << p.z << L")";
         window.SetTitle(ss.str());
+#else
+        window.SetTitle(L"VILLIEN");
+#endif
       }
 
       if (appMode == AppMode::Title) {
@@ -1035,6 +1045,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
           window.SetWindowedResolution(1280, 720);
         }
 
+#if defined(_DEBUG)
         y += 88.0f;
         if (appMode == AppMode::Game || appMode == AppMode::BossArena) {
           draw->AddText(ImVec2(optionX, y), UiColor(0.72f, 0.95f, 0.88f, 0.96f),
@@ -1050,6 +1061,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
               cam.SetMode(CameraMode::FreeFly);
           }
         }
+#endif
 
         const char *closeText = "ESC / CLICK HERE TO CLOSE";
         const ImVec2 closeSize = ImGui::CalcTextSize(closeText);
@@ -1076,6 +1088,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         ImGui::PopStyleVar();
       }
 
+#if defined(_DEBUG)
       if (appMode == AppMode::Game || appMode == AppMode::BossArena) {
         const DirectX::XMFLOAT3 cameraPos = cam.GetPosition();
         ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_FirstUseEver);
@@ -1088,6 +1101,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         ImGui::Text("Placement: {%.2ff, %.2ff, %.2ff}",
                     cameraPos.x, cameraPos.y, cameraPos.z);
         ImGui::Text("Objects: %zu", overworldScene.ObjectCount());
+        if (appMode == AppMode::BossArena) {
+          ImGui::Separator();
+          ImGui::Text("Boss Arena");
+          bool bossDebugVisible = bossArenaScene.DebugPanelVisible();
+          if (ImGui::Checkbox("Boss Debug Panel", &bossDebugVisible))
+            bossArenaScene.SetDebugPanelVisible(bossDebugVisible);
+          ImGui::TextDisabled("Open or close without F3");
+        }
         ImGui::Separator();
         ImGui::Text("Time");
         ImGui::SliderFloat("Hour", &gameTimeOfDayHours, 0.0f, 24.0f, "%.2f");
@@ -1137,7 +1158,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
                            16.0f, "%.2f");
         ImGui::SliderFloat("Puddle Strength", &puddleStrength, 0.0f, 1.0f,
                            "%.2f");
-        ImGui::SliderFloat("Puddle Build Seconds", &puddleBuildSeconds, 0.5f,
+        ImGui::SliderFloat("Puddle Build Seconds", &puddleBuildSeconds, 0.0f,
                            20.0f, "%.2f");
         ImGui::SliderFloat("Puddle Radius", &puddleRadius, 0.5f, 8.0f,
                            "%.2f");
@@ -1157,12 +1178,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
           wetSurfaceDrySeconds = 4.0f;
           wetSurfaceImpactRadius = 4.5f;
           wetSurfaceCycleSeconds = 5.5f;
-          puddleStrength = 0.85f;
-          puddleBuildSeconds = 5.0f;
+          puddleStrength = 1.0f;
+          puddleBuildSeconds = 0.0f;
           puddleRadius = 3.2f;
-          puddleClarity = 0.25f;
-          puddleTint = 0.60f;
-          puddleRippleStrength = 1.0f;
+          puddleClarity = 0.90f;
+          puddleTint = 0.28f;
+          puddleRippleStrength = 0.35f;
         }
         ImGui::Separator();
         ImGui::Text("Forest Debug");
@@ -1190,6 +1211,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
                     overworldScene.BackgroundForestMeshPartCount());
         ImGui::End();
       }
+#endif
 
       // ---- ImGui debug windows ----
       if (appMode == AppMode::BossArena) {
@@ -1369,10 +1391,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         frame.lighting.lightIntensity = gameLighting.sunIntensity;
         frame.lighting.iblIntensity = kGameIblIntensity;
         frame.exposure = gamePostExposure;
+        frame.ssrEnabled = true;
+        frame.ssrReflectionParams = {1.20f, 24.0f, 0.18f, 0.20f};
       } else if (appMode == AppMode::BossArena) {
         frame.gridEnabled = false;
-        frame.waterWaveParams = {0.46f, 1.85f, 1.55f, 0.0f};
-        frame.ssrReflectionParams = {1.35f, 44.0f, 0.58f, 0.24f};
+        frame.waterWaveParams = {0.0f, 1.0f, 1.0f, 0.0f};
+        frame.ssrReflectionParams = {1.35f, 28.0f, 0.16f, 0.20f};
         bossArenaScene.BuildFrame(frame);
         const DirectX::XMFLOAT3 gameplayPlayerPos = playerPreview.Position();
         playerPreview.SetPosition(
@@ -1487,6 +1511,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       if (traceGameFrame)
         TraceAppEvent("pass: DeferredLighting");
       deferredLightingPass.Execute(dx, frame);
+      // SSR は opaque scene と対応する depth だけを参照する。
+      // Particle／debug overlay を先に描くと、深度を持たない色が水面へ伸びる。
+      if (traceGameFrame)
+        TraceAppEvent("pass: SSR");
+      ssrPass.Execute(dx, frame);
       if (traceGameFrame)
         TraceAppEvent("pass: Grid");
       gridPass.Execute(dx, frame);
@@ -1496,9 +1525,6 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       if (traceGameFrame)
         TraceAppEvent("pass: Highlight");
       highlightPass.Execute(dx, frame);
-      if (traceGameFrame)
-        TraceAppEvent("pass: SSR");
-      ssrPass.Execute(dx, frame);
       if (traceGameFrame)
         TraceAppEvent("pass: TransparentMesh");
       transparentMeshPass.Execute(dx, frame);

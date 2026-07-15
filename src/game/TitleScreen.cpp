@@ -33,8 +33,8 @@ TitleScreen::Action TitleScreen::Draw(int viewportWidth, int viewportHeight) {
 
   const float centerX = viewportSize.x * 0.5f;
   const float titleY = viewportSize.y * 0.23f;
-  const char *title = "BOKUGEN RPG";
-  const char *subtitle = "A sumi-e cozy action RPG";
+  const char *title = "VILLIEN";
+  const char *subtitle = "DirectX 12 Rendering / Boss Action";
 
   ImGui::SetWindowFontScale(2.5f);
   ImVec2 titleSize = ImGui::CalcTextSize(title);
@@ -77,6 +77,7 @@ TitleScreen::Action TitleScreen::Draw(int viewportWidth, int viewportHeight) {
   ImGui::PopStyleColor(3);
   ImGui::PopStyleVar(2);
 
+#if defined(_DEBUG)
   const ImVec2 editorSize(88.0f, 32.0f);
   ImGui::SetCursorPos(ImVec2(viewportSize.x - editorSize.x - 20.0f,
                              viewportSize.y - editorSize.y - 20.0f));
@@ -90,6 +91,7 @@ TitleScreen::Action TitleScreen::Draw(int viewportWidth, int viewportHeight) {
     action = Action::Editor;
   ImGui::PopStyleColor(3);
   ImGui::PopStyleVar();
+#endif
 
   ImGui::End();
 

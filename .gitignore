@@ -7,6 +7,7 @@
 
 # Build outputs
 build/
+/build-*/
 out/
 bin/
 obj/
@@ -39,6 +40,13 @@ Desktop.ini
 # Editor caches
 .vscode/
 .idea/
+.clangd
+
+# Local generated artifacts and scratch output
+/dist/
+/output/
+/tmp/
+/app_trace_log.txt
 
 # Local agent settings
 .claude/settings.local.json

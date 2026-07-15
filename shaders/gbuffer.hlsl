@@ -10,7 +10,7 @@ cbuffer GBufferCB : register(b0)
     float4x4 gView;
     float4x4 gProj;
     float4   gCameraPos;        // xyz
-    float4   gMaterialFactors;  // x=metallic, y=roughness, z=unused, w=unused
+    float4   gMaterialFactors;  // x=metallic, y=roughness, z=SSR exclusion
     float4   gEmissiveFactor;   // rgb=emissive factor, w=unused
     float4   gPOMParams;        // x=heightScale, y=minLayers, z=maxLayers, w=enabled
     float4   gBaseColorFactor;  // rgba multiplier for base color
@@ -202,7 +202,8 @@ PSOut PSMain(PSIn i)
         N = normalize(mul(procResult.normalTS, TBN));
     }
 
-    float wetness = ((int)(gAnimParams.y + 0.5f) == 7)
+    int proceduralTypeId = (int)(gAnimParams.y + 0.5f);
+    float wetness = (proceduralTypeId == 7)
         ? ComputeWaterImpactWetness(i.posW.xz, gAnimParams.x, gWetSurfaceParams)
         : 0.0f;
     if (wetness > 0.001f)
@@ -213,10 +214,14 @@ PSOut PSMain(PSIn i)
         ao = lerp(ao, 0.82f, wetness * 0.6f);
     }
 
-    float puddle = ((int)(gAnimParams.y + 0.5f) == 7)
+    float puddle = (proceduralTypeId == 7)
         ? ComputeWaterImpactPuddle(i.posW.xz, gAnimParams.x, gPuddleParams)
         : 0.0f;
-    float puddleWetRim = ((int)(gAnimParams.y + 0.5f) == 7)
+    float puddleReflectionMask = (proceduralTypeId == 7)
+        ? ComputeWaterImpactPuddleReflectionMask(i.posW.xz, gAnimParams.x,
+                                                 gPuddleParams)
+        : 0.0f;
+    float puddleWetRim = (proceduralTypeId == 7)
         ? ComputeWaterImpactPuddleWetRim(i.posW.xz, gAnimParams.x,
                                          gWetSurfaceParams, gPuddleParams)
         : 0.0f;
@@ -228,7 +233,7 @@ PSOut PSMain(PSIn i)
         roughness = lerp(roughness, 0.12f, puddleWetRim);
         ao = lerp(ao, 0.76f, puddleWetRim * 0.65f);
     }
-    if (puddle > 0.001f)
+    if (puddleReflectionMask > 0.001f)
     {
         float clarity = saturate(gPuddleVisualParams.x);
         float tintStrength = saturate(gPuddleVisualParams.y);
@@ -261,17 +266,36 @@ PSOut PSMain(PSIn i)
 
         float cleanWaterRoughness = lerp(0.085f, 0.026f, clarity);
         cleanWaterRoughness = saturate(cleanWaterRoughness + abs(ripple) * 0.010f * normalStrength);
-        roughness = lerp(roughness, cleanWaterRoughness, puddle);
-        ao = lerp(ao, lerp(0.88f, 0.98f, clarity), puddle);
-        N = normalize(N + float3(rippleSlope.x * 0.065f, 0.0f,
-                                 rippleSlope.y * 0.065f) * puddle);
+        float clearCore = smoothstep(0.08f, 0.95f, puddle);
+        float surfaceRoughness = lerp(0.15f, cleanWaterRoughness, clearCore);
+        roughness = lerp(roughness, surfaceRoughness, puddleReflectionMask);
+        ao = lerp(ao, lerp(0.88f, 0.98f, clearCore), puddleReflectionMask);
+
+        // 中央では地面の法線を強く抑え、外周へ向けて連続的に戻す。
+        // 反射の形は一枚の水面として保ち、粗さで外周だけをぼかす。
+        float normalProfile = smoothstep(0.0f, 0.70f, puddleReflectionMask);
+        float flattenStrength = normalProfile * lerp(0.78f, 0.96f, clearCore);
+        float3 puddleBaseNormal = normalize(lerp(N, float3(0.0f, 1.0f, 0.0f),
+                                                 saturate(flattenStrength)));
+        float rippleProfile = puddleReflectionMask * lerp(0.55f, 1.0f, clearCore);
+        N = normalize(puddleBaseNormal +
+                      float3(rippleSlope.x * 0.045f, 0.0f,
+                             rippleSlope.y * 0.045f) * rippleProfile);
     }
 
     // ---- Pack to G-buffer ----
     PSOut output;
     output.albedo   = float4(albedo, 1.0f);
     output.normal   = float4(N, 0.0f);
-    output.material = float4(metallic, roughness, ao, 0.0f);
+    // Material alpha は水面 mask と SSR hit exclusion を共有する。
+    // exclusion は小さい予約値にし、反射を受ける水面 mask と区別する。
+    float proceduralWaterMask = (proceduralTypeId == 6 || proceduralTypeId == 8)
+        ? 1.0f
+        : 0.0f;
+    float ssrWaterMask = max(proceduralWaterMask, puddleReflectionMask);
+    float ssrExclusionMask = (gMaterialFactors.z > 0.5f) ? 0.01f : 0.0f;
+    output.material = float4(metallic, roughness, ao,
+                             max(saturate(ssrWaterMask), ssrExclusionMask));
     output.emissive = float4(emissive, 0.0f);
     return output;
 }

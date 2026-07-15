@@ -51,19 +51,28 @@ float2 ProjectViewToUv(float3 posV)
     return float2(ndc.x * 0.5f + 0.5f, -ndc.y * 0.5f + 0.5f);
 }
 
-float ComputeWaterMask(float3 albedo, float roughness)
-{
-    float lowRoughness = 1.0f - smoothstep(0.10f, 0.24f, roughness);
-    float waterHue = saturate((albedo.g + albedo.b * 1.25f - albedo.r * 1.45f) * 1.65f);
-    float darkPuddle = (1.0f - smoothstep(0.16f, 0.34f, dot(albedo, float3(0.299f, 0.587f, 0.114f))))
-                     * saturate((albedo.g + albedo.b - albedo.r * 1.2f) * 3.0f);
-    return saturate(max(waterHue, darkPuddle) * lowRoughness);
-}
-
 float EdgeFade(float2 uv)
 {
     float2 edge = min(uv, 1.0f - uv);
     return smoothstep(0.0f, 0.08f, min(edge.x, edge.y));
+}
+
+float3 SampleReflectionColor(float2 uv, float roughness)
+{
+    // 中央の低 roughness は鮮明に保ち、外周だけを画面空間で滑らかにぼかす。
+    float blurAmount = saturate((roughness - 0.035f) / 0.125f);
+    float2 radius = gScreenParams.zw * (blurAmount * 7.0f);
+
+    float3 color = gSceneTex.SampleLevel(gLinearClamp, uv, 0).rgb * 0.28f;
+    color += gSceneTex.SampleLevel(gLinearClamp, uv + float2( radius.x, 0.0f), 0).rgb * 0.12f;
+    color += gSceneTex.SampleLevel(gLinearClamp, uv + float2(-radius.x, 0.0f), 0).rgb * 0.12f;
+    color += gSceneTex.SampleLevel(gLinearClamp, uv + float2(0.0f,  radius.y), 0).rgb * 0.12f;
+    color += gSceneTex.SampleLevel(gLinearClamp, uv + float2(0.0f, -radius.y), 0).rgb * 0.12f;
+    color += gSceneTex.SampleLevel(gLinearClamp, uv + float2( radius.x,  radius.y), 0).rgb * 0.06f;
+    color += gSceneTex.SampleLevel(gLinearClamp, uv + float2(-radius.x,  radius.y), 0).rgb * 0.06f;
+    color += gSceneTex.SampleLevel(gLinearClamp, uv + float2( radius.x, -radius.y), 0).rgb * 0.06f;
+    color += gSceneTex.SampleLevel(gLinearClamp, uv + float2(-radius.x, -radius.y), 0).rgb * 0.06f;
+    return color;
 }
 
 float4 PSMain(VSOut pin) : SV_TARGET
@@ -73,11 +82,12 @@ float4 PSMain(VSOut pin) : SV_TARGET
     if (depth >= 1.0f)
         return float4(sceneColor, 1.0f);
 
-    float3 albedo = gAlbedoTex.Sample(gPointClamp, pin.uv).rgb;
     float3 normalW = normalize(gNormalTex.Sample(gPointClamp, pin.uv).xyz);
-    float roughness = gMaterialTex.Sample(gPointClamp, pin.uv).g;
+    float4 material = gMaterialTex.Sample(gPointClamp, pin.uv);
+    float roughness = material.g;
+    // 0.01 は hit exclusion の予約値。0.05 以上だけを反射面として扱う。
+    float waterMask = (material.a >= 0.05f) ? material.a : 0.0f;
 
-    float waterMask = ComputeWaterMask(albedo, roughness);
     if (waterMask <= 0.001f)
         return float4(sceneColor, 1.0f);
 
@@ -100,15 +110,22 @@ float4 PSMain(VSOut pin) : SV_TARGET
     float stride = max(gReflectionParams.w, 0.05f);
     float3 hitColor = 0.0f;
     float hitWeight = 0.0f;
+    float3 skyReflectionColor = lerp(float3(0.04f, 0.12f, 0.16f),
+                                     float3(0.18f, 0.34f, 0.40f),
+                                     saturate(normalW.y));
+    float skyReflectionWeight = 0.0f;
+
+    // 水面自身を出発点として拾わないよう、法線方向へわずかにずらす。
+    float3 rayOriginV = posV + normalV * 0.035f;
 
     [loop]
-    for (int stepIndex = 1; stepIndex <= 48; ++stepIndex)
+    for (int stepIndex = 1; stepIndex <= 128; ++stepIndex)
     {
         float travel = (float)stepIndex * stride;
         if (travel > maxDistance)
             break;
 
-        float3 sampleV = posV + reflectRay * travel;
+        float3 sampleV = rayOriginV + reflectRay * travel;
         float2 sampleUv = ProjectViewToUv(sampleV);
         if (sampleUv.x <= 0.0f || sampleUv.x >= 1.0f ||
             sampleUv.y <= 0.0f || sampleUv.y >= 1.0f)
@@ -116,26 +133,59 @@ float4 PSMain(VSOut pin) : SV_TARGET
 
         float sampleDepth = gDepthTex.SampleLevel(gPointClamp, sampleUv, 0).r;
         if (sampleDepth >= 1.0f)
+        {
+            // Deferred パス後も gSceneTex には描画済みの空が残る。
+            // 深度を持たない空でも、画面内の空と太陽を水面反射に利用する。
+            float candidateWeight = EdgeFade(sampleUv);
+            if (candidateWeight > skyReflectionWeight)
+            {
+                skyReflectionColor = SampleReflectionColor(sampleUv, roughness);
+                skyReflectionWeight = candidateWeight;
+            }
+            continue;
+        }
+
+        // SSR の水面同士の自己交差は、視点移動時に長い縞として伸びるため除外する。
+        const float sampleSsrMask =
+            gMaterialTex.SampleLevel(gPointClamp, sampleUv, 0).a;
+        if (sampleSsrMask > 0.001f)
             continue;
 
         float3 sceneW = ReconstructWorldPos(sampleUv, sampleDepth);
         float3 sceneV = mul(float4(sceneW, 1.0f), gView).xyz;
         float dz = sampleV.z - sceneV.z;
-        if (dz >= 0.0f && dz < thickness + travel * 0.015f)
+        if (dz >= 0.0f && dz < thickness)
         {
-            hitColor = gSceneTex.SampleLevel(gLinearClamp, sampleUv, 0).rgb;
-            hitWeight = EdgeFade(sampleUv) * saturate(1.0f - travel / maxDistance);
+            // 反射レイに背を向ける面を採用すると、踏み石の上面などが
+            // 水面上で横長に引き伸ばされる。正面側だけを滑らかに採用する。
+            float3 sampleNormalW = normalize(
+                gNormalTex.SampleLevel(gPointClamp, sampleUv, 0).xyz);
+            float3 sampleNormalV = normalize(
+                mul(float4(sampleNormalW, 0.0f), gView).xyz);
+            float facingWeight = smoothstep(
+                0.02f, 0.18f, dot(sampleNormalV, -reflectRay));
+            if (facingWeight <= 0.001f)
+                continue;
+
+            hitColor = SampleReflectionColor(sampleUv, roughness);
+            hitWeight = EdgeFade(sampleUv)
+                      * saturate(1.0f - travel / maxDistance)
+                      * facingWeight;
             break;
         }
     }
 
-    float3 fallbackColor = lerp(float3(0.04f, 0.12f, 0.16f), float3(0.18f, 0.34f, 0.40f),
+    float3 fallbackColor = lerp(float3(0.04f, 0.12f, 0.16f),
+                                float3(0.18f, 0.34f, 0.40f),
                                 saturate(normalW.y));
-    float3 reflectionColor = lerp(fallbackColor, hitColor, hitWeight);
+    float3 reflectionColor = lerp(fallbackColor, skyReflectionColor,
+                                  skyReflectionWeight);
+    reflectionColor = lerp(reflectionColor, hitColor, hitWeight);
     float fresnel = pow(1.0f - saturate(dot(-viewRay, normalV)), 5.0f);
-    float reflectionStrength = waterMask * gReflectionParams.x
-                             * lerp(0.18f, 0.72f, fresnel)
-                             * (1.0f - saturate(roughness));
+    float surfaceFresnel = lerp(0.46f, 0.92f, fresnel);
+    float reflectionStrength = saturate(waterMask * gReflectionParams.x
+                                      * surfaceFresnel
+                                      * (1.0f - saturate(roughness)));
 
     return float4(lerp(sceneColor, reflectionColor, reflectionStrength), 1.0f);
 }
