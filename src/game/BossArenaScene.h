@@ -21,12 +21,18 @@ public:
     LaserLine,
   };
 
+  enum class RestartDestination {
+    None,
+    Overworld,
+    BossArena,
+  };
+
   void Initialize(DxContext &dx);
   void Reset(PlayerAnimationPreview &player);
   void Update(float dt, const Input &input, PlayerAnimationPreview &player);
   void BuildFrame(FrameData &frame) const;
   void ApplyTechShowcase(FrameData &frame) const;
-  void DrawHud(int viewportWidth, int viewportHeight);
+  RestartDestination DrawHud(int viewportWidth, int viewportHeight);
 
   bool IsReady() const { return m_ready; }
   float ArenaHalfExtent() const { return kArenaHalfExtent; }

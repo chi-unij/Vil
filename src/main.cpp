@@ -1215,8 +1215,31 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
 
       // ---- ImGui debug windows ----
       if (appMode == AppMode::BossArena) {
-        bossArenaScene.DrawHud(static_cast<int>(window.Width()),
-                               static_cast<int>(window.Height()));
+        const BossArenaScene::RestartDestination restartDestination =
+            bossArenaScene.DrawHud(static_cast<int>(window.Width()),
+                                   static_cast<int>(window.Height()));
+        if (restartDestination != BossArenaScene::RestartDestination::None) {
+          bossArenaScene.Reset(playerPreview);
+          gameRuntimeSeconds = 0.0f;
+
+          if (restartDestination ==
+              BossArenaScene::RestartDestination::Overworld) {
+            TraceAppEvent("restart choice: overworld");
+            appMode = AppMode::Game;
+            playerPreview.SetPosition(overworldScene.PlayerSpawnPosition());
+          } else {
+            TraceAppEvent("restart choice: boss arena");
+            appMode = AppMode::BossArena;
+          }
+
+          playerPreview.SetYaw(0.0f);
+          const DirectX::XMFLOAT3 restartPosition = playerPreview.Position();
+          gameCameraPosition = {restartPosition.x, 3.2f,
+                                restartPosition.z - 5.8f};
+          cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
+                          gameCameraPosition.z);
+          cam.SetYawPitch(0.0f, -0.28f);
+        }
       }
 
       if (appMode == AppMode::Editor) {   

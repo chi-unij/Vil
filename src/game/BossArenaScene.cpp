@@ -662,11 +662,6 @@ void BossArenaScene::Update(float dt, const Input &input,
   m_debugNoClip = false;
 #endif
 
-  if (input.IsKeyDown('R')) {
-    Reset(player);
-    return;
-  }
-
   if (!m_debugNoClip) {
     XMFLOAT3 lanePos = player.Position();
     lanePos.x = std::clamp(lanePos.x, -kLaneHalfWidth, kLaneHalfWidth);
@@ -1712,7 +1707,9 @@ void BossArenaScene::AppendWorldPolish(FrameData &frame) const {
   }
 }
 
-void BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
+BossArenaScene::RestartDestination
+BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
+  RestartDestination restartDestination = RestartDestination::None;
   const float vw = static_cast<float>(viewportWidth);
   const float vh = static_cast<float>(viewportHeight);
   ImDrawList *draw = ImGui::GetForegroundDrawList();
@@ -2054,7 +2051,12 @@ void BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
                     : (m_phase == AttackPhase::Resolve ? "Resolve"
                                                        : "Recovery"));
     ImGui::Text("Timer: %.1f", std::max(0.0f, m_phaseTimer));
-    ImGui::Text("R: Restart");
+    if (ImGui::Button("Set Boss HP to 1") && !m_failed && !m_cleared) {
+      // 最終カウンターの検証時間を短縮する Debug パネル専用操作。
+      m_bossHp = 1;
+      m_phaseShiftVfxTimer = 1.25f;
+    }
+    ImGui::Text("Result screen: choose restart point");
     ImGui::Text("Phone: SPACE");
     ImGui::Text("Open: F3 / Camera Position panel");
     ImGui::Separator();
@@ -2092,7 +2094,11 @@ void BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
     ImGui::End();
   }
 
-  if (m_failed || m_cleared) {
+  // 最終カウンター後は携帯の退出アニメーションを完了してから
+  // リザルトを表示し、二つの UI が重ならないようにする。
+  const bool resultVisible =
+      (m_failed || m_cleared) && m_phoneSlide <= 0.002f;
+  if (resultVisible) {
     const ImVec2 screenMin(0.0f, 0.0f);
     const ImVec2 screenMax(vw, vh);
     draw->AddRectFilled(screenMin, screenMax,
@@ -2101,7 +2107,7 @@ void BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
 
     const ImVec2 center(vw * 0.5f, vh * 0.46f);
     const float panelW = std::clamp(vw * 0.46f, 520.0f, 760.0f);
-    const float panelH = std::clamp(vh * 0.40f, 320.0f, 440.0f);
+    const float panelH = std::clamp(vh * 0.54f, 440.0f, 560.0f);
     const ImVec2 panelMin(center.x - panelW * 0.5f, center.y - panelH * 0.5f);
     const ImVec2 panelMax(center.x + panelW * 0.5f, center.y + panelH * 0.5f);
 
@@ -2215,20 +2221,70 @@ void BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
                          rankMax.y + 12.0f),
                   Rgba(0.74f, 0.92f, 0.88f, 0.90f), rankNote);
 
-    const char *prompt = "R : RETRY";
-    const ImVec2 promptSize = ImGui::CalcTextSize(prompt);
-    const ImVec2 promptMin((panelMin.x + panelMax.x - promptSize.x) * 0.5f -
-                               26.0f,
-                           panelMax.y - 62.0f);
-    const ImVec2 promptMax(promptMin.x + promptSize.x + 52.0f,
-                           promptMin.y + promptSize.y + 28.0f);
-    draw->AddRectFilled(promptMin, promptMax, Rgba(0.02f, 0.05f, 0.055f, 0.78f),
-                        6.0f);
-    draw->AddText(ImVec2(promptMin.x + 26.0f, promptMin.y + 13.0f), accent,
-                  prompt);
+    const char *choicePrompt = "SELECT RESTART POINT";
+    const ImVec2 choicePromptSize = ImGui::CalcTextSize(choicePrompt);
+    draw->AddText(ImVec2((panelMin.x + panelMax.x - choicePromptSize.x) * 0.5f,
+                         panelMax.y - 104.0f),
+                  Rgba(0.66f, 0.82f, 0.80f, 0.92f), choicePrompt);
+
+    // 結果画面から、作品全体の再開地点を明示的に選択できるようにする。
+    const float buttonGap = 16.0f;
+    const float buttonW = (panelW - 68.0f - buttonGap) * 0.5f;
+    const float buttonH = 52.0f;
+    const float buttonY = panelMax.y - 76.0f;
+    const ImVec2 overworldMin(panelMin.x + 34.0f, buttonY);
+    const ImVec2 overworldMax(overworldMin.x + buttonW, buttonY + buttonH);
+    const ImVec2 bossMin(overworldMax.x + buttonGap, buttonY);
+    const ImVec2 bossMax(bossMin.x + buttonW, buttonY + buttonH);
+
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(vw, vh), ImGuiCond_Always);
+    ImGui::Begin("##BossArenaRestartChoices", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoBackground |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus |
+                     ImGuiWindowFlags_NoNavFocus);
+
+    const auto drawChoice = [&](const char *id, const char *label,
+                                const ImVec2 &buttonMin,
+                                const ImVec2 &buttonMax,
+                                ImU32 buttonAccent) {
+      ImGui::SetCursorScreenPos(buttonMin);
+      const bool clicked = ImGui::InvisibleButton(
+          id, ImVec2(buttonMax.x - buttonMin.x, buttonMax.y - buttonMin.y));
+      const bool hovered = ImGui::IsItemHovered();
+      draw->AddRectFilled(
+          buttonMin, buttonMax,
+          hovered ? Rgba(0.08f, 0.16f, 0.16f, 0.98f)
+                  : Rgba(0.025f, 0.060f, 0.064f, 0.94f),
+          6.0f);
+      draw->AddRect(buttonMin, buttonMax, buttonAccent, 6.0f, 0,
+                    hovered ? 2.4f : 1.5f);
+      const ImVec2 labelSize = ImGui::CalcTextSize(label);
+      draw->AddText(
+          ImVec2((buttonMin.x + buttonMax.x - labelSize.x) * 0.5f,
+                 (buttonMin.y + buttonMax.y - labelSize.y) * 0.5f),
+          hovered ? Rgba(0.94f, 1.0f, 0.98f, 1.0f)
+                  : Rgba(0.82f, 0.96f, 0.92f, 0.96f),
+          label);
+      return clicked;
+    };
+
+    if (drawChoice("##restart-overworld", "RESTART FROM OVERWORLD",
+                   overworldMin, overworldMax,
+                   Rgba(0.36f, 1.0f, 0.84f, 0.88f))) {
+      restartDestination = RestartDestination::Overworld;
+    }
+    if (drawChoice("##restart-boss", "RETRY BOSS ARENA", bossMin, bossMax,
+                   Rgba(1.0f, 0.52f, 0.28f, 0.88f))) {
+      restartDestination = RestartDestination::BossArena;
+    }
+    ImGui::End();
   }
 
   DrawPhoneOverlay(viewportWidth, viewportHeight);
+  return restartDestination;
 }
 
 void BossArenaScene::StartNextAttack() {
@@ -2630,7 +2686,8 @@ void BossArenaScene::DrawPhoneOverlay(int viewportWidth, int viewportHeight) {
   const bool phoneHeadHovered =
       mouse.x >= phoneX && mouse.x <= phoneX + phoneWidth &&
       mouse.y >= phoneY && mouse.y <= phoneY + hitHeight;
-  if (phoneHeadHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+  if (!m_failed && !m_cleared && phoneHeadHovered &&
+      ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
     if (m_phoneOpen) {
       m_phoneOpen = false;
     } else if (m_mirrorCharge >= kMirrorChargeMax) {
