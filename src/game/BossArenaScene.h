@@ -19,6 +19,7 @@ public:
   enum class AttackType {
     MeteorAoE,
     LaserLine,
+    SanctuarySeal,
   };
 
   enum class RestartDestination {
@@ -69,6 +70,7 @@ private:
   static constexpr float kPlayerHitRadius = 0.45f;
 
   void StartNextAttack();
+  void ConfigureAttack(AttackType attack, bool sanctuaryIntro = false);
   void ResolveAttack(PlayerAnimationPreview &player);
   bool IsPlayerInCurrentAttack(const DirectX::XMFLOAT3 &playerPos) const;
   const char *AttackName() const;
@@ -90,6 +92,7 @@ private:
   uint32_t m_aoeTelegraphMeshId = UINT32_MAX;
   uint32_t m_laserTelegraphMeshId = UINT32_MAX;
   uint32_t m_knockbackTelegraphMeshId = UINT32_MAX;
+  uint32_t m_sanctuaryDomeMeshId = UINT32_MAX;
   uint32_t m_flameMeshId = UINT32_MAX;
   uint32_t m_pathGlowMeshId = UINT32_MAX;
   uint32_t m_attackSmokeMeshId = UINT32_MAX;
@@ -134,8 +137,11 @@ private:
   AttackType m_attack = AttackType::MeteorAoE;
   AttackPhase m_phase = AttackPhase::Telegraph;
   int m_attackIndex = 0;
+  int m_phaseTwoPatternIndex = 0;
   float m_phaseTimer = 0.0f;
   bool m_resolved = false;
+  bool m_phaseTwoIntroPending = false;
+  bool m_sanctuaryIntroActive = false;
 
   DirectX::XMFLOAT3 m_attackCenter = {0.0f, 0.02f, 0.0f};
   float m_attackRadius = 4.0f;

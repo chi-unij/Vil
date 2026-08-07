@@ -334,4 +334,51 @@ LoadedMesh CreateSphere(float radius, uint32_t rings, uint32_t segments) {
   return m;
 }
 
+LoadedMesh CreateHemisphere(float radius, uint32_t rings,
+                            uint32_t segments) {
+  LoadedMesh m;
+
+  // 天頂から赤道までを生成し、地面より下の不要な透明面を持たせない。
+  for (uint32_t r = 0; r <= rings; ++r) {
+    const float phi =
+        static_cast<float>(r) / static_cast<float>(rings) *
+        static_cast<float>(M_PI) * 0.5f;
+    const float sinPhi = sinf(phi);
+    const float cosPhi = cosf(phi);
+    const float v = static_cast<float>(r) / static_cast<float>(rings);
+
+    for (uint32_t s = 0; s <= segments; ++s) {
+      const float theta =
+          static_cast<float>(s) / static_cast<float>(segments) * 2.0f *
+          static_cast<float>(M_PI);
+      const float sinTheta = sinf(theta);
+      const float cosTheta = cosf(theta);
+      const float u = static_cast<float>(s) / static_cast<float>(segments);
+
+      const float nx = sinPhi * cosTheta;
+      const float ny = cosPhi;
+      const float nz = sinPhi * sinTheta;
+      const float tx = -sinTheta;
+      const float tz = cosTheta;
+
+      PushVert(m, nx * radius, ny * radius, nz * radius, nx, ny, nz, u, v,
+               tx, 0.0f, tz, 1.0f);
+    }
+  }
+
+  const uint32_t cols = segments + 1;
+  for (uint32_t r = 0; r < rings; ++r) {
+    for (uint32_t s = 0; s < segments; ++s) {
+      const uint32_t tl = r * cols + s;
+      const uint32_t tr = tl + 1;
+      const uint32_t bl = (r + 1) * cols + s;
+      const uint32_t br = bl + 1;
+      PushTri(m, tl, tr, bl);
+      PushTri(m, tr, br, bl);
+    }
+  }
+
+  return m;
+}
+
 } // namespace ProceduralMesh

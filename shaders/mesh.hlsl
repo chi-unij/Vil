@@ -222,7 +222,10 @@ PSOut PSMain(PSIn i)
     // BaseColor sampled as SRGB view => returned as LINEAR here.
     float4 baseColorSample = gBaseColorMap.Sample(gSam, uv);
     float alpha = baseColorSample.a * gBaseColorFactor.a;
-    if ((int)(gAnimParams.y + 0.5f) == 9)
+    int materialTypeId = (int)(gAnimParams.y + 0.5f);
+    float sanctuaryRim = 0.0f;
+    float sanctuaryBands = 0.0f;
+    if (materialTypeId == 9)
     {
         float sideFade = smoothstep(0.0f, 0.24f, uv.x)
                        * (1.0f - smoothstep(0.76f, 1.0f, uv.x));
@@ -233,9 +236,36 @@ PSOut PSMain(PSIn i)
                 + float2(gAnimParams.x * 0.025f, -gAnimParams.x * 0.055f), 3));
         alpha *= sideFade * endFade * veilNoise;
     }
+    else if (materialTypeId == 10)
+    {
+        // 水鏡の結界は中央を透明に保ち、輪郭と流動帯だけを強く見せる。
+        float3 viewDir = normalize(gCameraPos.xyz - i.posW);
+        float facing = saturate(abs(dot(N, viewDir)));
+        sanctuaryRim = pow(1.0f - facing, 2.45f);
+
+        float2 flowUv = float2(i.uv.x * 3.0f + gAnimParams.x * 0.025f,
+                               i.uv.y * 5.0f - gAnimParams.x * 0.12f);
+        float flowNoise = fbm(flowUv, 3);
+        float bandPhase = abs(frac(i.uv.y * 4.5f - gAnimParams.x * 0.22f
+                                   + flowNoise * 0.28f) - 0.5f);
+        sanctuaryBands = 1.0f - smoothstep(0.04f, 0.16f, bandPhase);
+        sanctuaryBands *= lerp(0.45f, 1.0f,
+                               smoothstep(0.24f, 0.78f, flowNoise));
+
+        float shellOpacity = 0.15f + sanctuaryRim * 1.15f
+                           + sanctuaryBands * 0.38f;
+        alpha = saturate(alpha * shellOpacity);
+    }
     if (gAnimParams.w > 0.5f && alpha < gAnimParams.z)
         discard;
     float3 albedo = baseColorSample.rgb * gBaseColorFactor.rgb;
+    if (materialTypeId == 10)
+    {
+        float colorPulse = 0.5f + 0.5f *
+            sin(gAnimParams.x * 2.1f + i.uv.y * 8.0f + sanctuaryBands * 2.0f);
+        float colorShift = sanctuaryBands * 0.24f + colorPulse * 0.08f;
+        albedo = lerp(albedo, float3(0.30f, 1.0f, 0.90f), colorShift);
+    }
 
     // MetallicRoughness: glTF convention — G=roughness, B=metallic.
     // Multiply by per-material factors (Phase 11.5) so sliders scale the texture.
@@ -384,6 +414,14 @@ PSOut PSMain(PSIn i)
     {
         float3 emissive = gEmissiveMap.Sample(gSam, uv).rgb;
         color += emissive * gEmissiveFactor.rgb;
+        if (materialTypeId == 10)
+        {
+            float glowPulse = 0.82f + 0.18f *
+                sin(gAnimParams.x * 3.4f + i.uv.y * 10.0f);
+            float sanctuaryGlow = 0.10f + sanctuaryRim * 1.65f
+                                + sanctuaryBands * 0.72f * glowPulse;
+            color += float3(0.06f, 0.88f, 1.12f) * sanctuaryGlow;
+        }
     }
 
     // MRT output: linear HDR color + view-space normal (packed to [0,1]).

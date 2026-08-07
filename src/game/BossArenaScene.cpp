@@ -375,6 +375,8 @@ void BossArenaScene::Initialize(DxContext &dx) {
   const LoadedMesh lanternPostMesh =
       ProceduralMesh::CreateCylinder(0.5f, 1.0f, 12);
   const LoadedMesh lanternGlowMesh = ProceduralMesh::CreateSphere(0.5f, 8, 16);
+  const LoadedMesh sanctuaryDomeMesh =
+      ProceduralMesh::CreateHemisphere(1.0f, 16, 32);
 
   m_aoeTelegraphMeshId = dx.CreateMeshResources(
       diskMesh, {},
@@ -388,6 +390,13 @@ void BossArenaScene::Initialize(DxContext &dx) {
       diskMesh, {},
       MakeTelegraphMaterial({1.0f, 0.58f, 0.05f, 0.38f},
                             {1.55f, 0.55f, 0.04f}));
+  Material sanctuaryDomeMaterial =
+      MakeTelegraphMaterial({0.08f, 0.72f, 0.86f, 0.22f},
+                            {0.18f, 1.05f, 1.30f});
+  sanctuaryDomeMaterial.roughnessFactor = 0.14f;
+  sanctuaryDomeMaterial.proceduralTypeId = 10.0f;
+  m_sanctuaryDomeMeshId = dx.CreateMeshResources(
+      sanctuaryDomeMesh, {}, sanctuaryDomeMaterial);
   m_flameMeshId = dx.CreateMeshResources(
       flameCardMesh, {},
       MakeTelegraphMaterial({1.0f, 0.22f, 0.02f, 0.78f},
@@ -575,6 +584,7 @@ void BossArenaScene::Initialize(DxContext &dx) {
              m_aoeTelegraphMeshId != UINT32_MAX &&
              m_laserTelegraphMeshId != UINT32_MAX &&
              m_knockbackTelegraphMeshId != UINT32_MAX &&
+             m_sanctuaryDomeMeshId != UINT32_MAX &&
              m_flameMeshId != UINT32_MAX &&
              m_pathGlowMeshId != UINT32_MAX &&
              m_attackSmokeMeshId != UINT32_MAX &&
@@ -603,8 +613,11 @@ void BossArenaScene::Reset(PlayerAnimationPreview &player) {
   m_attack = AttackType::MeteorAoE;
   m_phase = AttackPhase::Telegraph;
   m_attackIndex = 0;
+  m_phaseTwoPatternIndex = 0;
   m_phaseTimer = 1.6f;
   m_resolved = false;
+  m_phaseTwoIntroPending = false;
+  m_sanctuaryIntroActive = false;
   m_attackCenter = {0.0f, 0.02f, 6.0f};
   m_attackRadius = 4.0f;
   m_laserVertical = true;
@@ -1158,6 +1171,39 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
       riftLight.color = {1.0f, 0.08f, 0.16f};
       riftLight.intensity = 1.2f + charge * 3.4f;
       frame.pointLights.push_back(riftLight);
+    } else if (m_attack == AttackType::SanctuarySeal &&
+               m_phase != AttackPhase::Recovery) {
+      const float charge = 1.0f - telegraphRemain;
+      float radialScale = m_attackRadius;
+      float domeHeight = m_sanctuaryIntroActive ? 2.30f : 2.05f;
+
+      if (m_phase == AttackPhase::Telegraph) {
+        float rise = std::clamp(charge / 0.16f, 0.0f, 1.0f);
+        rise = rise * rise * (3.0f - 2.0f * rise);
+        domeHeight *= std::max(0.035f, rise);
+        radialScale *=
+            1.0f + 0.012f * std::sin(frame.gameTime * 4.2f);
+      } else {
+        const float resolveAge =
+            1.0f - std::clamp(m_phaseTimer / 0.24f, 0.0f, 1.0f);
+        const float resolvePulse = std::sin(resolveAge * XM_PI);
+        radialScale *= 1.0f + resolvePulse * 0.04f;
+        domeHeight *= 1.0f + resolvePulse * 0.06f;
+      }
+
+      frame.transparentItems.push_back(
+          {m_sanctuaryDomeMeshId,
+           CurveWorld(radialScale, domeHeight, radialScale,
+                      m_attackCenter.x, 0.03f, m_attackCenter.z)});
+
+      GPUPointLight sanctuaryLight{};
+      sanctuaryLight.position =
+          CurvePoint(m_attackCenter.x, domeHeight * 0.48f,
+                     m_attackCenter.z);
+      sanctuaryLight.range = m_attackRadius + 3.4f;
+      sanctuaryLight.color = {0.28f, 1.0f, 0.86f};
+      sanctuaryLight.intensity = 0.70f + charge * 2.10f;
+      frame.pointLights.push_back(sanctuaryLight);
     }
   }
 
@@ -1171,11 +1217,17 @@ void BossArenaScene::BuildFrame(FrameData &frame) const {
     GPUPointLight impactLight{};
     impactLight.position = CurvePoint(m_impactPosition.x, 1.0f,
                                       m_impactPosition.z);
-    impactLight.range =
-        radius + (m_attack == AttackType::MeteorAoE ? 4.5f : 7.0f);
-    impactLight.color = {1.0f, 0.38f, 0.08f};
-    impactLight.intensity =
-        (m_attack == AttackType::MeteorAoE ? 5.0f : 10.0f) * impactLife;
+    if (m_attack == AttackType::SanctuarySeal) {
+      impactLight.range = radius + 5.0f;
+      impactLight.color = {0.34f, 1.0f, 0.86f};
+      impactLight.intensity = 6.0f * impactLife;
+    } else {
+      impactLight.range =
+          radius + (m_attack == AttackType::MeteorAoE ? 4.5f : 7.0f);
+      impactLight.color = {1.0f, 0.38f, 0.08f};
+      impactLight.intensity =
+          (m_attack == AttackType::MeteorAoE ? 5.0f : 10.0f) * impactLife;
+    }
     frame.pointLights.push_back(impactLight);
   }
   if (m_attack == AttackType::LaserLine && m_impactTimer > 0.0f) {
@@ -1948,8 +2000,11 @@ BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
   }
 
   if (!m_failed && !m_cleared && !IsPhoneOverlayActive()) {
-    const char *attackBanner =
-        m_attack == AttackType::MeteorAoE ? "METEOR FIELD" : "INK LASER";
+    const char *attackBanner = "INK LASER";
+    if (m_attack == AttackType::MeteorAoE)
+      attackBanner = "METEOR FIELD";
+    else if (m_attack == AttackType::SanctuarySeal)
+      attackBanner = "SANCTUARY SEAL";
     const char *banner =
         m_counterVfxTimer > 0.0f
             ? "MIZUKAGAMI COUNTER"
@@ -2053,8 +2108,20 @@ BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
     ImGui::Text("Timer: %.1f", std::max(0.0f, m_phaseTimer));
     if (ImGui::Button("Set Boss HP to 1") && !m_failed && !m_cleared) {
       // 最終カウンターの検証時間を短縮する Debug パネル専用操作。
+      if (m_bossHp > 2) {
+        m_phaseTwoIntroPending = true;
+        m_phaseTwoPatternIndex = 0;
+      }
       m_bossHp = 1;
       m_phaseShiftVfxTimer = 1.25f;
+    }
+    if (ImGui::Button("Force Sanctuary Seal") && !m_failed && !m_cleared) {
+      const bool useIntroTuning =
+          m_bossHp > 2 || m_phaseTwoIntroPending;
+      m_phaseTwoIntroPending = false;
+      if (m_bossHp <= 2)
+        m_phaseTwoPatternIndex = 0;
+      ConfigureAttack(AttackType::SanctuarySeal, useIntroTuning);
     }
     ImGui::Text("Result screen: choose restart point");
     ImGui::Text("Phone: SPACE");
@@ -2289,27 +2356,67 @@ BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
 
 void BossArenaScene::StartNextAttack() {
   ++m_attackIndex;
-  const int pattern = m_attackIndex % 2;
+  if (m_phaseTwoIntroPending) {
+    m_phaseTwoIntroPending = false;
+    m_phaseTwoPatternIndex = 0;
+    ConfigureAttack(AttackType::SanctuarySeal, true);
+    return;
+  }
+
+  if (m_bossHp <= 2) {
+    constexpr AttackType kPhaseTwoPattern[3] = {
+        AttackType::MeteorAoE,
+        AttackType::LaserLine,
+        AttackType::SanctuarySeal,
+    };
+    const AttackType next =
+        kPhaseTwoPattern[m_phaseTwoPatternIndex % 3];
+    ++m_phaseTwoPatternIndex;
+    ConfigureAttack(next);
+    return;
+  }
+
+  ConfigureAttack(m_attackIndex % 2 == 0 ? AttackType::MeteorAoE
+                                         : AttackType::LaserLine);
+}
+
+void BossArenaScene::ConfigureAttack(AttackType attack,
+                                     bool sanctuaryIntro) {
   const bool phase2 = m_bossHp <= 2;
+  m_attack = attack;
   m_phase = AttackPhase::Telegraph;
   m_resolved = false;
+  m_sanctuaryIntroActive = false;
 
-  if (pattern == 0) {
-    m_attack = AttackType::MeteorAoE;
+  if (attack == AttackType::MeteorAoE) {
     constexpr float kMeteorZs[3] = {-14.0f, -11.8f, -9.4f};
     const float x = (m_attackIndex % 2 == 0) ? -2.95f : 2.95f;
     const float z = kMeteorZs[m_attackIndex % 3];
     m_attackCenter = {x, 0.02f, z};
     m_attackRadius = phase2 ? 3.45f : 3.15f;
     m_phaseTimer = phase2 ? 1.32f : 1.8f;
-  } else if (pattern == 1) {
-    m_attack = AttackType::LaserLine;
+  } else if (attack == AttackType::LaserLine) {
     constexpr float kLaserZs[3] = {-14.2f, -11.7f, -9.2f};
     const int laserCycle = m_attackIndex / 2;
     m_laserVertical = (laserCycle % 2) == 0;
     m_attackCenter = {0.0f, 0.02f, kLaserZs[laserCycle % 3]};
     m_laserHalfWidth = phase2 ? 1.70f : 1.45f;
     m_phaseTimer = phase2 ? 1.22f : 1.65f;
+  } else if (attack == AttackType::SanctuarySeal) {
+    m_sanctuaryIntroActive = sanctuaryIntro;
+    if (sanctuaryIntro) {
+      m_attackCenter = {0.0f, 0.02f, -11.7f};
+      m_attackRadius = 2.25f;
+      m_phaseTimer = 2.10f;
+    } else {
+      constexpr float kSealXs[3] = {-1.95f, 1.95f, 0.0f};
+      constexpr float kSealZs[3] = {-13.2f, -10.2f, -11.7f};
+      const int placement = (m_attackIndex / 3) % 3;
+      m_attackCenter = {kSealXs[placement], 0.02f,
+                        kSealZs[placement]};
+      m_attackRadius = 1.70f;
+      m_phaseTimer = 1.55f;
+    }
   }
 }
 
@@ -2329,6 +2436,8 @@ void BossArenaScene::ResolveAttack(PlayerAnimationPreview &player) {
     m_aoeSparkTimer = 1.15f;
     m_aoeSparkBurst->Fire(
         XMVectorSet(burstPos.x, burstPos.y, burstPos.z, 0.0f));
+  } else if (m_attack == AttackType::SanctuarySeal) {
+    m_impactMaxRadius = m_attackRadius + 1.0f;
   }
 
   if (!m_debugNoClip && IsPlayerInCurrentAttack(player.Position())) {
@@ -2365,6 +2474,14 @@ bool BossArenaScene::IsPlayerInCurrentAttack(const XMFLOAT3 &playerPos) const {
            m_laserHalfWidth + kPlayerHitRadius;
   }
 
+  if (m_attack == AttackType::SanctuarySeal) {
+    // プレイヤー全体が結界内に入った場合だけ安全と判定する。
+    const float safeRadius =
+        std::max(0.0f, m_attackRadius - kPlayerHitRadius);
+    return DistanceSq2D(playerPos, m_attackCenter) >
+           safeRadius * safeRadius;
+  }
+
   return false;
 }
 
@@ -2374,6 +2491,8 @@ const char *BossArenaScene::AttackName() const {
     return "Meteor AoE";
   case AttackType::LaserLine:
     return m_laserVertical ? "Laser Column" : "Laser Row";
+  case AttackType::SanctuarySeal:
+    return "Sanctuary Seal";
   }
   return "Unknown";
 }
@@ -2428,6 +2547,22 @@ void BossArenaScene::AppendTelegraphLines(FrameData &frame) const {
                      m_attackCenter.z, kLaneHalfWidth + 0.70f, 0.055f,
                      m_attackCenter.z, innerColor, 4);
     }
+  } else if (m_attack == AttackType::SanctuarySeal) {
+    const XMFLOAT3 curvedCenter =
+        CurvePoint(m_attackCenter.x, m_attackCenter.y, m_attackCenter.z);
+    const float gatherRadius =
+        m_attackRadius * std::lerp(1.0f, 0.28f, chargeT);
+    const XMFLOAT4 sanctuaryBorder =
+        m_phase == AttackPhase::Telegraph
+            ? XMFLOAT4{0.30f, 1.0f, 0.86f, 1.0f}
+            : XMFLOAT4{0.82f, 1.0f, 0.96f, 1.0f};
+    const XMFLOAT4 sanctuaryInner{0.48f, 0.90f, 1.0f, 0.90f};
+    PushThickCircle(frame, curvedCenter, m_attackRadius, sanctuaryBorder, 4);
+    PushCircle(frame, curvedCenter, gatherRadius, sanctuaryInner);
+    PushCircle(frame, curvedCenter, m_attackRadius * 0.62f,
+               sanctuaryBorder);
+    PushCircle(frame, curvedCenter, m_attackRadius * 0.22f,
+               sanctuaryInner);
   }
 }
 
@@ -2517,8 +2652,12 @@ void BossArenaScene::CompleteMirrorPuzzle() {
   m_phoneOpen = false;
   const int previousBossHp = m_bossHp;
   m_bossHp = std::max(0, m_bossHp - 1);
-  if (previousBossHp > 2 && m_bossHp <= 2)
+  if (previousBossHp > 2 && m_bossHp <= 2) {
     m_phaseShiftVfxTimer = 1.25f;
+    // Phase 2 の開始直後に新ルールを提示し、旧攻撃だけが続く間を作らない。
+    m_phaseTwoIntroPending = true;
+    m_phaseTwoPatternIndex = 0;
+  }
   ++m_countersUsed;
   const bool climaxVfx = !m_techShowcaseOverride || m_showcaseClimaxVfx;
   m_counterVfxTimer = climaxVfx ? 0.92f : 0.68f;
@@ -2582,6 +2721,8 @@ float BossArenaScene::TelegraphDuration() const {
     return phase2 ? 1.32f : 1.8f;
   if (m_attack == AttackType::LaserLine)
     return phase2 ? 1.22f : 1.65f;
+  if (m_attack == AttackType::SanctuarySeal)
+    return m_sanctuaryIntroActive ? 2.10f : 1.55f;
   return 1.6f;
 }
 

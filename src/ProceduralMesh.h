@@ -36,4 +36,8 @@ LoadedMesh CreateCone(float radius = 0.5f, float height = 1.0f,
 LoadedMesh CreateSphere(float radius = 0.5f, uint32_t rings = 12,
                         uint32_t segments = 24);
 
+// 地面の結界やシールド向けの上半球。底面キャップは生成しない。
+LoadedMesh CreateHemisphere(float radius = 0.5f, uint32_t rings = 12,
+                            uint32_t segments = 24);
+
 } // namespace ProceduralMesh
