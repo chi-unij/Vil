@@ -648,6 +648,7 @@ void BossArenaScene::Reset(PlayerAnimationPreview &player) {
   m_memoryFailTimer = 0.0f;
   m_mirrorCharge = 0;
   m_memoryInputIndex = 0;
+  ResetReflectionTrace();
   m_readyRiverElectricWasActive = false;
   if (m_meteorFlameEmitter)
     m_meteorFlameEmitter->Emmit(false);
@@ -2116,12 +2117,18 @@ BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
       m_phaseShiftVfxTimer = 1.25f;
     }
     if (ImGui::Button("Force Sanctuary Seal") && !m_failed && !m_cleared) {
-      const bool useIntroTuning =
-          m_bossHp > 2 || m_phaseTwoIntroPending;
+      const bool useIntroTuning = m_bossHp > 2 || m_phaseTwoIntroPending;
       m_phaseTwoIntroPending = false;
       if (m_bossHp <= 2)
         m_phaseTwoPatternIndex = 0;
       ConfigureAttack(AttackType::SanctuarySeal, useIntroTuning);
+    }
+    if (ImGui::Button("反写軌跡を強制") && !m_failed && !m_cleared) {
+      // Checkpoint A は通常抽選へ入れず、操作感を単独で検証する。
+      m_mirrorCharge = kMirrorChargeMax;
+      m_mirrorChargeActive = {false, false, false};
+      PrepareReflectionTracePuzzle(m_attack);
+      m_phoneOpen = true;
     }
     ImGui::Text("Result screen: choose restart point");
     ImGui::Text("Phone: SPACE");
@@ -2559,10 +2566,8 @@ void BossArenaScene::AppendTelegraphLines(FrameData &frame) const {
     const XMFLOAT4 sanctuaryInner{0.48f, 0.90f, 1.0f, 0.90f};
     PushThickCircle(frame, curvedCenter, m_attackRadius, sanctuaryBorder, 4);
     PushCircle(frame, curvedCenter, gatherRadius, sanctuaryInner);
-    PushCircle(frame, curvedCenter, m_attackRadius * 0.62f,
-               sanctuaryBorder);
-    PushCircle(frame, curvedCenter, m_attackRadius * 0.22f,
-               sanctuaryInner);
+    PushCircle(frame, curvedCenter, m_attackRadius * 0.62f, sanctuaryBorder);
+    PushCircle(frame, curvedCenter, m_attackRadius * 0.22f, sanctuaryInner);
   }
 }
 
@@ -2572,15 +2577,28 @@ void BossArenaScene::UpdatePhoneOverlay(float dt, const Input &input) {
   m_memoryFailTimer = std::max(0.0f, m_memoryFailTimer - dt);
 
   if (m_phoneOpen && m_mirrorPuzzleReady && !m_mirrorPuzzleSolved) {
-    m_memoryTimer = std::max(0.0f, m_memoryTimer - dt);
-    if (m_memoryTimer <= 0.0f)
-      FailMirrorPuzzle();
+    if (m_mirrorPuzzleType == MirrorPuzzleType::ReflectionTrace) {
+      if (m_reflectionTraceState == ReflectionTraceState::Tracing) {
+        m_memoryTimer = std::max(0.0f, m_memoryTimer - dt);
+        if (m_memoryTimer <= 0.0f)
+          FailReflectionTrace(ReflectionTraceFailReason::Timeout);
+      }
+    } else {
+      m_memoryTimer = std::max(0.0f, m_memoryTimer - dt);
+      if (m_memoryTimer <= 0.0f)
+        FailMirrorPuzzle();
+    }
   }
 
   const bool spaceNow = input.IsKeyDown(VK_SPACE);
   if (spaceNow && !m_phoneSpaceWasDown) {
     if (m_phoneOpen) {
-      m_phoneOpen = false;
+      if (m_mirrorPuzzleType == MirrorPuzzleType::ReflectionTrace &&
+          m_reflectionTraceState == ReflectionTraceState::Tracing) {
+        FailReflectionTrace(ReflectionTraceFailReason::PhoneClosed);
+      } else {
+        m_phoneOpen = false;
+      }
     } else if (m_mirrorCharge >= kMirrorChargeMax) {
       if (!m_mirrorPuzzleReady)
         PrepareMirrorPuzzle(m_attack);
@@ -2602,6 +2620,7 @@ void BossArenaScene::PrepareMirrorPuzzle(AttackType attack) {
   if (m_mirrorCharge < kMirrorChargeMax)
     return;
 
+  ResetReflectionTrace();
   m_mirrorAttack = attack;
   m_mirrorPuzzleType = MirrorRandom01(690) < 0.5f
                            ? MirrorPuzzleType::SymbolMemory
@@ -2622,20 +2641,230 @@ void BossArenaScene::PrepareMirrorPuzzle(AttackType attack) {
 
   std::array<int, 3> pool = {1, 2, 3};
   for (int i = 0; i < 3; ++i) {
-    const int swapIndex =
-        i + static_cast<int>(MirrorRandom01(900 + i * 23) *
-                             static_cast<float>(3 - i));
+    const int swapIndex = i + static_cast<int>(MirrorRandom01(900 + i * 23) *
+                                               static_cast<float>(3 - i));
     std::swap(pool[i], pool[std::clamp(swapIndex, i, 2)]);
   }
   m_numberTargets = pool;
   m_numberButtonOrder = {1, 2, 3};
   for (int i = 0; i < 3; ++i) {
-    const int swapIndex =
-        i + static_cast<int>(MirrorRandom01(980 + i * 29) *
-                             static_cast<float>(3 - i));
+    const int swapIndex = i + static_cast<int>(MirrorRandom01(980 + i * 29) *
+                                               static_cast<float>(3 - i));
     std::swap(m_numberButtonOrder[i],
               m_numberButtonOrder[std::clamp(swapIndex, i, 2)]);
   }
+}
+
+void BossArenaScene::ResetReflectionTrace() {
+  m_reflectionTracePattern = {};
+  m_reflectionTraceState = ReflectionTraceState::Idle;
+  m_reflectionTraceFailReason = ReflectionTraceFailReason::None;
+  m_reflectionTracePosition = {};
+  m_reflectionTracePreviousPosition = {};
+  m_reflectionTraceTrail = {};
+  m_reflectionTraceTrailCount = 0;
+  m_reflectionTraceNextNode = 0;
+}
+
+void BossArenaScene::PrepareReflectionTracePattern() {
+  m_reflectionTracePattern = {};
+  m_reflectionTracePattern.roadHalfWidth = 0.07f;
+  m_reflectionTracePattern.dropletRadius = 0.018f;
+  m_reflectionTracePattern.startEndRadius = 0.05f;
+  m_reflectionTracePattern.nodeRadius = 0.042f;
+  m_reflectionTracePattern.timeLimit = 8.0f;
+  m_reflectionTracePattern.reversed = false;
+
+  constexpr std::array<XMFLOAT2, 8> kRoadPoints = {
+      XMFLOAT2{0.50f, 0.92f}, XMFLOAT2{0.28f, 0.84f}, XMFLOAT2{0.18f, 0.69f},
+      XMFLOAT2{0.34f, 0.56f}, XMFLOAT2{0.70f, 0.50f}, XMFLOAT2{0.82f, 0.36f},
+      XMFLOAT2{0.68f, 0.22f}, XMFLOAT2{0.50f, 0.10f},
+  };
+  m_reflectionTracePattern.roadSegmentCount =
+      static_cast<int>(kRoadPoints.size()) - 1;
+  for (int i = 0; i < m_reflectionTracePattern.roadSegmentCount; ++i) {
+    m_reflectionTracePattern.roadSegments[i] = {kRoadPoints[i],
+                                                kRoadPoints[i + 1]};
+  }
+
+  m_reflectionTracePattern.start = kRoadPoints.front();
+  m_reflectionTracePattern.end = kRoadPoints.back();
+  m_reflectionTracePattern.nodes = {kRoadPoints[2], kRoadPoints[4],
+                                    kRoadPoints[6], XMFLOAT2{}};
+  m_reflectionTracePattern.nodeCount = 3;
+
+  m_reflectionTracePosition = m_reflectionTracePattern.start;
+  m_reflectionTracePreviousPosition = m_reflectionTracePattern.start;
+  m_reflectionTraceTrailCount = 0;
+  m_reflectionTraceNextNode = 0;
+  m_reflectionTraceState = ReflectionTraceState::Ready;
+  m_reflectionTraceFailReason = ReflectionTraceFailReason::None;
+}
+
+void BossArenaScene::PrepareReflectionTracePuzzle(AttackType attack) {
+  if (m_mirrorCharge < kMirrorChargeMax)
+    return;
+
+  ResetReflectionTrace();
+  m_mirrorAttack = attack;
+  m_mirrorPuzzleType = MirrorPuzzleType::ReflectionTrace;
+  m_mirrorPuzzleReady = true;
+  m_mirrorPuzzleSolved = false;
+  m_mirrorMessageTimer = 0.0f;
+  m_memoryFailTimer = 0.0f;
+  m_memoryInputIndex = 0;
+  PrepareReflectionTracePattern();
+  m_memoryTimer = m_reflectionTracePattern.timeLimit;
+}
+
+void BossArenaScene::BeginReflectionTrace(const XMFLOAT2 &position) {
+  if (m_reflectionTraceState != ReflectionTraceState::Ready)
+    return;
+
+  m_reflectionTraceState = ReflectionTraceState::Tracing;
+  m_reflectionTraceFailReason = ReflectionTraceFailReason::None;
+  m_reflectionTracePosition = position;
+  m_reflectionTracePreviousPosition = position;
+  m_reflectionTraceTrailCount = 1;
+  m_reflectionTraceTrail[0] = position;
+  m_reflectionTraceNextNode = 0;
+  m_memoryTimer = m_reflectionTracePattern.timeLimit;
+}
+
+float BossArenaScene::DistancePointToTraceSegment(
+    const XMFLOAT2 &point, const ReflectionTraceSegment &segment,
+    float puzzleWidth, float puzzleHeight) const {
+  const float px = point.x * puzzleWidth;
+  const float py = point.y * puzzleHeight;
+  const float ax = segment.a.x * puzzleWidth;
+  const float ay = segment.a.y * puzzleHeight;
+  const float bx = segment.b.x * puzzleWidth;
+  const float by = segment.b.y * puzzleHeight;
+  const float abx = bx - ax;
+  const float aby = by - ay;
+  const float lengthSq = abx * abx + aby * aby;
+  const float projection =
+      lengthSq > 0.0001f
+          ? std::clamp(((px - ax) * abx + (py - ay) * aby) / lengthSq, 0.0f,
+                       1.0f)
+          : 0.0f;
+  const float closestX = ax + abx * projection;
+  const float closestY = ay + aby * projection;
+  const float dx = px - closestX;
+  const float dy = py - closestY;
+  return std::sqrt(dx * dx + dy * dy);
+}
+
+bool BossArenaScene::IsTracePointInsideRoad(const XMFLOAT2 &position,
+                                            float puzzleWidth,
+                                            float puzzleHeight) const {
+  if (position.x < 0.0f || position.x > 1.0f || position.y < 0.0f ||
+      position.y > 1.0f) {
+    return false;
+  }
+
+  const float shortSide = std::max(1.0f, std::min(puzzleWidth, puzzleHeight));
+  const float safeRadius =
+      std::max(0.0f, m_reflectionTracePattern.roadHalfWidth -
+                         m_reflectionTracePattern.dropletRadius) *
+      shortSide;
+  for (int i = 0; i < m_reflectionTracePattern.roadSegmentCount; ++i) {
+    if (DistancePointToTraceSegment(position,
+                                    m_reflectionTracePattern.roadSegments[i],
+                                    puzzleWidth, puzzleHeight) <= safeRadius) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void BossArenaScene::AdvanceReflectionTrace(const XMFLOAT2 &position,
+                                            float puzzleWidth,
+                                            float puzzleHeight) {
+  if (m_reflectionTraceState != ReflectionTraceState::Tracing)
+    return;
+
+  const XMFLOAT2 from = m_reflectionTracePosition;
+  const float moveX = (position.x - from.x) * puzzleWidth;
+  const float moveY = (position.y - from.y) * puzzleHeight;
+  const float moveDistance = std::sqrt(moveX * moveX + moveY * moveY);
+  const float shortSide = std::max(1.0f, std::min(puzzleWidth, puzzleHeight));
+  const float maxStep = std::max(1.0f, m_reflectionTracePattern.dropletRadius *
+                                           shortSide * 0.50f);
+  const int steps =
+      std::max(1, static_cast<int>(std::ceil(moveDistance / maxStep)));
+
+  const auto distancePixels = [puzzleWidth, puzzleHeight](const XMFLOAT2 &a,
+                                                          const XMFLOAT2 &b) {
+    const float dx = (a.x - b.x) * puzzleWidth;
+    const float dy = (a.y - b.y) * puzzleHeight;
+    return std::sqrt(dx * dx + dy * dy);
+  };
+  const float nodeRadius = m_reflectionTracePattern.nodeRadius * shortSide;
+  const float endRadius = m_reflectionTracePattern.startEndRadius * shortSide;
+
+  for (int step = 1; step <= steps; ++step) {
+    const float t = static_cast<float>(step) / static_cast<float>(steps);
+    const XMFLOAT2 sample{std::lerp(from.x, position.x, t),
+                          std::lerp(from.y, position.y, t)};
+    if (!IsTracePointInsideRoad(sample, puzzleWidth, puzzleHeight)) {
+      FailReflectionTrace(ReflectionTraceFailReason::EdgeContact);
+      return;
+    }
+
+    for (int node = m_reflectionTraceNextNode;
+         node < m_reflectionTracePattern.nodeCount; ++node) {
+      if (distancePixels(sample, m_reflectionTracePattern.nodes[node]) >
+          nodeRadius) {
+        continue;
+      }
+      if (node != m_reflectionTraceNextNode) {
+        FailReflectionTrace(ReflectionTraceFailReason::WrongNode);
+        return;
+      }
+      ++m_reflectionTraceNextNode;
+      break;
+    }
+
+    if (distancePixels(sample, m_reflectionTracePattern.end) <= endRadius) {
+      m_reflectionTracePosition = sample;
+      if (m_reflectionTraceNextNode < m_reflectionTracePattern.nodeCount) {
+        FailReflectionTrace(ReflectionTraceFailReason::EndBeforeNodes);
+        return;
+      }
+      m_reflectionTraceState = ReflectionTraceState::Succeeded;
+      CompleteMirrorPuzzle();
+      return;
+    }
+  }
+
+  m_reflectionTracePreviousPosition = m_reflectionTracePosition;
+  m_reflectionTracePosition = position;
+  if (m_reflectionTraceTrailCount >=
+      static_cast<int>(m_reflectionTraceTrail.size())) {
+    int writeIndex = 0;
+    for (int readIndex = 0; readIndex < m_reflectionTraceTrailCount;
+         readIndex += 2) {
+      m_reflectionTraceTrail[writeIndex++] = m_reflectionTraceTrail[readIndex];
+    }
+    m_reflectionTraceTrailCount = writeIndex;
+  }
+  m_reflectionTraceTrail[m_reflectionTraceTrailCount++] = position;
+}
+
+void BossArenaScene::ReleaseReflectionTrace() {
+  if (m_reflectionTraceState == ReflectionTraceState::Tracing)
+    FailReflectionTrace(ReflectionTraceFailReason::EarlyRelease);
+}
+
+void BossArenaScene::FailReflectionTrace(ReflectionTraceFailReason reason) {
+  if (m_reflectionTraceState == ReflectionTraceState::Failed ||
+      m_reflectionTraceState == ReflectionTraceState::Succeeded) {
+    return;
+  }
+  m_reflectionTraceState = ReflectionTraceState::Failed;
+  m_reflectionTraceFailReason = reason;
+  FailMirrorPuzzle();
 }
 
 void BossArenaScene::CompleteMirrorPuzzle() {
@@ -2807,6 +3036,209 @@ void BossArenaScene::AppendMirrorCharges(FrameData &frame) const {
   }
 }
 
+void BossArenaScene::DrawReflectionTracePuzzle(
+    ImDrawList *draw, float puzzleMinX, float puzzleMinY, float puzzleMaxX,
+    float puzzleMaxY, float screenAlpha) {
+  if (!draw)
+    return;
+
+  const ImVec2 puzzleMin(puzzleMinX, puzzleMinY);
+  const ImVec2 puzzleMax(puzzleMaxX, puzzleMaxY);
+  const ImVec2 traceMin(puzzleMin.x + 22.0f, puzzleMin.y + 74.0f);
+  const ImVec2 traceMax(puzzleMax.x - 22.0f, puzzleMax.y - 30.0f);
+  const float traceWidth = std::max(1.0f, traceMax.x - traceMin.x);
+  const float traceHeight = std::max(1.0f, traceMax.y - traceMin.y);
+  const float shortSide = std::max(1.0f, std::min(traceWidth, traceHeight));
+
+  const auto toScreen = [traceMin, traceWidth,
+                         traceHeight](const XMFLOAT2 &position) {
+    return ImVec2(traceMin.x + position.x * traceWidth,
+                  traceMin.y + position.y * traceHeight);
+  };
+  const auto distancePixels = [traceWidth, traceHeight](const XMFLOAT2 &a,
+                                                        const XMFLOAT2 &b) {
+    const float dx = (a.x - b.x) * traceWidth;
+    const float dy = (a.y - b.y) * traceHeight;
+    return std::sqrt(dx * dx + dy * dy);
+  };
+
+  const ImVec2 mouse = ImGui::GetIO().MousePos;
+  const XMFLOAT2 mouseUv{(mouse.x - traceMin.x) / traceWidth,
+                         (mouse.y - traceMin.y) / traceHeight};
+  const bool interactive = m_phoneOpen && screenAlpha > 0.72f;
+  if (interactive && m_reflectionTraceState == ReflectionTraceState::Ready &&
+      ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+      distancePixels(mouseUv, m_reflectionTracePattern.start) <=
+          m_reflectionTracePattern.startEndRadius * shortSide) {
+    BeginReflectionTrace(m_reflectionTracePattern.start);
+  }
+  if (interactive && m_reflectionTraceState == ReflectionTraceState::Tracing) {
+    if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      AdvanceReflectionTrace(mouseUv, traceWidth, traceHeight);
+    } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+      ReleaseReflectionTrace();
+    }
+  }
+
+  draw->AddText(ImVec2(puzzleMin.x + 20.0f, puzzleMin.y + 16.0f),
+                Rgba(0.78f, 1.0f, 0.94f, screenAlpha),
+                "REFLECTION TRACE / 反写軌跡");
+  draw->AddText(ImVec2(puzzleMin.x + 20.0f, puzzleMin.y + 39.0f),
+                Rgba(0.52f, 0.76f, 0.72f, 0.92f * screenAlpha),
+                "STARTからENDまで、境界に触れず順番に通過");
+
+  const float timerRate = std::clamp(
+      m_memoryTimer / std::max(0.01f, m_reflectionTracePattern.timeLimit), 0.0f,
+      1.0f);
+  const bool urgent = m_reflectionTraceState == ReflectionTraceState::Tracing &&
+                      timerRate < 0.34f;
+  const ImVec2 timerMin(puzzleMin.x + 20.0f, puzzleMin.y + 61.0f);
+  const ImVec2 timerMax(puzzleMax.x - 20.0f, puzzleMin.y + 69.0f);
+  draw->AddRectFilled(timerMin, timerMax,
+                      Rgba(0.03f, 0.10f, 0.11f, 0.90f * screenAlpha), 4.0f);
+  draw->AddRectFilled(
+      timerMin,
+      ImVec2(timerMin.x + (timerMax.x - timerMin.x) * timerRate, timerMax.y),
+      urgent ? Rgba(1.0f, 0.34f, 0.14f, 0.96f * screenAlpha)
+             : Rgba(0.34f, 1.0f, 0.84f, 0.94f * screenAlpha),
+      4.0f);
+
+  const bool succeeded =
+      m_reflectionTraceState == ReflectionTraceState::Succeeded;
+  const bool failed = m_reflectionTraceState == ReflectionTraceState::Failed;
+  const float roadWidth =
+      m_reflectionTracePattern.roadHalfWidth * 2.0f * shortSide;
+  const float dropletRadius =
+      m_reflectionTracePattern.dropletRadius * shortSide;
+  const float safeWidth = std::max(2.0f, roadWidth - dropletRadius * 2.0f);
+  const ImU32 edgeColor =
+      failed
+          ? Rgba(1.0f, 0.22f, 0.08f, 0.82f * screenAlpha)
+          : Rgba(0.24f, 0.92f, 1.0f, (succeeded ? 0.96f : 0.62f) * screenAlpha);
+  const ImU32 roadColor = Rgba(0.012f, 0.055f, 0.064f, 0.98f * screenAlpha);
+  const ImU32 safeColor = succeeded
+                              ? Rgba(0.42f, 1.0f, 0.80f, 0.74f * screenAlpha)
+                              : Rgba(0.10f, 0.34f, 0.34f, 0.72f * screenAlpha);
+
+  for (int i = 0; i < m_reflectionTracePattern.roadSegmentCount; ++i) {
+    const ImVec2 a = toScreen(m_reflectionTracePattern.roadSegments[i].a);
+    const ImVec2 b = toScreen(m_reflectionTracePattern.roadSegments[i].b);
+    draw->AddLine(a, b, edgeColor, roadWidth + 4.0f);
+    draw->AddLine(a, b, roadColor, roadWidth);
+    draw->AddLine(a, b, safeColor, safeWidth);
+  }
+  for (int i = 0; i < m_reflectionTracePattern.roadSegmentCount; ++i) {
+    const ImVec2 joint = toScreen(m_reflectionTracePattern.roadSegments[i].a);
+    draw->AddCircleFilled(joint, roadWidth * 0.50f + 2.0f, edgeColor, 24);
+    draw->AddCircleFilled(joint, roadWidth * 0.50f, roadColor, 24);
+    draw->AddCircleFilled(joint, safeWidth * 0.50f, safeColor, 24);
+  }
+  const ImVec2 finalJoint = toScreen(m_reflectionTracePattern.end);
+  draw->AddCircleFilled(finalJoint, roadWidth * 0.50f + 2.0f, edgeColor, 24);
+  draw->AddCircleFilled(finalJoint, roadWidth * 0.50f, roadColor, 24);
+  draw->AddCircleFilled(finalJoint, safeWidth * 0.50f, safeColor, 24);
+
+  const float startEndRadius =
+      m_reflectionTracePattern.startEndRadius * shortSide;
+  const ImVec2 startCenter = toScreen(m_reflectionTracePattern.start);
+  const ImVec2 endCenter = toScreen(m_reflectionTracePattern.end);
+  draw->AddCircleFilled(startCenter, startEndRadius,
+                        Rgba(0.04f, 0.24f, 0.23f, 0.96f * screenAlpha), 32);
+  draw->AddCircle(startCenter, startEndRadius,
+                  Rgba(0.44f, 1.0f, 0.84f, screenAlpha), 32, 2.2f);
+  draw->AddCircleFilled(endCenter, startEndRadius,
+                        Rgba(0.10f, 0.13f, 0.17f, 0.96f * screenAlpha), 32);
+  draw->AddCircle(endCenter, startEndRadius,
+                  Rgba(0.46f, 0.86f, 1.0f, screenAlpha), 32, 2.2f);
+  const ImVec2 startLabelSize = ImGui::CalcTextSize("START");
+  const ImVec2 endLabelSize = ImGui::CalcTextSize("END");
+  draw->AddText(ImVec2(startCenter.x - startLabelSize.x * 0.5f,
+                       startCenter.y - startLabelSize.y * 0.5f),
+                Rgba(0.82f, 1.0f, 0.92f, screenAlpha), "START");
+  draw->AddText(ImVec2(endCenter.x - endLabelSize.x * 0.5f,
+                       endCenter.y - endLabelSize.y * 0.5f),
+                Rgba(0.80f, 0.94f, 1.0f, screenAlpha), "END");
+
+  const float nodeRadius = m_reflectionTracePattern.nodeRadius * shortSide;
+  for (int i = 0; i < m_reflectionTracePattern.nodeCount; ++i) {
+    const ImVec2 center = toScreen(m_reflectionTracePattern.nodes[i]);
+    const bool completed = i < m_reflectionTraceNextNode;
+    const bool active = i == m_reflectionTraceNextNode && !failed;
+    const float pulse =
+        active ? SmoothPulse(static_cast<float>(ImGui::GetTime()) + i * 0.2f,
+                             5.4f, 0.0f)
+               : 0.0f;
+    const ImU32 nodeColor =
+        completed ? Rgba(0.38f, 1.0f, 0.72f, screenAlpha)
+                  : (active ? Rgba(0.70f, 1.0f, 0.94f, screenAlpha)
+                            : Rgba(0.34f, 0.64f, 0.64f, 0.74f * screenAlpha));
+    draw->AddCircleFilled(center, nodeRadius,
+                          Rgba(0.015f, 0.08f, 0.085f, 0.94f * screenAlpha), 28);
+    draw->AddCircle(center, nodeRadius + pulse * 2.2f, nodeColor, 28,
+                    active ? 2.6f : 1.8f);
+    char nodeLabel[4]{};
+    std::snprintf(nodeLabel, sizeof(nodeLabel), "%d", i + 1);
+    const ImVec2 labelSize = ImGui::CalcTextSize(nodeLabel);
+    draw->AddText(
+        ImVec2(center.x - labelSize.x * 0.5f, center.y - labelSize.y * 0.5f),
+        nodeColor, nodeLabel);
+  }
+
+  if (m_reflectionTraceTrailCount > 1) {
+    for (int i = 1; i < m_reflectionTraceTrailCount; ++i) {
+      draw->AddLine(toScreen(m_reflectionTraceTrail[i - 1]),
+                    toScreen(m_reflectionTraceTrail[i]),
+                    Rgba(0.66f, 1.0f, 0.92f, 0.92f * screenAlpha), 3.2f);
+    }
+  }
+
+  if (m_reflectionTraceState != ReflectionTraceState::Idle) {
+    const ImVec2 droplet = toScreen(m_reflectionTracePosition);
+    const ImU32 dropletColor = failed ? Rgba(1.0f, 0.22f, 0.08f, screenAlpha)
+                                      : Rgba(0.78f, 1.0f, 0.96f, screenAlpha);
+    draw->AddCircleFilled(droplet, dropletRadius + 4.0f,
+                          Rgba(0.20f, 0.86f, 1.0f, 0.24f * screenAlpha), 28);
+    draw->AddCircleFilled(droplet, dropletRadius, dropletColor, 28);
+    draw->AddCircle(droplet, dropletRadius + 1.5f,
+                    Rgba(0.36f, 1.0f, 0.88f, screenAlpha), 28, 1.4f);
+  }
+
+  if (failed && m_memoryFailTimer > 0.0f) {
+    const char *reason = "トレース失敗";
+    switch (m_reflectionTraceFailReason) {
+    case ReflectionTraceFailReason::EdgeContact:
+      reason = "境界に接触";
+      break;
+    case ReflectionTraceFailReason::WrongNode:
+      reason = "順番が違います";
+      break;
+    case ReflectionTraceFailReason::EarlyRelease:
+      reason = "入力を離しました";
+      break;
+    case ReflectionTraceFailReason::Timeout:
+      reason = "時間切れ";
+      break;
+    case ReflectionTraceFailReason::EndBeforeNodes:
+      reason = "ノード未完了";
+      break;
+    case ReflectionTraceFailReason::PhoneClosed:
+      reason = "トレース中断";
+      break;
+    default:
+      break;
+    }
+    const ImVec2 reasonSize = ImGui::CalcTextSize(reason);
+    draw->AddRectFilled(
+        ImVec2(traceMin.x + 10.0f, traceMin.y + traceHeight * 0.46f - 16.0f),
+        ImVec2(traceMax.x - 10.0f, traceMin.y + traceHeight * 0.46f + 22.0f),
+        Rgba(0.30f, 0.01f, 0.005f, 0.82f * screenAlpha), 7.0f);
+    draw->AddText(
+        ImVec2(traceMin.x + (traceWidth - reasonSize.x) * 0.5f,
+               traceMin.y + traceHeight * 0.46f - reasonSize.y * 0.5f),
+        Rgba(1.0f, 0.42f, 0.20f, screenAlpha), reason);
+  }
+}
+
 void BossArenaScene::DrawPhoneOverlay(int viewportWidth, int viewportHeight) {
   const float vw = static_cast<float>(viewportWidth);
   const float vh = static_cast<float>(viewportHeight);
@@ -2830,7 +3262,12 @@ void BossArenaScene::DrawPhoneOverlay(int viewportWidth, int viewportHeight) {
   if (!m_failed && !m_cleared && phoneHeadHovered &&
       ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
     if (m_phoneOpen) {
-      m_phoneOpen = false;
+      if (m_mirrorPuzzleType == MirrorPuzzleType::ReflectionTrace &&
+          m_reflectionTraceState == ReflectionTraceState::Tracing) {
+        FailReflectionTrace(ReflectionTraceFailReason::PhoneClosed);
+      } else {
+        m_phoneOpen = false;
+      }
     } else if (m_mirrorCharge >= kMirrorChargeMax) {
       if (!m_mirrorPuzzleReady)
         PrepareMirrorPuzzle(m_attack);
@@ -3003,14 +3440,20 @@ void BossArenaScene::DrawPhoneOverlay(int viewportWidth, int viewportHeight) {
                     ImVec2(b.x - 54.0f, b.y + 10.0f), glyphColor, 1.8f);
     } else {
       const float maxR = (puzzleMax.x - puzzleMin.x) * 0.31f;
-      DrawArc(draw, puzzleCenter, maxR * 0.36f, 0.0f, XM_2PI, glyphColor,
-              2.0f);
-      DrawArc(draw, puzzleCenter, maxR * 0.62f, 0.0f, XM_2PI, glyphColor,
-              2.0f);
+      DrawArc(draw, puzzleCenter, maxR * 0.36f, 0.0f, XM_2PI, glyphColor, 2.0f);
+      DrawArc(draw, puzzleCenter, maxR * 0.62f, 0.0f, XM_2PI, glyphColor, 2.0f);
       DrawArc(draw, puzzleCenter, maxR, 0.0f, XM_2PI, glyphColor, 2.0f);
     }
 
-    if (m_mirrorPuzzleReady) {
+    const bool showReflectionTrace =
+        m_mirrorPuzzleType == MirrorPuzzleType::ReflectionTrace &&
+        (m_mirrorPuzzleReady ||
+         m_reflectionTraceState == ReflectionTraceState::Succeeded ||
+         m_reflectionTraceState == ReflectionTraceState::Failed);
+    if (showReflectionTrace) {
+      DrawReflectionTracePuzzle(draw, puzzleMin.x, puzzleMin.y, puzzleMax.x,
+                                puzzleMax.y, screenAlpha);
+    } else if (m_mirrorPuzzleReady) {
       const bool numberGame =
           m_mirrorPuzzleType == MirrorPuzzleType::NumberPosition;
       const float puzzleDuration = numberGame ? 7.2f : 6.0f;
@@ -3018,8 +3461,7 @@ void BossArenaScene::DrawPhoneOverlay(int viewportWidth, int viewportHeight) {
           std::clamp(m_memoryTimer / puzzleDuration, 0.0f, 1.0f);
       const bool urgent = timerRate < 0.34f;
       const float urgentPulse =
-          urgent ? SmoothPulse(static_cast<float>(ImGui::GetTime()), 8.0f,
-                               0.0f)
+          urgent ? SmoothPulse(static_cast<float>(ImGui::GetTime()), 8.0f, 0.0f)
                  : 0.0f;
       if (urgent) {
         draw->AddRect(ImVec2(puzzleMin.x - 5.0f - 3.0f * urgentPulse,
@@ -3033,17 +3475,14 @@ void BossArenaScene::DrawPhoneOverlay(int viewportWidth, int viewportHeight) {
       const ImVec2 timerMin(puzzleMin.x + 26.0f, puzzleMin.y + 24.0f);
       const ImVec2 timerMax(puzzleMax.x - 26.0f, puzzleMin.y + 34.0f);
       draw->AddRectFilled(timerMin, timerMax,
-                          Rgba(0.05f, 0.11f, 0.12f, 0.84f * screenAlpha),
-                          4.0f);
-      draw->AddRectFilled(timerMin,
-                          ImVec2(timerMin.x +
-                                     (timerMax.x - timerMin.x) * timerRate,
-                                 timerMax.y),
-                          urgent ? Rgba(1.0f, 0.36f, 0.16f,
-                                        0.96f * screenAlpha)
-                                 : Rgba(0.35f, 1.0f, 0.86f,
-                                        0.92f * screenAlpha),
-                          4.0f);
+                          Rgba(0.05f, 0.11f, 0.12f, 0.84f * screenAlpha), 4.0f);
+      draw->AddRectFilled(
+          timerMin,
+          ImVec2(timerMin.x + (timerMax.x - timerMin.x) * timerRate,
+                 timerMax.y),
+          urgent ? Rgba(1.0f, 0.36f, 0.16f, 0.96f * screenAlpha)
+                 : Rgba(0.35f, 1.0f, 0.86f, 0.92f * screenAlpha),
+          4.0f);
       if (urgent) {
         char urgentText[24]{};
         std::snprintf(urgentText, sizeof(urgentText), "%.1f",
@@ -3061,18 +3500,16 @@ void BossArenaScene::DrawPhoneOverlay(int viewportWidth, int viewportHeight) {
       std::array<ImVec2, 3> traceNodeCenters{};
       if (numberGame) {
         draw->AddText(ImVec2(puzzleMin.x + 26.0f, seqY - 22.0f),
-                      Rgba(0.50f, 0.72f, 0.68f, screenAlpha),
-                      "POSITION MAP");
+                      Rgba(0.50f, 0.72f, 0.68f, screenAlpha), "POSITION MAP");
         for (int i = 0; i < 3; ++i) {
           const ImVec2 boxMin(puzzleMin.x + 26.0f + stepW * i + 10.0f, seqY);
           const ImVec2 boxMax(boxMin.x + stepW - 20.0f, seqY + 48.0f);
           draw->AddRectFilled(boxMin, boxMax,
-                              Rgba(0.035f, 0.07f, 0.075f,
-                                   0.92f * screenAlpha),
+                              Rgba(0.035f, 0.07f, 0.075f, 0.92f * screenAlpha),
                               7.0f);
           draw->AddRect(boxMin, boxMax,
-                        Rgba(0.36f, 1.0f, 0.84f, 0.58f * screenAlpha),
-                        7.0f, 0, 1.4f);
+                        Rgba(0.36f, 1.0f, 0.84f, 0.58f * screenAlpha), 7.0f, 0,
+                        1.4f);
           char mapLabel[24]{};
           std::snprintf(mapLabel, sizeof(mapLabel), "POS %d", i + 1);
           draw->AddText(ImVec2(boxMin.x + 10.0f, boxMin.y + 7.0f),
@@ -3089,30 +3526,25 @@ void BossArenaScene::DrawPhoneOverlay(int viewportWidth, int viewportHeight) {
 
         const float targetY = seqY + 74.0f;
         draw->AddText(ImVec2(puzzleMin.x + 26.0f, targetY - 22.0f),
-                      Rgba(0.50f, 0.72f, 0.68f, screenAlpha),
-                      "TARGET ORDER");
+                      Rgba(0.50f, 0.72f, 0.68f, screenAlpha), "TARGET ORDER");
         for (int i = 0; i < 3; ++i) {
-          const ImVec2 boxMin(puzzleMin.x + 26.0f + stepW * i + 10.0f,
-                              targetY);
+          const ImVec2 boxMin(puzzleMin.x + 26.0f + stepW * i + 10.0f, targetY);
           const ImVec2 boxMax(boxMin.x + stepW - 20.0f, targetY + 42.0f);
-          traceNodeCenters[i] =
-              ImVec2((boxMin.x + boxMax.x) * 0.5f,
-                     (boxMin.y + boxMax.y) * 0.5f);
+          traceNodeCenters[i] = ImVec2((boxMin.x + boxMax.x) * 0.5f,
+                                       (boxMin.y + boxMax.y) * 0.5f);
           const bool solved = i < m_memoryInputIndex;
           const bool active = i == m_memoryInputIndex;
-          draw->AddRectFilled(boxMin, boxMax,
-                              solved
-                                  ? Rgba(0.10f, 0.38f, 0.32f,
-                                         0.92f * screenAlpha)
-                                  : (active ? Rgba(0.09f, 0.18f, 0.18f,
-                                                   0.94f * screenAlpha)
-                                            : Rgba(0.04f, 0.08f, 0.09f,
-                                                   0.88f * screenAlpha)),
-                              7.0f);
-          draw->AddRect(boxMin, boxMax,
-                        Rgba(0.36f, 1.0f, 0.84f,
-                             (active ? 0.92f : 0.48f) * screenAlpha),
-                        7.0f, 0, active ? 2.0f : 1.2f);
+          draw->AddRectFilled(
+              boxMin, boxMax,
+              solved
+                  ? Rgba(0.10f, 0.38f, 0.32f, 0.92f * screenAlpha)
+                  : (active ? Rgba(0.09f, 0.18f, 0.18f, 0.94f * screenAlpha)
+                            : Rgba(0.04f, 0.08f, 0.09f, 0.88f * screenAlpha)),
+              7.0f);
+          draw->AddRect(
+              boxMin, boxMax,
+              Rgba(0.36f, 1.0f, 0.84f, (active ? 0.92f : 0.48f) * screenAlpha),
+              7.0f, 0, active ? 2.0f : 1.2f);
           char targetLabel[24]{};
           std::snprintf(targetLabel, sizeof(targetLabel), "FIND %d",
                         m_numberButtonOrder[i]);
@@ -3127,20 +3559,17 @@ void BossArenaScene::DrawPhoneOverlay(int viewportWidth, int viewportHeight) {
         for (int i = 0; i < 3; ++i) {
           const ImVec2 boxMin(puzzleMin.x + 26.0f + stepW * i + 10.0f, seqY);
           const ImVec2 boxMax(boxMin.x + stepW - 20.0f, seqY + 56.0f);
-          traceNodeCenters[i] =
-              ImVec2((boxMin.x + boxMax.x) * 0.5f,
-                     (boxMin.y + boxMax.y) * 0.5f);
+          traceNodeCenters[i] = ImVec2((boxMin.x + boxMax.x) * 0.5f,
+                                       (boxMin.y + boxMax.y) * 0.5f);
           const bool solved = i < m_memoryInputIndex;
           const bool active = i == m_memoryInputIndex;
-          draw->AddRectFilled(boxMin, boxMax,
-                              solved
-                                  ? Rgba(0.10f, 0.38f, 0.32f,
-                                         0.92f * screenAlpha)
-                                  : (active ? Rgba(0.08f, 0.18f, 0.19f,
-                                                   0.94f * screenAlpha)
-                                            : Rgba(0.04f, 0.08f, 0.09f,
-                                                   0.90f * screenAlpha)),
-                              7.0f);
+          draw->AddRectFilled(
+              boxMin, boxMax,
+              solved
+                  ? Rgba(0.10f, 0.38f, 0.32f, 0.92f * screenAlpha)
+                  : (active ? Rgba(0.08f, 0.18f, 0.19f, 0.94f * screenAlpha)
+                            : Rgba(0.04f, 0.08f, 0.09f, 0.90f * screenAlpha)),
+              7.0f);
           const ImU32 borderColor = MirrorSymbolColor(
               m_memorySequence[i], (active ? 0.94f : 0.76f) * screenAlpha);
           draw->AddRect(boxMin, boxMax, borderColor, 7.0f, 0,
@@ -3194,10 +3623,10 @@ void BossArenaScene::DrawPhoneOverlay(int viewportWidth, int viewportHeight) {
                           (0.28f + tracePulse * 0.36f) * screenAlpha);
         const ImVec2 start = traceNodeCenters[step];
         const ImVec2 end = buttonCenters[std::clamp(expectedButton, 0, 2)];
-        draw->AddLine(start, end, Rgba(0.03f, 0.16f, 0.14f,
-                                       (active ? 0.50f : 0.34f) *
-                                           screenAlpha),
-                      active ? 7.0f : 5.0f);
+        draw->AddLine(
+            start, end,
+            Rgba(0.03f, 0.16f, 0.14f, (active ? 0.50f : 0.34f) * screenAlpha),
+            active ? 7.0f : 5.0f);
         draw->AddLine(start, end, traceColor, active ? 2.6f : 1.8f);
         draw->AddCircleFilled(start, active ? 4.8f + tracePulse * 2.0f : 3.8f,
                               traceColor, 18);
@@ -3219,22 +3648,20 @@ void BossArenaScene::DrawPhoneOverlay(int viewportWidth, int viewportHeight) {
             mousePos.y >= buttonMin.y && mousePos.y <= buttonMax.y;
         const ImVec2 buttonCenter = buttonCenters[button];
         const float nodePulse =
-            hovered ? 1.0f : SmoothPulse(static_cast<float>(ImGui::GetTime()),
-                                         3.8f + static_cast<float>(button),
-                                         0.50f);
-        draw->AddRectFilled(buttonMin, buttonMax,
-                            hovered
-                                ? Rgba(0.08f, 0.28f, 0.28f,
-                                       0.90f * screenAlpha)
-                                : Rgba(0.015f, 0.075f, 0.082f,
-                                       0.82f * screenAlpha),
-                            10.0f);
+            hovered ? 1.0f
+                    : SmoothPulse(static_cast<float>(ImGui::GetTime()),
+                                  3.8f + static_cast<float>(button), 0.50f);
+        draw->AddRectFilled(
+            buttonMin, buttonMax,
+            hovered ? Rgba(0.08f, 0.28f, 0.28f, 0.90f * screenAlpha)
+                    : Rgba(0.015f, 0.075f, 0.082f, 0.82f * screenAlpha),
+            10.0f);
         const ImU32 buttonColor =
             numberGame ? Rgba(0.40f, 1.0f, 0.84f, 0.86f * screenAlpha)
                        : MirrorSymbolColor(value, 0.80f * screenAlpha);
         draw->AddRect(buttonMin, buttonMax, buttonColor, 10.0f, 0, 1.5f);
-        draw->AddCircle(buttonCenter, 23.0f + nodePulse * 4.0f, buttonColor,
-                        32, 1.4f);
+        draw->AddCircle(buttonCenter, 23.0f + nodePulse * 4.0f, buttonColor, 32,
+                        1.4f);
         draw->AddCircleFilled(buttonCenter, 5.0f + nodePulse * 1.8f,
                               buttonColor, 20);
 
@@ -3285,12 +3712,11 @@ void BossArenaScene::DrawPhoneOverlay(int viewportWidth, int viewportHeight) {
           m_memoryFailTimer > 0.0f
               ? "TRACE BROKEN"
               : (m_mirrorMessageTimer > 0.0f ? "COUNTER SENT" : "NO TRACE");
-      const char *sub =
-          m_memoryFailTimer > 0.0f
-              ? "Collect mirror charge again."
-              : (m_mirrorMessageTimer > 0.0f
-                     ? "Boss took reflected damage."
-                     : "Collect 3 mirror charges in the arena.");
+      const char *sub = m_memoryFailTimer > 0.0f
+                            ? "Collect mirror charge again."
+                            : (m_mirrorMessageTimer > 0.0f
+                                   ? "Boss took reflected damage."
+                                   : "Collect 3 mirror charges in the arena.");
       const ImU32 messageColor =
           m_memoryFailTimer > 0.0f
               ? Rgba(1.0f, 0.36f, 0.18f, screenAlpha)
@@ -3305,9 +3731,11 @@ void BossArenaScene::DrawPhoneOverlay(int viewportWidth, int viewportHeight) {
 
     const char *status =
         m_mirrorPuzzleReady
-            ? (m_mirrorPuzzleType == MirrorPuzzleType::NumberPosition
-                   ? "INPUT NUMBER POSITIONS"
-                   : "INPUT SYMBOL SEQUENCE")
+            ? (m_mirrorPuzzleType == MirrorPuzzleType::ReflectionTrace
+                   ? "反写軌跡を完成させる"
+                   : (m_mirrorPuzzleType == MirrorPuzzleType::NumberPosition
+                          ? "INPUT NUMBER POSITIONS"
+                          : "INPUT SYMBOL SEQUENCE"))
             : "STANDBY";
     draw->AddText(ImVec2(screenMin.x + 24.0f, screenMax.y - 38.0f),
                   Rgba(0.76f, 0.92f, 0.88f, screenAlpha), status);

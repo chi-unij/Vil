@@ -13,6 +13,7 @@
 #include <vector>
 
 class PlayerAnimationPreview;
+struct ImDrawList;
 
 class BossArenaScene {
 public:
@@ -61,6 +62,45 @@ private:
   enum class MirrorPuzzleType {
     SymbolMemory,
     NumberPosition,
+    ReflectionTrace,
+  };
+
+  enum class ReflectionTraceState {
+    Idle,
+    Ready,
+    Tracing,
+    Succeeded,
+    Failed,
+  };
+
+  enum class ReflectionTraceFailReason {
+    None,
+    EdgeContact,
+    WrongNode,
+    EarlyRelease,
+    Timeout,
+    EndBeforeNodes,
+    PhoneClosed,
+  };
+
+  struct ReflectionTraceSegment {
+    DirectX::XMFLOAT2 a = {};
+    DirectX::XMFLOAT2 b = {};
+  };
+
+  struct ReflectionTracePattern {
+    std::array<ReflectionTraceSegment, 20> roadSegments = {};
+    std::array<DirectX::XMFLOAT2, 4> nodes = {};
+    int roadSegmentCount = 0;
+    int nodeCount = 0;
+    DirectX::XMFLOAT2 start = {};
+    DirectX::XMFLOAT2 end = {};
+    float roadHalfWidth = 0.07f;
+    float dropletRadius = 0.018f;
+    float startEndRadius = 0.05f;
+    float nodeRadius = 0.042f;
+    float timeLimit = 8.0f;
+    bool reversed = false;
   };
 
   static constexpr float kArenaHalfExtent = 18.0f;
@@ -78,6 +118,23 @@ private:
   void UpdatePhoneOverlay(float dt, const Input &input);
   void DrawPhoneOverlay(int viewportWidth, int viewportHeight);
   void PrepareMirrorPuzzle(AttackType attack);
+  void PrepareReflectionTracePuzzle(AttackType attack);
+  void PrepareReflectionTracePattern();
+  void ResetReflectionTrace();
+  void BeginReflectionTrace(const DirectX::XMFLOAT2 &position);
+  void AdvanceReflectionTrace(const DirectX::XMFLOAT2 &position,
+                              float puzzleWidth, float puzzleHeight);
+  void ReleaseReflectionTrace();
+  void FailReflectionTrace(ReflectionTraceFailReason reason);
+  bool IsTracePointInsideRoad(const DirectX::XMFLOAT2 &position,
+                              float puzzleWidth, float puzzleHeight) const;
+  float DistancePointToTraceSegment(const DirectX::XMFLOAT2 &point,
+                                    const ReflectionTraceSegment &segment,
+                                    float puzzleWidth,
+                                    float puzzleHeight) const;
+  void DrawReflectionTracePuzzle(ImDrawList *drawList, float puzzleMinX,
+                                 float puzzleMinY, float puzzleMaxX,
+                                 float puzzleMaxY, float screenAlpha);
   void CompleteMirrorPuzzle();
   void FailMirrorPuzzle();
   void SpawnMirrorCharges();
@@ -206,4 +263,14 @@ private:
   float m_memoryFailTimer = 0.0f;
   int m_mirrorCharge = 0;
   int m_memoryInputIndex = 0;
+
+  ReflectionTracePattern m_reflectionTracePattern = {};
+  ReflectionTraceState m_reflectionTraceState = ReflectionTraceState::Idle;
+  ReflectionTraceFailReason m_reflectionTraceFailReason =
+      ReflectionTraceFailReason::None;
+  DirectX::XMFLOAT2 m_reflectionTracePosition = {};
+  DirectX::XMFLOAT2 m_reflectionTracePreviousPosition = {};
+  std::array<DirectX::XMFLOAT2, 160> m_reflectionTraceTrail = {};
+  int m_reflectionTraceTrailCount = 0;
+  int m_reflectionTraceNextNode = 0;
 };
