@@ -58,3 +58,18 @@ interview.md
 Plan.md
 SPEC.md
 /feature.md
+
+# Private agent memory and internal development records
+/AGENTS.md
+/.claude/
+/docs/
+/.privacy-rewrite/
+
+# Private career, company, application, and submission material
+/private/
+/career/
+/applications/
+/*_APPLICATION_*
+/*_PRESENTATION_SCRIPT_*
+/scripts/*_deck.*
+/scripts/*submission*

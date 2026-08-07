@@ -1,6 +1,6 @@
 # ======================================
 # CMakeLists.txt — Solo Assignment (DirectX 12)
-# 個人制作（HAL GM23 + 2027 developmentポートフォリオ第二弾）
+# DirectX 12 portfolio game project
 #
 # 注意：Grid Gauntlet (LearningDirectX12) のビルド設定を参考にしつつ、
 #       本プロジェクト用に新規記述。コピペ禁止（CLAUDE.md ルール）。
