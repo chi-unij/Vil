@@ -97,9 +97,6 @@ Note: building the whole solution with no target may try to build external depen
 ```text
 Solo_Assignment/
   Assets/                 Local-only runtime assets: models, animations, textures, HDRI
-  docs/                   Project planning, concept lock, handoff notes
-    handoff/              Session handoff documents
-    section/              Locked concept and milestone plans
   shaders/                HLSL shaders loaded at runtime
   src/                    C++ source
     engine/               Scene, entity, editor, command systems
@@ -107,31 +104,14 @@ Solo_Assignment/
     gridgame/             Previous Grid Gauntlet-derived systems kept for reuse/reference
 ```
 
-## Current Development Plan
+## Implemented Systems
 
-### Week 1 - Foundation and Risk Checks
-
-- CHI-35: Player Mixamo import and Idle / Walk / Run preview
-- CHI-36: Third-person camera adjustment for overworld
-- CHI-37: Capsule vs AABB collision
-- CHI-38: Minimal animation state machine
-- CHI-39: Overworld scene blockout
-
-### Week 2 - NPC and Boss Core
-
-- TriggerVolume component
-- Minimal dialogue system
-- Two NPCs
-- Boss arena transition
-- Boss model and Line AoE mechanic
-
-### Week 3 - Alpha Closure
-
-- Circle AoE
-- Fan AoE
-- Game flow closure
-- Player HP / death / clear states
-- Alpha packaging
+- サードパーソン移動、カメラ、カプセル衝突判定を備えた Overworld
+- Meteor、Laser、Sanctuary Seal を使用する二段階 Boss Battle
+- 水鏡チャージとスマートフォン型パズルによる反撃フロー
+- DirectX 12 Deferred Rendering、PBR、CSM、SSAO、SSR、Post Process
+- Procedural Mesh、透明描画、Particle VFX、動的 Point Light
+- Title、Overworld、BossArena、Clear、Failed、Restart を含むゲーム進行
 
 ## Asset Notes
 
@@ -141,7 +121,7 @@ Solo_Assignment/
 
 - モデル、texture、HDRI が大きくなりやすい。
 - この制作は基本的に Chihiro のローカル環境で進める。
-- GitHub には code / shaders / docs / planning / handoff を置き、runtime assets はローカル配置で管理する。
+- GitHub には source、shader、build configuration、公開用 README のみを置き、runtime assets と内部開発資料はローカルで管理する。
 
 新しく clone した環境では、`Assets/` を別途ローカルに配置する必要がある。現時点で code が参照している主な asset path:
 
@@ -156,12 +136,3 @@ Solo_Assignment/
 ## Reference Project Policy
 
 `LearningDirectX12` is a reference project only. This repository should be modified directly, while the old project should not be changed unless explicitly requested.
-
-## Documentation
-
-Important planning files:
-
-- `docs/project_description.md`
-- `docs/section/concept_v2_locked.md`
-- `docs/section/m7_plan.md`
-- `docs/handoff/`
