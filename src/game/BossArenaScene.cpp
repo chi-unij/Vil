@@ -2123,7 +2123,7 @@ BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
         m_phaseTwoPatternIndex = 0;
       ConfigureAttack(AttackType::SanctuarySeal, useIntroTuning);
     }
-    if (ImGui::Button("反写軌跡を強制") && !m_failed && !m_cleared) {
+    if (ImGui::Button("Force Reflection Trace") && !m_failed && !m_cleared) {
       // Checkpoint A は通常抽選へ入れず、操作感を単独で検証する。
       m_mirrorCharge = kMirrorChargeMax;
       m_mirrorChargeActive = {false, false, false};
@@ -3082,10 +3082,10 @@ void BossArenaScene::DrawReflectionTracePuzzle(
 
   draw->AddText(ImVec2(puzzleMin.x + 20.0f, puzzleMin.y + 16.0f),
                 Rgba(0.78f, 1.0f, 0.94f, screenAlpha),
-                "REFLECTION TRACE / 反写軌跡");
+                "REFLECTION TRACE");
   draw->AddText(ImVec2(puzzleMin.x + 20.0f, puzzleMin.y + 39.0f),
                 Rgba(0.52f, 0.76f, 0.72f, 0.92f * screenAlpha),
-                "STARTからENDまで、境界に触れず順番に通過");
+                "HOLD LMB: START > 1 > 2 > 3 > END");
 
   const float timerRate = std::clamp(
       m_memoryTimer / std::max(0.01f, m_reflectionTracePattern.timeLimit), 0.0f,
@@ -3204,25 +3204,25 @@ void BossArenaScene::DrawReflectionTracePuzzle(
   }
 
   if (failed && m_memoryFailTimer > 0.0f) {
-    const char *reason = "トレース失敗";
+    const char *reason = "TRACE BROKEN";
     switch (m_reflectionTraceFailReason) {
     case ReflectionTraceFailReason::EdgeContact:
-      reason = "境界に接触";
+      reason = "EDGE CONTACT";
       break;
     case ReflectionTraceFailReason::WrongNode:
-      reason = "順番が違います";
+      reason = "WRONG NODE";
       break;
     case ReflectionTraceFailReason::EarlyRelease:
-      reason = "入力を離しました";
+      reason = "RELEASED EARLY";
       break;
     case ReflectionTraceFailReason::Timeout:
-      reason = "時間切れ";
+      reason = "TIME OUT";
       break;
     case ReflectionTraceFailReason::EndBeforeNodes:
-      reason = "ノード未完了";
+      reason = "NODES INCOMPLETE";
       break;
     case ReflectionTraceFailReason::PhoneClosed:
-      reason = "トレース中断";
+      reason = "TRACE INTERRUPTED";
       break;
     default:
       break;
@@ -3732,7 +3732,7 @@ void BossArenaScene::DrawPhoneOverlay(int viewportWidth, int viewportHeight) {
     const char *status =
         m_mirrorPuzzleReady
             ? (m_mirrorPuzzleType == MirrorPuzzleType::ReflectionTrace
-                   ? "反写軌跡を完成させる"
+                   ? "TRACE THE REFLECTED ROAD"
                    : (m_mirrorPuzzleType == MirrorPuzzleType::NumberPosition
                           ? "INPUT NUMBER POSITIONS"
                           : "INPUT SYMBOL SEQUENCE"))
