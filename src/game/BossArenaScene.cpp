@@ -9,6 +9,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -21,6 +22,15 @@ namespace {
 constexpr float kCurveRadius = 118.0f;
 constexpr float kCurveOriginZ = -12.0f;
 constexpr int kMirrorChargeMax = 3;
+
+uint32_t MixPuzzleSeed(uint32_t value) {
+  value ^= value >> 16;
+  value *= 2246822519u;
+  value ^= value >> 13;
+  value *= 3266489917u;
+  value ^= value >> 16;
+  return value;
+}
 
 float CurveAngle(float z) { return (z - kCurveOriginZ) / kCurveRadius; }
 
@@ -648,6 +658,7 @@ void BossArenaScene::Reset(PlayerAnimationPreview &player) {
   m_memoryFailTimer = 0.0f;
   m_mirrorCharge = 0;
   m_memoryInputIndex = 0;
+  ResetMirrorPuzzleSchedule();
   ResetReflectionTrace();
   m_readyRiverElectricWasActive = false;
   if (m_meteorFlameEmitter)
@@ -2101,12 +2112,43 @@ BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
     ImGui::Text("Boss Arena Debug");
     ImGui::Separator();
     ImGui::Text("Mechanic: %s", AttackName());
-    ImGui::Text("Phase: %s",
-                m_phase == AttackPhase::Telegraph
-                    ? "Telegraph"
-                    : (m_phase == AttackPhase::Resolve ? "Resolve"
-                                                       : "Recovery"));
+    ImGui::Text(
+        "Phase: %s",
+        m_phase == AttackPhase::Telegraph
+            ? "Telegraph"
+            : (m_phase == AttackPhase::Resolve ? "Resolve" : "Recovery"));
     ImGui::Text("Timer: %.1f", std::max(0.0f, m_phaseTimer));
+    bool puzzleSeedChanged =
+        ImGui::Checkbox("Fixed Puzzle Seed", &m_debugFixedPuzzleSeed);
+    ImGui::BeginDisabled(!m_debugFixedPuzzleSeed);
+    puzzleSeedChanged |= ImGui::InputInt("Puzzle Seed", &m_debugPuzzleSeed);
+    ImGui::EndDisabled();
+    m_debugPuzzleSeed = std::max(1, m_debugPuzzleSeed);
+    if (puzzleSeedChanged && m_countersUsed == 0 && !m_mirrorPuzzleReady &&
+        !m_pendingMirrorPuzzle) {
+      ResetMirrorPuzzleSchedule();
+    }
+    ImGui::Text("Current Puzzle Seed: %u", m_battlePuzzleSeed);
+    const auto puzzleName = [](MirrorPuzzleType type) {
+      switch (type) {
+      case MirrorPuzzleType::SymbolMemory:
+        return "Symbol";
+      case MirrorPuzzleType::NumberPosition:
+        return "Number";
+      case MirrorPuzzleType::ReflectionTrace:
+        return "Trace";
+      }
+      return "Unknown";
+    };
+    ImGui::Text("P1 Bag: %s > %s > %s", puzzleName(m_phaseOnePuzzleBag[0]),
+                puzzleName(m_phaseOnePuzzleBag[1]),
+                puzzleName(m_phaseOnePuzzleBag[2]));
+    if (m_phaseTwoPuzzleBagReady) {
+      ImGui::Text("P2 Bag: %s > %s", puzzleName(m_phaseTwoPuzzleBag[0]),
+                  puzzleName(m_phaseTwoPuzzleBag[1]));
+    }
+    if (m_pendingMirrorPuzzle)
+      ImGui::Text("Pending Retry: %s", puzzleName(m_pendingMirrorPuzzleType));
     if (ImGui::Button("Set Boss HP to 1") && !m_failed && !m_cleared) {
       // 最終カウンターの検証時間を短縮する Debug パネル専用操作。
       if (m_bossHp > 2) {
@@ -2114,6 +2156,9 @@ BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
         m_phaseTwoPatternIndex = 0;
       }
       m_bossHp = 1;
+      m_pendingMirrorPuzzle = false;
+      m_phaseTwoPuzzleBagReady = false;
+      PreparePhaseTwoPuzzleBag();
       m_phaseShiftVfxTimer = 1.25f;
     }
     if (ImGui::Button("Force Sanctuary Seal") && !m_failed && !m_cleared) {
@@ -2123,12 +2168,22 @@ BossArenaScene::DrawHud(int viewportWidth, int viewportHeight) {
         m_phaseTwoPatternIndex = 0;
       ConfigureAttack(AttackType::SanctuarySeal, useIntroTuning);
     }
-    if (ImGui::Button("Force Reflection Trace") && !m_failed && !m_cleared) {
-      // Checkpoint A は通常抽選へ入れず、操作感を単独で検証する。
+    const auto forceTrace = [this](ReflectionTraceVariant variant) {
+      // 強制テストは shuffle bag を消費せず、現在の pending retry を解除する。
+      m_pendingMirrorPuzzle = false;
       m_mirrorCharge = kMirrorChargeMax;
       m_mirrorChargeActive = {false, false, false};
-      PrepareReflectionTracePuzzle(m_attack);
+      PrepareReflectionTracePuzzle(m_attack, variant);
       m_phoneOpen = true;
+    };
+    if (ImGui::Button("Force Attack Trace") && !m_failed && !m_cleared) {
+      forceTrace(ReflectionTraceVariantForAttack(m_attack));
+    }
+    if (ImGui::Button("Force Branch Trace") && !m_failed && !m_cleared) {
+      forceTrace(ReflectionTraceVariant::PhaseTwoBranch);
+    }
+    if (ImGui::Button("Force Reverse Trace") && !m_failed && !m_cleared) {
+      forceTrace(ReflectionTraceVariant::PhaseTwoReversed);
     }
     ImGui::Text("Result screen: choose restart point");
     ImGui::Text("Phone: SPACE");
@@ -2616,15 +2671,133 @@ void BossArenaScene::UpdatePhoneOverlay(float dt, const Input &input) {
     m_phoneSlide = 0.0f;
 }
 
+BossArenaScene::ReflectionTraceVariant
+BossArenaScene::ReflectionTraceVariantForAttack(AttackType attack) const {
+  switch (attack) {
+  case AttackType::MeteorAoE:
+    return ReflectionTraceVariant::MeteorCurve;
+  case AttackType::LaserLine:
+    return ReflectionTraceVariant::LaserZigzag;
+  case AttackType::SanctuarySeal:
+    return ReflectionTraceVariant::SanctuaryLoop;
+  }
+  return ReflectionTraceVariant::MeteorCurve;
+}
+
+void BossArenaScene::ResetMirrorPuzzleSchedule() {
+  ++m_battlePuzzleResetSerial;
+  if (m_debugFixedPuzzleSeed) {
+    m_battlePuzzleSeed = std::max(1u, static_cast<uint32_t>(m_debugPuzzleSeed));
+  } else {
+    const uint64_t ticks = static_cast<uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    const uint32_t timeBits =
+        static_cast<uint32_t>(ticks) ^ static_cast<uint32_t>(ticks >> 32);
+    m_battlePuzzleSeed =
+        MixPuzzleSeed(timeBits ^ (m_battlePuzzleResetSerial * 0x9E3779B9u));
+    if (m_battlePuzzleSeed == 0)
+      m_battlePuzzleSeed = 1;
+  }
+
+  m_phaseOnePuzzleBag = {MirrorPuzzleType::SymbolMemory,
+                         MirrorPuzzleType::NumberPosition,
+                         MirrorPuzzleType::ReflectionTrace};
+  for (int i = 0; i < static_cast<int>(m_phaseOnePuzzleBag.size()); ++i) {
+    const int remaining = static_cast<int>(m_phaseOnePuzzleBag.size()) - i;
+    const int offset = std::min(
+        remaining - 1,
+        static_cast<int>(PuzzleScheduleRandom01(100u + i * 17u) * remaining));
+    std::swap(m_phaseOnePuzzleBag[i], m_phaseOnePuzzleBag[i + offset]);
+  }
+
+  m_phaseTwoPuzzleBag = {MirrorPuzzleType::ReflectionTrace,
+                         MirrorPuzzleType::SymbolMemory};
+  m_phaseOnePuzzleBagIndex = 0;
+  m_phaseTwoPuzzleBagIndex = 0;
+  m_phaseTwoPuzzleBagReady = false;
+  m_hasPreviousMirrorPuzzle = false;
+  m_previousMirrorPuzzleType = MirrorPuzzleType::SymbolMemory;
+  m_pendingMirrorPuzzle = false;
+  m_pendingMirrorPuzzlePhaseTwo = false;
+  m_pendingMirrorPuzzleType = MirrorPuzzleType::SymbolMemory;
+  m_pendingMirrorAttack = AttackType::MeteorAoE;
+  m_pendingReflectionTraceVariant = ReflectionTraceVariant::MeteorCurve;
+  m_pendingMirrorPuzzleSeed = 0;
+}
+
+void BossArenaScene::PreparePhaseTwoPuzzleBag() {
+  const MirrorPuzzleType legacy = PuzzleScheduleRandom01(310u) < 0.5f
+                                      ? MirrorPuzzleType::SymbolMemory
+                                      : MirrorPuzzleType::NumberPosition;
+  m_phaseTwoPuzzleBag = {MirrorPuzzleType::ReflectionTrace, legacy};
+  if (PuzzleScheduleRandom01(340u) < 0.5f)
+    std::swap(m_phaseTwoPuzzleBag[0], m_phaseTwoPuzzleBag[1]);
+
+  // Phase 境界でも同じ family が連続しないよう、必要な場合だけ先頭を交換する。
+  if (m_hasPreviousMirrorPuzzle &&
+      m_phaseTwoPuzzleBag[0] == m_previousMirrorPuzzleType) {
+    std::swap(m_phaseTwoPuzzleBag[0], m_phaseTwoPuzzleBag[1]);
+  }
+  m_phaseTwoPuzzleBagIndex = 0;
+  m_phaseTwoPuzzleBagReady = true;
+}
+
+void BossArenaScene::AdvanceMirrorPuzzleSchedule() {
+  if (!m_pendingMirrorPuzzle)
+    return;
+
+  m_previousMirrorPuzzleType = m_pendingMirrorPuzzleType;
+  m_hasPreviousMirrorPuzzle = true;
+  if (m_pendingMirrorPuzzlePhaseTwo)
+    ++m_phaseTwoPuzzleBagIndex;
+  else
+    ++m_phaseOnePuzzleBagIndex;
+  m_pendingMirrorPuzzle = false;
+}
+
 void BossArenaScene::PrepareMirrorPuzzle(AttackType attack) {
   if (m_mirrorCharge < kMirrorChargeMax)
     return;
 
+  const bool phaseTwo = m_bossHp <= 2;
+  if (!m_pendingMirrorPuzzle) {
+    if (phaseTwo && !m_phaseTwoPuzzleBagReady)
+      PreparePhaseTwoPuzzleBag();
+
+    const int bagIndex = phaseTwo ? std::clamp(m_phaseTwoPuzzleBagIndex, 0, 1)
+                                  : std::clamp(m_phaseOnePuzzleBagIndex, 0, 2);
+    m_pendingMirrorPuzzleType = phaseTwo ? m_phaseTwoPuzzleBag[bagIndex]
+                                         : m_phaseOnePuzzleBag[bagIndex];
+    m_pendingMirrorPuzzle = true;
+    m_pendingMirrorPuzzlePhaseTwo = phaseTwo;
+    m_pendingMirrorAttack = attack;
+    m_pendingMirrorPuzzleSeed = MixPuzzleSeed(
+        m_battlePuzzleSeed ^ (phaseTwo ? 0xA511E9B3u : 0x63D83595u) ^
+        (static_cast<uint32_t>(bagIndex + 1) * 0x9E3779B9u));
+
+    if (m_pendingMirrorPuzzleType == MirrorPuzzleType::ReflectionTrace) {
+      if (phaseTwo) {
+        m_pendingReflectionTraceVariant =
+            PuzzleScheduleRandom01(410u +
+                                   static_cast<uint32_t>(bagIndex) * 29u) < 0.5f
+                ? ReflectionTraceVariant::PhaseTwoBranch
+                : ReflectionTraceVariant::PhaseTwoReversed;
+      } else {
+        m_pendingReflectionTraceVariant =
+            ReflectionTraceVariantForAttack(m_pendingMirrorAttack);
+      }
+    }
+  }
+
+  m_mirrorAttack = m_pendingMirrorAttack;
+  m_mirrorPuzzleType = m_pendingMirrorPuzzleType;
+  if (m_mirrorPuzzleType == MirrorPuzzleType::ReflectionTrace) {
+    PrepareReflectionTracePuzzle(m_pendingMirrorAttack,
+                                 m_pendingReflectionTraceVariant);
+    return;
+  }
+
   ResetReflectionTrace();
-  m_mirrorAttack = attack;
-  m_mirrorPuzzleType = MirrorRandom01(690) < 0.5f
-                           ? MirrorPuzzleType::SymbolMemory
-                           : MirrorPuzzleType::NumberPosition;
   m_mirrorPuzzleReady = true;
   m_mirrorPuzzleSolved = false;
   m_mirrorMessageTimer = 0.0f;
@@ -2634,9 +2807,9 @@ void BossArenaScene::PrepareMirrorPuzzle(AttackType attack) {
   m_memoryInputIndex = 0;
 
   for (int i = 0; i < 3; ++i) {
-    const int base = attack == AttackType::LaserLine ? 1 : 0;
+    const int base = m_pendingMirrorAttack == AttackType::LaserLine ? 1 : 0;
     const int shift = static_cast<int>(MirrorRandom01(800 + i * 13) * 3.0f);
-    m_memorySequence[i] = (base + m_attackIndex + i + shift) % 3;
+    m_memorySequence[i] = (base + m_countersUsed + i + shift) % 3;
   }
 
   std::array<int, 3> pool = {1, 2, 3};
@@ -2666,32 +2839,88 @@ void BossArenaScene::ResetReflectionTrace() {
   m_reflectionTraceNextNode = 0;
 }
 
-void BossArenaScene::PrepareReflectionTracePattern() {
+void BossArenaScene::PrepareReflectionTracePattern(
+    ReflectionTraceVariant variant) {
   m_reflectionTracePattern = {};
-  m_reflectionTracePattern.roadHalfWidth = 0.07f;
+  const bool phaseTwo = variant == ReflectionTraceVariant::PhaseTwoBranch ||
+                        variant == ReflectionTraceVariant::PhaseTwoReversed;
+  m_reflectionTracePattern.roadHalfWidth = phaseTwo ? 0.055f : 0.07f;
   m_reflectionTracePattern.dropletRadius = 0.018f;
-  m_reflectionTracePattern.startEndRadius = 0.05f;
-  m_reflectionTracePattern.nodeRadius = 0.042f;
-  m_reflectionTracePattern.timeLimit = 8.0f;
+  m_reflectionTracePattern.startEndRadius = phaseTwo ? 0.046f : 0.05f;
+  m_reflectionTracePattern.nodeRadius = phaseTwo ? 0.038f : 0.042f;
+  m_reflectionTracePattern.timeLimit = phaseTwo ? 6.5f : 8.0f;
   m_reflectionTracePattern.reversed = false;
 
-  constexpr std::array<XMFLOAT2, 8> kRoadPoints = {
-      XMFLOAT2{0.50f, 0.92f}, XMFLOAT2{0.28f, 0.84f}, XMFLOAT2{0.18f, 0.69f},
-      XMFLOAT2{0.34f, 0.56f}, XMFLOAT2{0.70f, 0.50f}, XMFLOAT2{0.82f, 0.36f},
-      XMFLOAT2{0.68f, 0.22f}, XMFLOAT2{0.50f, 0.10f},
+  const auto setRoad = [this](const XMFLOAT2 *points, int pointCount) {
+    m_reflectionTracePattern.roadSegmentCount = std::clamp(
+        pointCount - 1, 0,
+        static_cast<int>(m_reflectionTracePattern.roadSegments.size()));
+    for (int i = 0; i < m_reflectionTracePattern.roadSegmentCount; ++i)
+      m_reflectionTracePattern.roadSegments[i] = {points[i], points[i + 1]};
+    m_reflectionTracePattern.start = points[0];
+    m_reflectionTracePattern.end = points[pointCount - 1];
   };
-  m_reflectionTracePattern.roadSegmentCount =
-      static_cast<int>(kRoadPoints.size()) - 1;
-  for (int i = 0; i < m_reflectionTracePattern.roadSegmentCount; ++i) {
-    m_reflectionTracePattern.roadSegments[i] = {kRoadPoints[i],
-                                                kRoadPoints[i + 1]};
-  }
 
-  m_reflectionTracePattern.start = kRoadPoints.front();
-  m_reflectionTracePattern.end = kRoadPoints.back();
-  m_reflectionTracePattern.nodes = {kRoadPoints[2], kRoadPoints[4],
-                                    kRoadPoints[6], XMFLOAT2{}};
-  m_reflectionTracePattern.nodeCount = 3;
+  switch (variant) {
+  case ReflectionTraceVariant::MeteorCurve: {
+    constexpr std::array<XMFLOAT2, 7> points = {
+        XMFLOAT2{0.66f, 0.91f}, XMFLOAT2{0.43f, 0.88f}, XMFLOAT2{0.27f, 0.76f},
+        XMFLOAT2{0.20f, 0.58f}, XMFLOAT2{0.24f, 0.38f}, XMFLOAT2{0.42f, 0.22f},
+        XMFLOAT2{0.66f, 0.11f}};
+    setRoad(points.data(), static_cast<int>(points.size()));
+    m_reflectionTracePattern.nodes = {points[2], points[4], points[5], {}};
+    m_reflectionTracePattern.nodeCount = 3;
+    break;
+  }
+  case ReflectionTraceVariant::LaserZigzag: {
+    constexpr std::array<XMFLOAT2, 7> points = {
+        XMFLOAT2{0.25f, 0.91f}, XMFLOAT2{0.70f, 0.80f}, XMFLOAT2{0.30f, 0.65f},
+        XMFLOAT2{0.72f, 0.49f}, XMFLOAT2{0.30f, 0.33f}, XMFLOAT2{0.70f, 0.18f},
+        XMFLOAT2{0.48f, 0.09f}};
+    setRoad(points.data(), static_cast<int>(points.size()));
+    m_reflectionTracePattern.nodes = {points[1], points[3], points[5], {}};
+    m_reflectionTracePattern.nodeCount = 3;
+    break;
+  }
+  case ReflectionTraceVariant::SanctuaryLoop: {
+    constexpr std::array<XMFLOAT2, 9> points = {
+        XMFLOAT2{0.38f, 0.91f}, XMFLOAT2{0.22f, 0.78f}, XMFLOAT2{0.16f, 0.55f},
+        XMFLOAT2{0.24f, 0.31f}, XMFLOAT2{0.44f, 0.17f}, XMFLOAT2{0.68f, 0.22f},
+        XMFLOAT2{0.82f, 0.43f}, XMFLOAT2{0.78f, 0.68f}, XMFLOAT2{0.62f, 0.82f}};
+    setRoad(points.data(), static_cast<int>(points.size()));
+    m_reflectionTracePattern.nodes = {points[2], points[4], points[6], {}};
+    m_reflectionTracePattern.nodeCount = 3;
+    break;
+  }
+  case ReflectionTraceVariant::PhaseTwoBranch: {
+    // 自己交差点では道路の形だけでなく node 順が正しい出口を示す。
+    constexpr std::array<XMFLOAT2, 7> points = {
+        XMFLOAT2{0.50f, 0.92f}, XMFLOAT2{0.22f, 0.72f}, XMFLOAT2{0.78f, 0.42f},
+        XMFLOAT2{0.78f, 0.72f}, XMFLOAT2{0.22f, 0.42f}, XMFLOAT2{0.30f, 0.20f},
+        XMFLOAT2{0.50f, 0.08f}};
+    setRoad(points.data(), static_cast<int>(points.size()));
+    m_reflectionTracePattern.nodes = {points[1], points[2], points[4],
+                                      points[5]};
+    m_reflectionTracePattern.nodeCount = 4;
+    break;
+  }
+  case ReflectionTraceVariant::PhaseTwoReversed: {
+    constexpr std::array<XMFLOAT2, 9> points = {
+        XMFLOAT2{0.50f, 0.92f}, XMFLOAT2{0.25f, 0.82f}, XMFLOAT2{0.18f, 0.66f},
+        XMFLOAT2{0.38f, 0.55f}, XMFLOAT2{0.72f, 0.50f}, XMFLOAT2{0.82f, 0.34f},
+        XMFLOAT2{0.67f, 0.22f}, XMFLOAT2{0.42f, 0.16f}, XMFLOAT2{0.50f, 0.08f}};
+    setRoad(points.data(), static_cast<int>(points.size()));
+    m_reflectionTracePattern.nodes = {points[1], points[3], points[5],
+                                      points[7]};
+    m_reflectionTracePattern.nodeCount = 4;
+    m_reflectionTracePattern.reversed = true;
+    std::swap(m_reflectionTracePattern.start, m_reflectionTracePattern.end);
+    std::reverse(m_reflectionTracePattern.nodes.begin(),
+                 m_reflectionTracePattern.nodes.begin() +
+                     m_reflectionTracePattern.nodeCount);
+    break;
+  }
+  }
 
   m_reflectionTracePosition = m_reflectionTracePattern.start;
   m_reflectionTracePreviousPosition = m_reflectionTracePattern.start;
@@ -2701,19 +2930,21 @@ void BossArenaScene::PrepareReflectionTracePattern() {
   m_reflectionTraceFailReason = ReflectionTraceFailReason::None;
 }
 
-void BossArenaScene::PrepareReflectionTracePuzzle(AttackType attack) {
+void BossArenaScene::PrepareReflectionTracePuzzle(
+    AttackType attack, ReflectionTraceVariant variant) {
   if (m_mirrorCharge < kMirrorChargeMax)
     return;
 
   ResetReflectionTrace();
   m_mirrorAttack = attack;
+  m_pendingReflectionTraceVariant = variant;
   m_mirrorPuzzleType = MirrorPuzzleType::ReflectionTrace;
   m_mirrorPuzzleReady = true;
   m_mirrorPuzzleSolved = false;
   m_mirrorMessageTimer = 0.0f;
   m_memoryFailTimer = 0.0f;
   m_memoryInputIndex = 0;
-  PrepareReflectionTracePattern();
+  PrepareReflectionTracePattern(variant);
   m_memoryTimer = m_reflectionTracePattern.timeLimit;
 }
 
@@ -2871,6 +3102,7 @@ void BossArenaScene::CompleteMirrorPuzzle() {
   if (!m_mirrorPuzzleReady)
     return;
 
+  AdvanceMirrorPuzzleSchedule();
   m_mirrorPuzzleReady = false;
   m_mirrorPuzzleSolved = true;
   m_mirrorMessageTimer = 1.4f;
@@ -2886,6 +3118,7 @@ void BossArenaScene::CompleteMirrorPuzzle() {
     // Phase 2 の開始直後に新ルールを提示し、旧攻撃だけが続く間を作らない。
     m_phaseTwoIntroPending = true;
     m_phaseTwoPatternIndex = 0;
+    PreparePhaseTwoPuzzleBag();
   }
   ++m_countersUsed;
   const bool climaxVfx = !m_techShowcaseOverride || m_showcaseClimaxVfx;
@@ -2931,16 +3164,21 @@ void BossArenaScene::FailMirrorPuzzle() {
   SpawnMirrorCharges();
 }
 
+float BossArenaScene::PuzzleScheduleRandom01(uint32_t salt) const {
+  const uint32_t x = MixPuzzleSeed(m_battlePuzzleSeed ^ (salt * 1597334677u));
+  return static_cast<float>(x & 0x00FFFFFFu) / 16777215.0f;
+}
+
 float BossArenaScene::MirrorRandom01(uint32_t salt) const {
-  uint32_t x = static_cast<uint32_t>(m_attackIndex + 1) * 747796405u;
-  x ^= static_cast<uint32_t>(m_bossHp + 3) * 2891336453u;
+  uint32_t x =
+      m_pendingMirrorPuzzle
+          ? m_pendingMirrorPuzzleSeed
+          : MixPuzzleSeed(
+                m_battlePuzzleSeed ^
+                (static_cast<uint32_t>(m_attackIndex + 1) * 747796405u) ^
+                (static_cast<uint32_t>(m_bossHp + 3) * 2891336453u));
   x ^= static_cast<uint32_t>(m_mirrorAttack) * 277803737u;
-  x ^= salt * 1597334677u;
-  x ^= x >> 16;
-  x *= 2246822519u;
-  x ^= x >> 13;
-  x *= 3266489917u;
-  x ^= x >> 16;
+  x = MixPuzzleSeed(x ^ (salt * 1597334677u));
   return static_cast<float>(x & 0x00FFFFFFu) / 16777215.0f;
 }
 
@@ -3081,11 +3319,16 @@ void BossArenaScene::DrawReflectionTracePuzzle(
   }
 
   draw->AddText(ImVec2(puzzleMin.x + 20.0f, puzzleMin.y + 16.0f),
-                Rgba(0.78f, 1.0f, 0.94f, screenAlpha),
-                "REFLECTION TRACE");
+                Rgba(0.78f, 1.0f, 0.94f, screenAlpha), "REFLECTION TRACE");
+  const char *traceInstruction =
+      m_reflectionTracePattern.reversed
+          ? "HOLD LMB: END > 4 > 3 > 2 > 1 > START"
+          : (m_reflectionTracePattern.nodeCount == 4
+                 ? "HOLD LMB: START > 1 > 2 > 3 > 4 > END"
+                 : "HOLD LMB: START > 1 > 2 > 3 > END");
   draw->AddText(ImVec2(puzzleMin.x + 20.0f, puzzleMin.y + 39.0f),
                 Rgba(0.52f, 0.76f, 0.72f, 0.92f * screenAlpha),
-                "HOLD LMB: START > 1 > 2 > 3 > END");
+                traceInstruction);
 
   const float timerRate = std::clamp(
       m_memoryTimer / std::max(0.01f, m_reflectionTracePattern.timeLimit), 0.0f,
@@ -3128,15 +3371,15 @@ void BossArenaScene::DrawReflectionTracePuzzle(
     draw->AddLine(a, b, safeColor, safeWidth);
   }
   for (int i = 0; i < m_reflectionTracePattern.roadSegmentCount; ++i) {
-    const ImVec2 joint = toScreen(m_reflectionTracePattern.roadSegments[i].a);
-    draw->AddCircleFilled(joint, roadWidth * 0.50f + 2.0f, edgeColor, 24);
-    draw->AddCircleFilled(joint, roadWidth * 0.50f, roadColor, 24);
-    draw->AddCircleFilled(joint, safeWidth * 0.50f, safeColor, 24);
+    const std::array<ImVec2, 2> joints = {
+        toScreen(m_reflectionTracePattern.roadSegments[i].a),
+        toScreen(m_reflectionTracePattern.roadSegments[i].b)};
+    for (const ImVec2 &joint : joints) {
+      draw->AddCircleFilled(joint, roadWidth * 0.50f + 2.0f, edgeColor, 24);
+      draw->AddCircleFilled(joint, roadWidth * 0.50f, roadColor, 24);
+      draw->AddCircleFilled(joint, safeWidth * 0.50f, safeColor, 24);
+    }
   }
-  const ImVec2 finalJoint = toScreen(m_reflectionTracePattern.end);
-  draw->AddCircleFilled(finalJoint, roadWidth * 0.50f + 2.0f, edgeColor, 24);
-  draw->AddCircleFilled(finalJoint, roadWidth * 0.50f, roadColor, 24);
-  draw->AddCircleFilled(finalJoint, safeWidth * 0.50f, safeColor, 24);
 
   const float startEndRadius =
       m_reflectionTracePattern.startEndRadius * shortSide;
@@ -3150,14 +3393,16 @@ void BossArenaScene::DrawReflectionTracePuzzle(
                         Rgba(0.10f, 0.13f, 0.17f, 0.96f * screenAlpha), 32);
   draw->AddCircle(endCenter, startEndRadius,
                   Rgba(0.46f, 0.86f, 1.0f, screenAlpha), 32, 2.2f);
-  const ImVec2 startLabelSize = ImGui::CalcTextSize("START");
-  const ImVec2 endLabelSize = ImGui::CalcTextSize("END");
+  const char *startLabel = m_reflectionTracePattern.reversed ? "END" : "START";
+  const char *endLabel = m_reflectionTracePattern.reversed ? "START" : "END";
+  const ImVec2 startLabelSize = ImGui::CalcTextSize(startLabel);
+  const ImVec2 endLabelSize = ImGui::CalcTextSize(endLabel);
   draw->AddText(ImVec2(startCenter.x - startLabelSize.x * 0.5f,
                        startCenter.y - startLabelSize.y * 0.5f),
-                Rgba(0.82f, 1.0f, 0.92f, screenAlpha), "START");
+                Rgba(0.82f, 1.0f, 0.92f, screenAlpha), startLabel);
   draw->AddText(ImVec2(endCenter.x - endLabelSize.x * 0.5f,
                        endCenter.y - endLabelSize.y * 0.5f),
-                Rgba(0.80f, 0.94f, 1.0f, screenAlpha), "END");
+                Rgba(0.80f, 0.94f, 1.0f, screenAlpha), endLabel);
 
   const float nodeRadius = m_reflectionTracePattern.nodeRadius * shortSide;
   for (int i = 0; i < m_reflectionTracePattern.nodeCount; ++i) {
@@ -3177,7 +3422,10 @@ void BossArenaScene::DrawReflectionTracePuzzle(
     draw->AddCircle(center, nodeRadius + pulse * 2.2f, nodeColor, 28,
                     active ? 2.6f : 1.8f);
     char nodeLabel[4]{};
-    std::snprintf(nodeLabel, sizeof(nodeLabel), "%d", i + 1);
+    const int visibleNode = m_reflectionTracePattern.reversed
+                                ? m_reflectionTracePattern.nodeCount - i
+                                : i + 1;
+    std::snprintf(nodeLabel, sizeof(nodeLabel), "%d", visibleNode);
     const ImVec2 labelSize = ImGui::CalcTextSize(nodeLabel);
     draw->AddText(
         ImVec2(center.x - labelSize.x * 0.5f, center.y - labelSize.y * 0.5f),

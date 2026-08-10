@@ -83,6 +83,14 @@ private:
     PhoneClosed,
   };
 
+  enum class ReflectionTraceVariant {
+    MeteorCurve,
+    LaserZigzag,
+    SanctuaryLoop,
+    PhaseTwoBranch,
+    PhaseTwoReversed,
+  };
+
   struct ReflectionTraceSegment {
     DirectX::XMFLOAT2 a = {};
     DirectX::XMFLOAT2 b = {};
@@ -118,8 +126,14 @@ private:
   void UpdatePhoneOverlay(float dt, const Input &input);
   void DrawPhoneOverlay(int viewportWidth, int viewportHeight);
   void PrepareMirrorPuzzle(AttackType attack);
-  void PrepareReflectionTracePuzzle(AttackType attack);
-  void PrepareReflectionTracePattern();
+  void PrepareReflectionTracePuzzle(AttackType attack,
+                                    ReflectionTraceVariant variant);
+  void PrepareReflectionTracePattern(ReflectionTraceVariant variant);
+  ReflectionTraceVariant
+  ReflectionTraceVariantForAttack(AttackType attack) const;
+  void ResetMirrorPuzzleSchedule();
+  void PreparePhaseTwoPuzzleBag();
+  void AdvanceMirrorPuzzleSchedule();
   void ResetReflectionTrace();
   void BeginReflectionTrace(const DirectX::XMFLOAT2 &position);
   void AdvanceReflectionTrace(const DirectX::XMFLOAT2 &position,
@@ -140,6 +154,7 @@ private:
   void SpawnMirrorCharges();
   void UpdateMirrorCharges(const PlayerAnimationPreview &player);
   void AppendMirrorCharges(FrameData &frame) const;
+  float PuzzleScheduleRandom01(uint32_t salt) const;
   float MirrorRandom01(uint32_t salt) const;
   float TelegraphDuration() const;
   void AppendWorldPolish(FrameData &frame) const;
@@ -263,6 +278,28 @@ private:
   float m_memoryFailTimer = 0.0f;
   int m_mirrorCharge = 0;
   int m_memoryInputIndex = 0;
+
+  std::array<MirrorPuzzleType, 3> m_phaseOnePuzzleBag = {
+      MirrorPuzzleType::SymbolMemory, MirrorPuzzleType::NumberPosition,
+      MirrorPuzzleType::ReflectionTrace};
+  std::array<MirrorPuzzleType, 2> m_phaseTwoPuzzleBag = {
+      MirrorPuzzleType::ReflectionTrace, MirrorPuzzleType::SymbolMemory};
+  int m_phaseOnePuzzleBagIndex = 0;
+  int m_phaseTwoPuzzleBagIndex = 0;
+  bool m_phaseTwoPuzzleBagReady = false;
+  bool m_hasPreviousMirrorPuzzle = false;
+  MirrorPuzzleType m_previousMirrorPuzzleType = MirrorPuzzleType::SymbolMemory;
+  bool m_pendingMirrorPuzzle = false;
+  bool m_pendingMirrorPuzzlePhaseTwo = false;
+  MirrorPuzzleType m_pendingMirrorPuzzleType = MirrorPuzzleType::SymbolMemory;
+  AttackType m_pendingMirrorAttack = AttackType::MeteorAoE;
+  ReflectionTraceVariant m_pendingReflectionTraceVariant =
+      ReflectionTraceVariant::MeteorCurve;
+  uint32_t m_pendingMirrorPuzzleSeed = 0;
+  uint32_t m_battlePuzzleSeed = 1;
+  uint32_t m_battlePuzzleResetSerial = 0;
+  bool m_debugFixedPuzzleSeed = false;
+  int m_debugPuzzleSeed = 20260808;
 
   ReflectionTracePattern m_reflectionTracePattern = {};
   ReflectionTraceState m_reflectionTraceState = ReflectionTraceState::Idle;
