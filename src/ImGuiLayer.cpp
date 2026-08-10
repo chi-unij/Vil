@@ -38,6 +38,51 @@ void ImGuiLayer::Initialize(Win32Window& window, DxContext& dx)
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
     ImGui::StyleColorsDark();
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowPadding = ImVec2(8.0f, 8.0f);
+    style.FramePadding = ImVec2(7.0f, 4.0f);
+    style.ItemSpacing = ImVec2(7.0f, 5.0f);
+    style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
+    style.ScrollbarSize = 13.0f;
+    style.GrabMinSize = 10.0f;
+    style.WindowBorderSize = 1.0f;
+    style.ChildBorderSize = 1.0f;
+    style.PopupBorderSize = 1.0f;
+    style.FrameBorderSize = 0.0f;
+    style.WindowRounding = 2.0f;
+    style.ChildRounding = 2.0f;
+    style.FrameRounding = 2.0f;
+    style.PopupRounding = 2.0f;
+    style.ScrollbarRounding = 2.0f;
+    style.GrabRounding = 2.0f;
+    style.TabRounding = 2.0f;
+
+    // Neutral charcoal panels and a restrained editor-blue accent keep the
+    // workspace readable over a bright or dark 3D scene.
+    ImVec4* colors = style.Colors;
+    colors[ImGuiCol_WindowBg] = ImVec4(0.105f, 0.113f, 0.125f, 0.985f);
+    colors[ImGuiCol_ChildBg] = ImVec4(0.090f, 0.098f, 0.109f, 1.0f);
+    colors[ImGuiCol_PopupBg] = ImVec4(0.095f, 0.103f, 0.116f, 0.99f);
+    colors[ImGuiCol_Border] = ImVec4(0.225f, 0.245f, 0.275f, 1.0f);
+    colors[ImGuiCol_FrameBg] = ImVec4(0.155f, 0.168f, 0.188f, 1.0f);
+    colors[ImGuiCol_FrameBgHovered] = ImVec4(0.205f, 0.255f, 0.315f, 1.0f);
+    colors[ImGuiCol_FrameBgActive] = ImVec4(0.180f, 0.355f, 0.550f, 1.0f);
+    colors[ImGuiCol_TitleBg] = ImVec4(0.075f, 0.082f, 0.092f, 1.0f);
+    colors[ImGuiCol_TitleBgActive] = ImVec4(0.105f, 0.125f, 0.150f, 1.0f);
+    colors[ImGuiCol_MenuBarBg] = ImVec4(0.070f, 0.078f, 0.090f, 1.0f);
+    colors[ImGuiCol_Button] = ImVec4(0.165f, 0.190f, 0.220f, 1.0f);
+    colors[ImGuiCol_ButtonHovered] = ImVec4(0.205f, 0.385f, 0.610f, 1.0f);
+    colors[ImGuiCol_ButtonActive] = ImVec4(0.145f, 0.315f, 0.535f, 1.0f);
+    colors[ImGuiCol_Header] = ImVec4(0.165f, 0.205f, 0.250f, 1.0f);
+    colors[ImGuiCol_HeaderHovered] = ImVec4(0.205f, 0.385f, 0.610f, 1.0f);
+    colors[ImGuiCol_HeaderActive] = ImVec4(0.145f, 0.315f, 0.535f, 1.0f);
+    colors[ImGuiCol_CheckMark] = ImVec4(0.300f, 0.675f, 1.000f, 1.0f);
+    colors[ImGuiCol_SliderGrab] = ImVec4(0.300f, 0.625f, 0.950f, 1.0f);
+    colors[ImGuiCol_SliderGrabActive] = ImVec4(0.390f, 0.735f, 1.000f, 1.0f);
+    colors[ImGuiCol_Tab] = ImVec4(0.115f, 0.130f, 0.150f, 1.0f);
+    colors[ImGuiCol_TabHovered] = ImVec4(0.205f, 0.385f, 0.610f, 1.0f);
+    colors[ImGuiCol_TabSelected] = ImVec4(0.165f, 0.315f, 0.500f, 1.0f);
+    colors[ImGuiCol_Separator] = ImVec4(0.225f, 0.245f, 0.275f, 1.0f);
 
     ImGui_ImplWin32_Init(window.Handle());
 

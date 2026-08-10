@@ -55,6 +55,17 @@ public:
                   D3D12_RESOURCE_STATES after);
   void SetViewportScissorFull();
 
+  // Copy the finished backbuffer into an ImGui-readable texture before the
+  // editor UI pass. This lets the real renderer appear inside Scene View.
+  void CaptureBackBufferForEditor();
+  D3D12_GPU_DESCRIPTOR_HANDLE EditorViewportGpu() const {
+    return m_editorViewportSrvGpu;
+  }
+  bool HasEditorViewportTexture() const {
+    return m_editorViewportTexture != nullptr &&
+           m_editorViewportSrvGpu.ptr != 0;
+  }
+
   // ---- Resource allocation ----
   D3D12_GPU_VIRTUAL_ADDRESS AllocFrameConstants(uint32_t sizeBytes,
                                                 void **outCpuPtr);
@@ -218,6 +229,7 @@ private:
   void CreateImGuiResources();
   void CreateMainSrvHeap();
   void CreatePostProcessResources();
+  void CreateEditorViewportResource();
 
   ID3D12Resource *CurrentBackBuffer() const;
 
@@ -272,6 +284,13 @@ private:
   D3D12_GPU_DESCRIPTOR_HANDLE m_previewSrvGpu{};
   bool m_previewSrvAllocated = false;
   LoadedImage m_pendingPreview; // set by RequestPreviewTexture, consumed by BeginFrame
+
+  // Copy of the final backbuffer sampled by the editor Scene View. The
+  // descriptor lives in the ImGui heap and is reused across resize.
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_editorViewportTexture;
+  D3D12_CPU_DESCRIPTOR_HANDLE m_editorViewportSrvCpu{};
+  D3D12_GPU_DESCRIPTOR_HANDLE m_editorViewportSrvGpu{};
+  bool m_editorViewportSrvAllocated = false;
 
   // Main SRV heap (shader-visible) for app resources
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_mainSrvHeap;

@@ -222,9 +222,9 @@ void Camera::UpdateOrbit(float dtSeconds, const Input& input, bool leftClickHeld
     (void)input;
 
     // Orbit rotation is handled via AddYawPitch-style calls from main.cpp.
-    // This method handles keyboard panning of the orbit target (WASD).
-    if (!leftClickHeld) {
-        // Allow WASD to pan the orbit target when no mouse button held.
+    // Keep keyboard panning behind the same RMB navigation chord so W/E/R
+    // remain editor gizmo shortcuts while the camera is idle.
+    if (leftClickHeld) {
         float fwd = 0.0f, right = 0.0f, up = 0.0f;
         if (input.IsKeyDown('W')) fwd += 1.0f;
         if (input.IsKeyDown('S')) fwd -= 1.0f;

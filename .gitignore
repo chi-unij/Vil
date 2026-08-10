@@ -49,6 +49,9 @@ Desktop.ini
 /app_trace_log.txt
 /imgui.ini
 /docs/discovery/url.md
+/featuretools/artifacts/
+/featuretools/editor_runtime_settings.json
+/featuretools/PAUSED_HANDOFF.md
 
 # Local agent settings
 .claude/settings.local.json

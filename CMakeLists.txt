@@ -81,8 +81,8 @@ if (MSVC)
     target_compile_options(imgui PRIVATE /W0)
 endif()
 
-# ---- 本体ターゲット ----
-add_executable(SoloAssignment WIN32
+# ---- 共通ソース ----
+set(VILLIEN_SOURCES
     # エントリポイント
     src/main.cpp
 
@@ -188,42 +188,55 @@ add_executable(SoloAssignment WIN32
     src/game/TitleScreen.cpp
 )
 
+# ---- 実行ターゲット ----
+add_executable(SoloAssignment WIN32 ${VILLIEN_SOURCES})
+add_executable(VillienEditor WIN32 ${VILLIEN_SOURCES})
+
 # ---- コンパイル定義 ----
-target_compile_definitions(SoloAssignment PRIVATE
-    WIN32_LEAN_AND_MEAN
-    NOMINMAX
-    UNICODE
-    _UNICODE
-)
+foreach(VILLIEN_TARGET IN ITEMS SoloAssignment VillienEditor)
+    target_compile_definitions(${VILLIEN_TARGET} PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        UNICODE
+        _UNICODE
+    )
+endforeach()
+target_compile_definitions(VillienEditor PRIVATE VILLIEN_EDITOR_BUILD=1)
 
 # ---- MSVC 警告レベル ----
 if (MSVC)
-    target_compile_options(SoloAssignment PRIVATE /W4 /permissive- /utf-8)
+    foreach(VILLIEN_TARGET IN ITEMS SoloAssignment VillienEditor)
+        target_compile_options(${VILLIEN_TARGET} PRIVATE /W4 /permissive- /utf-8)
+    endforeach()
 endif()
 
 # ---- リンク ----
-target_link_libraries(SoloAssignment PRIVATE
-    d3d12
-    dxgi
-    d3dcompiler
-    dbghelp
-    xinput
-    imgui
-    tinyexr
-    tinygltf
-    nlohmann_json::nlohmann_json
-)
+foreach(VILLIEN_TARGET IN ITEMS SoloAssignment VillienEditor)
+    target_link_libraries(${VILLIEN_TARGET} PRIVATE
+        d3d12
+        dxgi
+        d3dcompiler
+        dbghelp
+        xinput
+        imgui
+        tinyexr
+        tinygltf
+        nlohmann_json::nlohmann_json
+    )
+endforeach()
 
 # ---- インクルードパス ----
-target_include_directories(SoloAssignment PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${tinyexr_SOURCE_DIR}
-    ${tinyexr_SOURCE_DIR}/deps/miniz
-    ${tinygltf_SOURCE_DIR}
-)
+foreach(VILLIEN_TARGET IN ITEMS SoloAssignment VillienEditor)
+    target_include_directories(${VILLIEN_TARGET} PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${tinyexr_SOURCE_DIR}
+        ${tinyexr_SOURCE_DIR}/deps/miniz
+        ${tinygltf_SOURCE_DIR}
+    )
+endforeach()
 
 # ---- 出力先 ----
-set_target_properties(SoloAssignment PROPERTIES
+set_target_properties(SoloAssignment VillienEditor PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 
@@ -233,4 +246,10 @@ add_custom_command(TARGET SoloAssignment POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/shaders" "$<TARGET_FILE_DIR:SoloAssignment>/shaders"
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:SoloAssignment>/Assets"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Assets" "$<TARGET_FILE_DIR:SoloAssignment>/Assets"
+)
+
+# Editor はルートの Assets を直接使用し、巨大アセットの複製を避ける。
+add_custom_command(TARGET VillienEditor POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:VillienEditor>/shaders"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/shaders" "$<TARGET_FILE_DIR:VillienEditor>/shaders"
 )

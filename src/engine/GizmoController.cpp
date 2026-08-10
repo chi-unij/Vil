@@ -29,17 +29,31 @@ bool GizmoController::Update(Scene &scene, EntityId selectedEntity,
   ImGuizmo::BeginFrame();
 
   ImGuiIO &io = ImGui::GetIO();
-  ImGuizmo::SetRect(0, 0, io.DisplaySize.x, io.DisplaySize.y);
+  const float width = m_viewportWidth > 1.0f ? m_viewportWidth : io.DisplaySize.x;
+  const float height = m_viewportHeight > 1.0f ? m_viewportHeight : io.DisplaySize.y;
+  ImGuizmo::SetRect(m_viewportX, m_viewportY, width, height);
+  ImGuizmo::SetDrawlist(ImGui::GetForegroundDrawList());
 
   if (selectedEntity == kInvalidEntityId) {
-    // If we were dragging an entity that got deselected, finalize.
+    // If selection changed on mouse release, preserve the completed drag in
+    // undo history instead of silently dropping it.
+    if (m_isDragging) {
+      if (Entity *dragEntity = scene.FindEntity(m_dragEntityId)) {
+        history.PushWithoutExecute(std::make_unique<TransformCommand>(
+            scene, m_dragEntityId, m_dragStartTransform,
+            dragEntity->transform));
+      }
+    }
     m_isDragging = false;
+    m_isHovered = false;
     return false;
   }
 
   Entity *entity = scene.FindEntity(selectedEntity);
-  if (!entity)
+  if (!entity) {
+    m_isHovered = false;
     return false;
+  }
 
   // Capture transform BEFORE ImGuizmo modifies it (needed for undo).
   Transform preManipTransform = entity->transform;
@@ -75,6 +89,7 @@ bool GizmoController::Update(Scene &scene, EntityId selectedEntity,
                         snapEnabled ? snapValues : nullptr);
 
   bool gizmoUsing = ImGuizmo::IsUsing();
+  m_isHovered = ImGuizmo::IsOver();
 
   // If gizmo modified the matrix, decompose back into entity transform.
   if (gizmoUsing) {
@@ -105,7 +120,7 @@ bool GizmoController::Update(Scene &scene, EntityId selectedEntity,
     }
   }
 
-  return ImGuizmo::IsOver() || gizmoUsing;
+  return m_isHovered || gizmoUsing;
 }
 
 bool GizmoController::IsActive() const { return ImGuizmo::IsUsing(); }

@@ -18,13 +18,293 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <string_view>
 
 #include <windows.h>
 #include <commdlg.h>
+
+namespace {
+
+struct EditorWorkspaceLayout {
+  float menuHeight = 0.0f;
+  float toolbarHeight = 0.0f;
+  float leftWidth = 0.0f;
+  float rightWidth = 0.0f;
+  float bottomHeight = 0.0f;
+  float sceneObjectsHeight = 0.0f;
+  EditorViewportRect viewport;
+};
+
+struct EditorWorkspaceState {
+  float leftWidth = 290.0f;
+  float rightWidth = 380.0f;
+  float bottomHeight = 270.0f;
+  float sceneObjectsRatio = 0.43f;
+  int activeSplitter = 0;
+};
+
+EditorWorkspaceState g_editorWorkspace;
+
+EditorWorkspaceLayout BuildEditorWorkspaceLayout() {
+  const ImVec2 display = ImGui::GetIO().DisplaySize;
+  EditorWorkspaceLayout layout;
+  layout.menuHeight = ImGui::GetFrameHeight();
+  layout.toolbarHeight = 42.0f;
+
+  // Keep the Scene View usable on smaller windows while still giving the
+  // object list and Inspector enough room for real editing controls.
+  const float desiredSceneWidth = display.x < 1000.0f ? 260.0f : 420.0f;
+  const float minSceneWidth =
+      std::clamp(desiredSceneWidth, 1.0f, std::max(1.0f, display.x * 0.70f));
+  const float availableSideWidth = std::max(2.0f, display.x - minSceneWidth);
+  constexpr float kPreferredLeftMin = 190.0f;
+  constexpr float kPreferredRightMin = 250.0f;
+  constexpr float kPreferredSideTotal =
+      kPreferredLeftMin + kPreferredRightMin;
+  if (availableSideWidth >= kPreferredSideTotal) {
+    layout.leftWidth =
+        std::clamp(g_editorWorkspace.leftWidth, kPreferredLeftMin,
+                   availableSideWidth - kPreferredRightMin);
+    layout.rightWidth =
+        std::clamp(g_editorWorkspace.rightWidth, kPreferredRightMin,
+                   availableSideWidth - layout.leftWidth);
+  } else {
+    // At very small window sizes, scale both panels proportionally instead of
+    // passing an invalid min/max range to std::clamp.
+    layout.leftWidth =
+        availableSideWidth * (kPreferredLeftMin / kPreferredSideTotal);
+    layout.rightWidth = availableSideWidth - layout.leftWidth;
+  }
+
+  const float maxBottom =
+      std::max(150.0f, display.y - layout.menuHeight - layout.toolbarHeight -
+                            170.0f);
+  layout.bottomHeight =
+      std::clamp(g_editorWorkspace.bottomHeight, 150.0f, maxBottom);
+
+  const float contentHeight = std::max(1.0f, display.y - layout.menuHeight);
+  layout.sceneObjectsHeight = std::clamp(
+      contentHeight * g_editorWorkspace.sceneObjectsRatio, 180.0f,
+      std::max(180.0f, contentHeight - 180.0f));
+
+  layout.viewport.x = layout.leftWidth;
+  layout.viewport.y = layout.menuHeight + layout.toolbarHeight;
+  layout.viewport.width =
+      std::max(1.0f, display.x - layout.leftWidth - layout.rightWidth);
+  layout.viewport.height =
+      std::max(1.0f, display.y - layout.viewport.y - layout.bottomHeight);
+  return layout;
+}
+
+constexpr ImGuiWindowFlags kFixedPanelFlags =
+    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings;
+
+constexpr ImGuiWindowFlags kToolbarFlags =
+    kFixedPanelFlags | ImGuiWindowFlags_NoTitleBar |
+    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+    ImGuiWindowFlags_NoBringToFrontOnFocus;
+
+constexpr ImGuiWindowFlags kSceneViewportFlags =
+    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+    ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
+    ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBringToFrontOnFocus |
+    ImGuiWindowFlags_NoNav;
+
+std::string TrimMarkdownText(std::string value) {
+  const auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
+  const auto first =
+      std::find_if_not(value.begin(), value.end(), isSpace);
+  const auto last =
+      std::find_if_not(value.rbegin(), value.rend(), isSpace).base();
+  if (first >= last)
+    return {};
+  return std::string(first, last);
+}
+
+void ReplaceAll(std::string &value, std::string_view from,
+                std::string_view to) {
+  size_t position = 0;
+  while ((position = value.find(from, position)) != std::string::npos) {
+    value.replace(position, from.size(), to);
+    position += to.size();
+  }
+}
+
+std::string MakeAsciiUiText(std::string value) {
+  // The current ImGui atlas is ASCII-only. Preserve common technical
+  // punctuation, then omit unsupported CJK prose instead of rendering ????
+  // glyphs throughout the Editor.
+  ReplaceAll(value, "\xEF\xBC\x8F", "/");      // full-width slash
+  ReplaceAll(value, "\xE2\x86\x92", " -> "); // right arrow
+  ReplaceAll(value, "\xC3\x97", "x");          // multiplication sign
+  ReplaceAll(value, "\xE2\x89\xA4", "<=");   // less-than-or-equal
+  ReplaceAll(value, "\xE3\x80\x81", ", ");   // ideographic comma
+
+  std::string ascii;
+  ascii.reserve(value.size());
+  bool skippedNonAscii = false;
+  for (unsigned char c : value) {
+    if (c < 0x80) {
+      if (skippedNonAscii && !ascii.empty() && ascii.back() != ' ' &&
+          !std::isspace(c)) {
+        ascii.push_back(' ');
+      }
+      skippedNonAscii = false;
+      if (c != '`')
+        ascii.push_back(static_cast<char>(c));
+    } else {
+      skippedNonAscii = true;
+    }
+  }
+
+  std::string collapsed;
+  collapsed.reserve(ascii.size());
+  bool previousSpace = false;
+  for (unsigned char c : ascii) {
+    const bool space = std::isspace(c) != 0;
+    if (!space || !previousSpace)
+      collapsed.push_back(space ? ' ' : static_cast<char>(c));
+    previousSpace = space;
+  }
+  return TrimMarkdownText(std::move(collapsed));
+}
+
+std::string LowerAscii(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) {
+                   return static_cast<char>(std::tolower(c));
+                 });
+  return value;
+}
+
+std::vector<std::string> SplitMarkdownRow(const std::string &line) {
+  std::vector<std::string> cells;
+  size_t begin = (!line.empty() && line.front() == '|') ? 1 : 0;
+  while (begin <= line.size()) {
+    const size_t end = line.find('|', begin);
+    if (end == std::string::npos) {
+      cells.push_back(TrimMarkdownText(line.substr(begin)));
+      break;
+    }
+    cells.push_back(TrimMarkdownText(line.substr(begin, end - begin)));
+    begin = end + 1;
+    if (begin == line.size())
+      break;
+  }
+  return cells;
+}
+
+bool IsMarkdownSeparatorRow(const std::string &line) {
+  if (line.empty() || line.front() != '|')
+    return false;
+  bool sawDash = false;
+  for (unsigned char c : line) {
+    if (c == '-')
+      sawDash = true;
+    else if (c != '|' && c != ':' && std::isspace(c) == 0)
+      return false;
+  }
+  return sawDash;
+}
+
+int FindMarkdownColumn(const std::vector<std::string> &headers,
+                       std::string_view query) {
+  for (int i = 0; i < static_cast<int>(headers.size()); ++i) {
+    const std::string header = LowerAscii(MakeAsciiUiText(headers[i]));
+    if (header == query || header.find(query) != std::string::npos)
+      return i;
+  }
+  return -1;
+}
+
+enum class FeatureRoute {
+  SceneObjects,
+  Environment,
+  Rendering,
+  World,
+  Vfx,
+  Camera,
+  Overworld,
+  Boss,
+  Observed,
+  Legacy,
+  Unmapped,
+};
+
+FeatureRoute RouteForShowcaseId(std::string_view id) {
+  if (id == "fog" || id == "wireframe" || id == "camera_auto_move" ||
+      id == "auto_demo")
+    return FeatureRoute::Legacy;
+
+  if (id == "ground" || id == "environment" ||
+      id == "material_gallery" || id == "point_lights" || id == "pbr" ||
+      id == "normal_mapping" || id == "emissive" ||
+      id == "entity_system" || id == "grid")
+    return FeatureRoute::SceneObjects;
+
+  if (id == "rain" || id == "time_of_day" ||
+      id == "directional_light")
+    return FeatureRoute::Environment;
+
+  if (id == "water" || id == "water_waves" || id == "collision_debug")
+    return FeatureRoute::World;
+
+  if (id == "shadows" || id == "ssao" || id == "bloom" ||
+      id == "fxaa")
+    return FeatureRoute::Rendering;
+
+  if (id == "ssr" || id == "procedural_material" ||
+      id == "uv_animation")
+    return FeatureRoute::Overworld;
+  if (id == "deferred" || id == "hdr" || id == "tonemap" ||
+      id == "gpu_instancing" || id == "collision")
+    return FeatureRoute::Observed;
+
+  if (id == "animation" || id == "particles")
+    return FeatureRoute::Vfx;
+  if (id == "camera_orbit")
+    return FeatureRoute::Camera;
+  if (id == "boss" || id == "meteor" || id == "laser" ||
+      id == "sanctuary" || id == "mirror_charges" ||
+      id == "phone_hologram" || id == "counter_vfx" || id == "phase2")
+    return FeatureRoute::Boss;
+  return FeatureRoute::Unmapped;
+}
+
+enum class InventoryCoverage {
+  Active,
+  Available,
+  Experimental,
+  Unavailable,
+  Legacy,
+};
+
+InventoryCoverage CoverageForInventory(const FeatureInventoryEntry &entry) {
+  const std::string status = LowerAscii(entry.status);
+  const std::string section = LowerAscii(entry.section);
+  if (section.find("standalone 3d feature lab registry") !=
+      std::string::npos)
+    return InventoryCoverage::Legacy;
+  if (status.find("not implemented") != std::string::npos)
+    return InventoryCoverage::Unavailable;
+  if (status.find("present but inactive") != std::string::npos ||
+      status.find("experimental") != std::string::npos)
+    return InventoryCoverage::Experimental;
+  if (status.find("implemented") != std::string::npos ||
+      status.find("dev-only") != std::string::npos)
+    return InventoryCoverage::Available;
+  return InventoryCoverage::Active;
+}
+
+} // namespace
 
 // Names matching MeshSourceType enum order.
 static const char *kMeshSourceTypeNames[] = {
@@ -72,26 +352,175 @@ void SceneEditor::DrawUI(Scene &scene, DxContext &dx,
                           const DirectX::XMMATRIX &proj,
                           bool *iblEnabled,
                           StageData *editStage,
-                          Camera *cam) {
+                          Camera *cam,
+                          EditorRuntimeBindings *runtime,
+                          bool scenePlaying) {
+  if (!m_featureInventoryLoaded)
+    LoadFeatureInventory();
+
   // Process hotkeys first (undo/redo/duplicate/gizmo mode).
-  ProcessHotkeys(scene, dx);
+  if (!scenePlaying)
+    ProcessHotkeys(scene, dx);
 
-  // Gizmo update (before panels so gizmo can consume mouse).
-  m_gizmo.Update(scene, m_selectedEntity, view, proj, m_history);
+  const EditorWorkspaceLayout layout = BuildEditorWorkspaceLayout();
+  m_viewportRect = layout.viewport;
+  m_gizmo.SetViewportRect(m_viewportRect.x, m_viewportRect.y,
+                          m_viewportRect.width, m_viewportRect.height);
 
-  // Draw panels.
+  // Draw the fixed editor workspace around the live DX12 Scene View.
   DrawMenuBar(scene, dx);
+  DrawSceneViewport(dx);
+
+  // Gizmo update uses the exact ImGui image rectangle shown above.
+  if (!scenePlaying)
+    m_gizmo.Update(scene, m_selectedEntity, view, proj, m_history);
+
+  DrawWorkspaceToolbar(scene, runtime, scenePlaying);
   DrawEntityList(scene, dx);
   DrawInspector(scene, dx);
-  DrawLightingPanel(scene, iblEnabled);
-  DrawShadowPanel(scene, dx);
-  DrawPostProcessPanel(scene, dx);
-  if (cam)
-    DrawCameraPanel(scene, *cam);
+  DrawRuntimeSystemsPanel(scene, dx, cam, iblEnabled, runtime);
   DrawAssetBrowser(scene, dx);
+  DrawConsolePanel(scene);
   if (m_gridEditorOpen && editStage)
     DrawGridEditorPanel(*editStage);
-  m_gizmo.DrawToolbar();
+  DrawWorkspaceSplitters();
+}
+
+void SceneEditor::LoadFeatureInventory() {
+  m_featureInventory.clear();
+  m_featureShowcase.clear();
+  m_featureInventoryLoaded = true;
+
+  std::error_code ec;
+  std::filesystem::path searchRoot = std::filesystem::current_path(ec);
+  std::filesystem::path featurePath;
+  for (int depth = 0; !searchRoot.empty() && depth < 8; ++depth) {
+    const std::filesystem::path candidate = searchRoot / "feature.md";
+    if (std::filesystem::is_regular_file(candidate, ec)) {
+      featurePath = candidate;
+      break;
+    }
+    const std::filesystem::path parent = searchRoot.parent_path();
+    if (parent == searchRoot)
+      break;
+    searchRoot = parent;
+  }
+
+  if (featurePath.empty()) {
+    m_featureInventoryMessage =
+        "feature.md was not found in the project root or its parents.";
+    return;
+  }
+
+  std::ifstream input(featurePath, std::ios::binary);
+  if (!input) {
+    m_featureInventoryMessage = "feature.md could not be opened.";
+    return;
+  }
+
+  std::vector<std::string> lines;
+  std::string line;
+  while (std::getline(input, line)) {
+    if (!line.empty() && line.back() == '\r')
+      line.pop_back();
+    lines.push_back(std::move(line));
+  }
+
+  std::string section;
+  for (size_t i = 0; i < lines.size(); ++i) {
+    if (lines[i].rfind("## ", 0) == 0) {
+      section = TrimMarkdownText(lines[i].substr(3));
+      continue;
+    }
+    if (lines[i].empty() || lines[i].front() != '|' ||
+        i + 1 >= lines.size() || !IsMarkdownSeparatorRow(lines[i + 1])) {
+      continue;
+    }
+
+    const std::vector<std::string> headers = SplitMarkdownRow(lines[i]);
+    const int categoryColumn = FindMarkdownColumn(headers, "category");
+    const int statusColumn = FindMarkdownColumn(headers, "status");
+    int featureColumn = FindMarkdownColumn(headers, "feature");
+    // Gameplay VFX uses "VFX / Emitter" instead of "Feature".
+    if (featureColumn < 0 && statusColumn >= 0)
+      featureColumn = FindMarkdownColumn(headers, "vfx");
+    if (featureColumn < 0)
+      continue;
+
+    const int sourceColumn = FindMarkdownColumn(headers, "source");
+    const int idColumn = FindMarkdownColumn(headers, "lab id");
+    const int defaultColumn = FindMarkdownColumn(headers, "default");
+    const bool showcaseTable =
+        section.find("Standalone 3D Feature Lab Registry") !=
+        std::string::npos;
+
+    size_t row = i + 2;
+    for (; row < lines.size() && !lines[row].empty() &&
+           lines[row].front() == '|';
+         ++row) {
+      const std::vector<std::string> cells = SplitMarkdownRow(lines[row]);
+      const auto cell = [&cells](int index) -> std::string {
+        if (index < 0 || index >= static_cast<int>(cells.size()))
+          return {};
+        return cells[index];
+      };
+
+      if (showcaseTable) {
+        FeatureShowcaseEntry entry;
+        entry.id = MakeAsciiUiText(cell(idColumn));
+        entry.category = MakeAsciiUiText(cell(categoryColumn));
+        entry.feature = MakeAsciiUiText(cell(featureColumn));
+        entry.defaultValue = MakeAsciiUiText(cell(defaultColumn));
+        const int detailColumn =
+            sourceColumn > 0 ? sourceColumn - 1
+                             : static_cast<int>(cells.size()) - 1;
+        entry.detail = MakeAsciiUiText(cell(detailColumn));
+        if (!entry.id.empty() && !entry.feature.empty())
+          m_featureShowcase.push_back(std::move(entry));
+        continue;
+      }
+
+      FeatureInventoryEntry entry;
+      entry.section = MakeAsciiUiText(section);
+      entry.category = MakeAsciiUiText(cell(categoryColumn));
+      entry.feature = MakeAsciiUiText(cell(featureColumn));
+      entry.status = MakeAsciiUiText(cell(statusColumn));
+      entry.source = MakeAsciiUiText(cell(sourceColumn));
+      const int detailColumn =
+          sourceColumn > 0 ? sourceColumn - 1
+                           : static_cast<int>(cells.size()) - 1;
+      entry.detail = MakeAsciiUiText(cell(detailColumn));
+      if (!entry.feature.empty())
+        m_featureInventory.push_back(std::move(entry));
+    }
+    i = row > 0 ? row - 1 : row;
+  }
+
+  size_t unmapped = 0;
+  size_t duplicateIds = 0;
+  for (size_t i = 0; i < m_featureShowcase.size(); ++i) {
+    if (RouteForShowcaseId(m_featureShowcase[i].id) ==
+        FeatureRoute::Unmapped) {
+      ++unmapped;
+    }
+    for (size_t previous = 0; previous < i; ++previous) {
+      if (m_featureShowcase[previous].id == m_featureShowcase[i].id) {
+        ++duplicateIds;
+        break;
+      }
+    }
+  }
+
+  std::ostringstream message;
+  message << "Loaded " << m_featureInventory.size()
+          << " inventory rows and " << m_featureShowcase.size()
+          << " showcase routes from feature.md.";
+  if (m_featureShowcase.size() != 42 || unmapped != 0 || duplicateIds != 0) {
+    message << " Contract warning: expected 42 unique mapped Lab IDs; "
+            << unmapped << " unmapped and " << duplicateIds
+            << " duplicate IDs found.";
+  }
+  m_featureInventoryMessage = message.str();
 }
 
 // ---- Hotkeys ----
@@ -103,16 +532,19 @@ void SceneEditor::ProcessHotkeys(Scene &scene, DxContext &dx) {
     m_gizmo.ProcessHotkeys();
   }
 
-  // Ctrl shortcuts always active in editor.
+  const bool shortcutAllowed = !ImGui::GetIO().WantTextInput &&
+                               !ImGui::IsAnyItemActive();
+
+  // Never mutate the scene while the user is editing a text or numeric field.
   bool ctrl = ImGui::GetIO().KeyCtrl;
 
-  if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
+  if (shortcutAllowed && ctrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) {
     if (m_gridEditorOpen && m_gridHistory.CanUndo())
       m_gridHistory.Undo();
     else
       m_history.Undo();
   }
-  if (ctrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
+  if (shortcutAllowed && ctrl && ImGui::IsKeyPressed(ImGuiKey_Y, false)) {
     if (m_gridEditorOpen && m_gridHistory.CanRedo())
       m_gridHistory.Redo();
     else
@@ -120,7 +552,7 @@ void SceneEditor::ProcessHotkeys(Scene &scene, DxContext &dx) {
   }
 
   // Ctrl+D — duplicate selected entity.
-  if (ctrl && ImGui::IsKeyPressed(ImGuiKey_D, false)) {
+  if (shortcutAllowed && ctrl && ImGui::IsKeyPressed(ImGuiKey_D, false)) {
     if (m_selectedEntity != kInvalidEntityId) {
       auto cmd =
           std::make_unique<DuplicateEntityCommand>(scene, dx, m_selectedEntity);
@@ -133,7 +565,7 @@ void SceneEditor::ProcessHotkeys(Scene &scene, DxContext &dx) {
   }
 
   // Delete key — delete selected entity.
-  if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) &&
+  if (shortcutAllowed && ImGui::IsKeyPressed(ImGuiKey_Delete, false) &&
       !ImGui::GetIO().WantCaptureKeyboard) {
     if (m_selectedEntity != kInvalidEntityId) {
       auto cmd = std::make_unique<DeleteEntityCommand>(scene, dx,
@@ -202,6 +634,27 @@ void SceneEditor::DrawMenuBar(Scene &scene, DxContext &dx) {
       ImGui::EndMenu();
     }
 
+    if (ImGui::BeginMenu("Window")) {
+      if (ImGui::MenuItem("Environment"))
+        m_requestedSystemsTab = 1;
+      if (ImGui::MenuItem("Rendering"))
+        m_requestedSystemsTab = 2;
+      if (ImGui::MenuItem("World"))
+        m_requestedSystemsTab = 3;
+      if (ImGui::MenuItem("VFX"))
+        m_requestedSystemsTab = 4;
+      if (ImGui::MenuItem("Camera"))
+        m_requestedSystemsTab = 5;
+      if (ImGui::MenuItem("Feature Coverage"))
+        m_requestedSystemsTab = 6;
+      ImGui::Separator();
+      if (ImGui::MenuItem("Camera Navigation", nullptr,
+                          m_cameraNavigationEnabled)) {
+        m_cameraNavigationEnabled = !m_cameraNavigationEnabled;
+      }
+      ImGui::EndMenu();
+    }
+
     // Play Scene button (Phase 8).
     ImGui::Separator();
     if (ImGui::MenuItem("Play Scene", "F5"))
@@ -211,12 +664,203 @@ void SceneEditor::DrawMenuBar(Scene &scene, DxContext &dx) {
   }
 }
 
+// ---- Scene View and adjustable workspace ----
+
+void SceneEditor::DrawSceneViewport(DxContext &dx) {
+  const EditorWorkspaceLayout layout = BuildEditorWorkspaceLayout();
+  ImGui::SetNextWindowPos(ImVec2(layout.viewport.x, layout.viewport.y),
+                          ImGuiCond_Always);
+  ImGui::SetNextWindowSize(
+      ImVec2(layout.viewport.width, layout.viewport.height), ImGuiCond_Always);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  ImGui::Begin("##SceneViewport", nullptr, kSceneViewportFlags);
+  if (dx.HasEditorViewportTexture()) {
+    ImGui::Image(static_cast<ImTextureID>(dx.EditorViewportGpu().ptr),
+                 ImVec2(layout.viewport.width, layout.viewport.height));
+  } else {
+    ImGui::TextDisabled("Scene View render target is not ready.");
+  }
+  ImGui::End();
+  ImGui::PopStyleVar(2);
+
+  ImDrawList *draw = ImGui::GetForegroundDrawList();
+  draw->AddRect(ImVec2(layout.viewport.x, layout.viewport.y),
+                ImVec2(layout.viewport.x + layout.viewport.width,
+                       layout.viewport.y + layout.viewport.height),
+                IM_COL32(54, 62, 74, 255));
+}
+
+void SceneEditor::DrawWorkspaceSplitters() {
+  EditorWorkspaceLayout layout = BuildEditorWorkspaceLayout();
+  ImGuiIO &io = ImGui::GetIO();
+  const ImVec2 display = io.DisplaySize;
+  const ImVec2 mouse = io.MousePos;
+  constexpr float grabRadius = 5.0f;
+
+  const float leftX = layout.leftWidth;
+  const float rightX = display.x - layout.rightWidth;
+  const float bottomY = display.y - layout.bottomHeight;
+  const float sceneObjectsY = layout.menuHeight + layout.sceneObjectsHeight;
+
+  const bool hoverLeft =
+      std::fabs(mouse.x - leftX) <= grabRadius &&
+      mouse.y >= layout.menuHeight;
+  const bool hoverRight =
+      std::fabs(mouse.x - rightX) <= grabRadius &&
+      mouse.y >= layout.menuHeight;
+  const bool hoverBottom =
+      std::fabs(mouse.y - bottomY) <= grabRadius && mouse.x >= leftX &&
+      mouse.x <= rightX;
+  const bool hoverSceneObjects =
+      std::fabs(mouse.y - sceneObjectsY) <= grabRadius && mouse.x <= leftX;
+
+  if (g_editorWorkspace.activeSplitter == 0 &&
+      ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (hoverLeft)
+      g_editorWorkspace.activeSplitter = 1;
+    else if (hoverRight)
+      g_editorWorkspace.activeSplitter = 2;
+    else if (hoverBottom)
+      g_editorWorkspace.activeSplitter = 3;
+    else if (hoverSceneObjects)
+      g_editorWorkspace.activeSplitter = 4;
+  }
+
+  if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
+    g_editorWorkspace.activeSplitter = 0;
+
+  switch (g_editorWorkspace.activeSplitter) {
+  case 1:
+    g_editorWorkspace.leftWidth = mouse.x;
+    break;
+  case 2:
+    g_editorWorkspace.rightWidth = display.x - mouse.x;
+    break;
+  case 3:
+    g_editorWorkspace.bottomHeight = display.y - mouse.y;
+    break;
+  case 4: {
+    const float contentHeight =
+        std::max(1.0f, display.y - layout.menuHeight);
+    g_editorWorkspace.sceneObjectsRatio =
+        std::clamp((mouse.y - layout.menuHeight) / contentHeight, 0.20f,
+                   0.80f);
+  } break;
+  default:
+    break;
+  }
+
+  const bool verticalActive = g_editorWorkspace.activeSplitter == 1 ||
+                              g_editorWorkspace.activeSplitter == 2;
+  const bool horizontalActive = g_editorWorkspace.activeSplitter == 3 ||
+                                g_editorWorkspace.activeSplitter == 4;
+  if (hoverLeft || hoverRight || verticalActive)
+    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+  else if (hoverBottom || hoverSceneObjects || horizontalActive)
+    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+
+  ImDrawList *draw = ImGui::GetForegroundDrawList();
+  const ImU32 normal = IM_COL32(55, 63, 75, 255);
+  const ImU32 hot = IM_COL32(54, 147, 235, 255);
+  draw->AddLine(ImVec2(leftX, layout.menuHeight), ImVec2(leftX, display.y),
+                (hoverLeft || g_editorWorkspace.activeSplitter == 1) ? hot
+                                                                     : normal,
+                2.0f);
+  draw->AddLine(ImVec2(rightX, layout.menuHeight), ImVec2(rightX, display.y),
+                (hoverRight || g_editorWorkspace.activeSplitter == 2) ? hot
+                                                                       : normal,
+                2.0f);
+  draw->AddLine(ImVec2(leftX, bottomY), ImVec2(rightX, bottomY),
+                (hoverBottom || g_editorWorkspace.activeSplitter == 3) ? hot
+                                                                        : normal,
+                2.0f);
+  draw->AddLine(ImVec2(0.0f, sceneObjectsY), ImVec2(leftX, sceneObjectsY),
+                (hoverSceneObjects || g_editorWorkspace.activeSplitter == 4)
+                    ? hot
+                    : normal,
+                2.0f);
+}
+
+// ---- Unity-style workspace toolbar ----
+
+void SceneEditor::DrawWorkspaceToolbar(Scene &scene,
+                                       EditorRuntimeBindings *runtime,
+                                       bool scenePlaying) {
+  const EditorWorkspaceLayout layout = BuildEditorWorkspaceLayout();
+  ImGui::SetNextWindowPos(
+      ImVec2(layout.leftWidth, layout.menuHeight), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(
+      ImVec2(layout.viewport.width, layout.toolbarHeight), ImGuiCond_Always);
+  ImGui::Begin("##WorkspaceToolbar", nullptr, kToolbarFlags);
+
+  if (scenePlaying)
+    ImGui::PushStyleColor(ImGuiCol_Button,
+                          ImVec4(0.72f, 0.24f, 0.22f, 1.0f));
+  if (ImGui::Button(scenePlaying ? "Stop  [F5]" : "Play  [F5]"))
+    m_scenePlayRequested = true;
+  if (scenePlaying)
+    ImGui::PopStyleColor();
+  ImGui::SameLine();
+
+  const auto drawModeButton = [&](const char *label,
+                                  GizmoController::Operation operation) {
+    const bool active = m_gizmo.GetOperation() == operation;
+    if (active) {
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.46f, 0.78f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                            ImVec4(0.25f, 0.56f, 0.90f, 1.0f));
+    }
+    if (ImGui::Button(label))
+      m_gizmo.SetOperation(operation);
+    if (active)
+      ImGui::PopStyleColor(2);
+    ImGui::SameLine();
+  };
+
+  drawModeButton("Move [W]", GizmoController::Operation::Translate);
+  drawModeButton("Rotate [E]", GizmoController::Operation::Rotate);
+  drawModeButton("Scale [R]", GizmoController::Operation::Scale);
+
+  const bool localSpace = m_gizmo.GetSpace() == GizmoController::Space::Local;
+  if (ImGui::Button(localSpace ? "Local" : "World")) {
+    m_gizmo.SetSpace(localSpace ? GizmoController::Space::World
+                                : GizmoController::Space::Local);
+  }
+  ImGui::SameLine();
+  ImGui::Checkbox("Snap", &m_gizmo.snapEnabled);
+  ImGui::SameLine();
+  ImGui::TextDisabled("Scene View | %zu objects", scene.Entities().size());
+
+  if (!scenePlaying && runtime) {
+    if (runtime->playTitle) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Run Title"))
+        runtime->playTitle();
+    }
+    if (runtime->playOverworld) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Run Overworld"))
+        runtime->playOverworld();
+    }
+    if (runtime->playBossArena) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Run Boss"))
+        runtime->playBossArena();
+    }
+  }
+
+  ImGui::End();
+}
+
 // ---- Entity List Panel ----
 
 void SceneEditor::DrawEntityList(Scene &scene, DxContext &dx) {
-  ImGui::SetNextWindowPos(ImVec2(10, 30), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(220, 400), ImGuiCond_FirstUseEver);
-  ImGui::Begin("Entities");
+  const EditorWorkspaceLayout layout = BuildEditorWorkspaceLayout();
+  ImGui::SetNextWindowPos(ImVec2(0.0f, layout.menuHeight), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(
+      ImVec2(layout.leftWidth, layout.sceneObjectsHeight), ImGuiCond_Always);
+  ImGui::Begin("Scene Objects", nullptr, kFixedPanelFlags);
 
   // Helper lambda to create entity via command.
   auto createEntity = [&](const char *name, MeshSourceType type) {
@@ -309,9 +953,15 @@ void SceneEditor::DrawEntityList(Scene &scene, DxContext &dx) {
 // ---- Inspector Panel ----
 
 void SceneEditor::DrawInspector(Scene &scene, DxContext &dx) {
-  ImGui::SetNextWindowPos(ImVec2(240, 30), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(320, 500), ImGuiCond_FirstUseEver);
-  ImGui::Begin("Inspector");
+  const EditorWorkspaceLayout layout = BuildEditorWorkspaceLayout();
+  const ImVec2 display = ImGui::GetIO().DisplaySize;
+  ImGui::SetNextWindowPos(
+      ImVec2(display.x - layout.rightWidth, layout.menuHeight),
+      ImGuiCond_Always);
+  ImGui::SetNextWindowSize(
+      ImVec2(layout.rightWidth, display.y - layout.menuHeight),
+      ImGuiCond_Always);
+  ImGui::Begin("Inspector", nullptr, kFixedPanelFlags);
 
   Entity *e = scene.FindEntity(m_selectedEntity);
   if (!e) {
@@ -1007,6 +1657,745 @@ void SceneEditor::DrawPostProcessPanel(Scene &scene, DxContext &dx) {
   ImGui::End();
 }
 
+// ---- Integrated engine systems panel ----
+
+void SceneEditor::DrawRuntimeSystemsPanel(Scene &scene, DxContext &dx,
+                                          Camera *cam, bool *iblEnabled,
+                                          EditorRuntimeBindings *runtime) {
+  const EditorWorkspaceLayout layout = BuildEditorWorkspaceLayout();
+  const ImVec2 display = ImGui::GetIO().DisplaySize;
+  const float panelY = layout.menuHeight + layout.sceneObjectsHeight;
+  ImGui::SetNextWindowPos(ImVec2(0.0f, panelY), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(
+      ImVec2(layout.leftWidth, std::max(1.0f, display.y - panelY)),
+      ImGuiCond_Always);
+  ImGui::Begin("Systems", nullptr, kFixedPanelFlags);
+
+  if (ImGui::BeginTabBar("##EngineSystems",
+                         ImGuiTabBarFlags_FittingPolicyScroll)) {
+    const auto beginSystemsTab = [&](const char *label, int tabIndex) {
+      const ImGuiTabItemFlags flags =
+          m_requestedSystemsTab == tabIndex
+              ? ImGuiTabItemFlags_SetSelected
+              : ImGuiTabItemFlags_None;
+      const bool open = ImGui::BeginTabItem(label, nullptr, flags);
+      if (open && m_requestedSystemsTab == tabIndex)
+        m_requestedSystemsTab = 0;
+      return open;
+    };
+
+    if (beginSystemsTab("Environment", 1)) {
+      auto &ls = scene.LightSettings();
+      const auto trackLightEdit = [&]() {
+        if (ImGui::IsItemActivated() && !m_lightDragActive) {
+          m_lightDragStart = ls;
+          m_lightDragActive = true;
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && m_lightDragActive) {
+          m_history.PushWithoutExecute(std::make_unique<LightSettingsCommand>(
+              scene, m_lightDragStart, ls));
+          m_lightDragActive = false;
+        }
+      };
+
+      if (ImGui::CollapsingHeader("Sun",
+                                  ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat3("Direction", &ls.lightDir.x, -1.0f, 1.0f);
+        trackLightEdit();
+        ImGui::DragFloat("Intensity", &ls.lightIntensity, 0.05f, 0.0f,
+                         50.0f, "%.2f");
+        trackLightEdit();
+        ImGui::ColorEdit3("Color", &ls.lightColor.x);
+        trackLightEdit();
+      }
+
+      if (ImGui::CollapsingHeader("Image Based Lighting",
+                                  ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (iblEnabled)
+          ImGui::Checkbox("Enabled##IBL", iblEnabled);
+        ImGui::SliderFloat("Intensity##IBL", &ls.iblIntensity, 0.0f, 5.0f,
+                           "%.2f");
+        trackLightEdit();
+      }
+
+      if (runtime && runtime->skyExposure)
+        ImGui::SliderFloat("Sky Exposure", runtime->skyExposure, 0.01f, 8.0f,
+                           "%.2f", ImGuiSliderFlags_Logarithmic);
+
+      if (ImGui::CollapsingHeader("Weather and Time",
+                                  ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (runtime && runtime->timeOfDayHours) {
+          ImGui::SliderFloat("Time of Day", runtime->timeOfDayHours, 0.0f,
+                             24.0f, "%.2f h");
+          if (runtime->automaticTime)
+            ImGui::Checkbox("Automatic Time", runtime->automaticTime);
+          if (runtime->hoursPerSecond)
+            ImGui::DragFloat("Hours / Second", runtime->hoursPerSecond,
+                             0.01f, 0.0f, 24.0f, "%.2f");
+          if (runtime->rainEnabled)
+            ImGui::Checkbox("Rain", runtime->rainEnabled);
+        } else {
+          ImGui::TextDisabled("Start the connected game runtime to edit time and rain.");
+        }
+      }
+      ImGui::EndTabItem();
+    }
+
+    if (beginSystemsTab("Rendering", 2)) {
+      auto &ss = scene.ShadowSettings();
+      auto &pp = scene.PostProcessSettings();
+      const auto trackShadowEdit = [&]() {
+        if (ImGui::IsItemActivated() && !m_shadowDragActive) {
+          m_shadowDragStart = ss;
+          m_shadowDragActive = true;
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && m_shadowDragActive) {
+          m_history.PushWithoutExecute(
+              std::make_unique<ShadowSettingsCommand>(scene,
+                                                       m_shadowDragStart, ss));
+          m_shadowDragActive = false;
+        }
+      };
+      const auto trackPostEdit = [&]() {
+        if (ImGui::IsItemActivated() && !m_ppDragActive) {
+          m_ppDragStart = pp;
+          m_ppDragActive = true;
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && m_ppDragActive) {
+          m_history.PushWithoutExecute(
+              std::make_unique<PostProcessSettingsCommand>(
+                  scene, m_ppDragStart, pp));
+          m_ppDragActive = false;
+        }
+      };
+      const auto shadowCheckbox = [&](const char *label, bool *value) {
+        const SceneShadowSettings before = ss;
+        if (ImGui::Checkbox(label, value)) {
+          m_history.PushWithoutExecute(std::make_unique<ShadowSettingsCommand>(
+              scene, before, ss));
+          return true;
+        }
+        return false;
+      };
+      const auto postCheckbox = [&](const char *label, bool *value) {
+        const ScenePostProcessSettings before = pp;
+        if (ImGui::Checkbox(label, value)) {
+          m_history.PushWithoutExecute(
+              std::make_unique<PostProcessSettingsCommand>(scene, before, pp));
+          return true;
+        }
+        return false;
+      };
+
+      if (ImGui::CollapsingHeader("Cascaded Shadows",
+                                  ImGuiTreeNodeFlags_DefaultOpen)) {
+        shadowCheckbox("Enabled##Shadows", &ss.shadowsEnabled);
+        ImGui::SliderFloat("Strength##Shadows", &ss.shadowStrength, 0.0f,
+                           1.0f, "%.2f");
+        trackShadowEdit();
+        ImGui::SliderFloat("Bias##Shadows", &ss.shadowBias, 0.00001f, 0.01f,
+                           "%.5f", ImGuiSliderFlags_Logarithmic);
+        trackShadowEdit();
+        ImGui::SliderFloat("Split Lambda", &ss.csmLambda, 0.0f, 1.0f,
+                           "%.2f");
+        trackShadowEdit();
+        ImGui::DragFloat("Max Distance", &ss.csmMaxDistance, 1.0f, 20.0f,
+                         500.0f, "%.0f");
+        trackShadowEdit();
+        shadowCheckbox("Debug Cascades", &ss.csmDebugCascades);
+        ImGui::TextDisabled("%u px x %u cascades", dx.GetShadowMap().Size(),
+                            dx.GetShadowMap().CascadeCount());
+      }
+
+      if (ImGui::CollapsingHeader("SSAO",
+                                  ImGuiTreeNodeFlags_DefaultOpen)) {
+        shadowCheckbox("Enabled##SSAO", &ss.ssaoEnabled);
+        ImGui::SliderFloat("Radius##SSAOIntegrated", &ss.ssaoRadius, 0.05f,
+                           2.0f, "%.2f");
+        trackShadowEdit();
+        ImGui::SliderFloat("Bias##SSAOIntegrated", &ss.ssaoBias, 0.001f,
+                           0.1f, "%.4f", ImGuiSliderFlags_Logarithmic);
+        trackShadowEdit();
+        ImGui::SliderFloat("Power##SSAOIntegrated", &ss.ssaoPower, 0.5f,
+                           8.0f, "%.1f");
+        trackShadowEdit();
+        ImGui::SliderInt("Kernel##SSAO", &ss.ssaoKernelSize, 8, 64);
+        trackShadowEdit();
+        ImGui::SliderFloat("Strength##SSAOIntegrated", &ss.ssaoStrength,
+                           0.0f, 2.0f, "%.2f");
+        trackShadowEdit();
+        ImGui::TextDisabled("AO buffer: %u x %u", dx.SsaoWidth(),
+                            dx.SsaoHeight());
+      }
+
+      if (ImGui::CollapsingHeader("Post Processing",
+                                  ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Exposure", &pp.exposure, 0.01f, 10.0f, "%.2f",
+                           ImGuiSliderFlags_Logarithmic);
+        trackPostEdit();
+        postCheckbox("Bloom", &pp.bloomEnabled);
+        if (pp.bloomEnabled) {
+          ImGui::SliderFloat("Threshold##BloomIntegrated", &pp.bloomThreshold,
+                             0.0f, 5.0f, "%.2f");
+          trackPostEdit();
+          ImGui::SliderFloat("Intensity##BloomIntegrated", &pp.bloomIntensity,
+                             0.0f, 2.0f, "%.2f");
+          trackPostEdit();
+        }
+
+        const bool taaWasEnabled = pp.taaEnabled;
+        const bool taaChanged = postCheckbox("TAA", &pp.taaEnabled);
+        if (taaChanged && pp.taaEnabled && !taaWasEnabled) {
+          dx.ResetTaaFirstFrame();
+        }
+        if (pp.taaEnabled) {
+          ImGui::SliderFloat("Blend##TAA", &pp.taaBlendFactor, 0.01f, 0.5f,
+                             "%.3f");
+          trackPostEdit();
+        }
+        postCheckbox("FXAA", &pp.fxaaEnabled);
+        postCheckbox("Motion Blur", &pp.motionBlurEnabled);
+        if (pp.motionBlurEnabled) {
+          ImGui::SliderFloat("Strength##MotionBlur", &pp.motionBlurStrength,
+                             0.0f, 3.0f, "%.2f");
+          trackPostEdit();
+          ImGui::SliderInt("Samples##MotionBlur", &pp.motionBlurSamples, 4,
+                           32);
+          trackPostEdit();
+        }
+        postCheckbox("Depth of Field", &pp.dofEnabled);
+        if (pp.dofEnabled) {
+          ImGui::DragFloat("Focal Distance", &pp.dofFocalDistance, 0.1f,
+                           0.5f, 100.0f, "%.1f");
+          trackPostEdit();
+          ImGui::DragFloat("Focal Range", &pp.dofFocalRange, 0.1f, 0.5f,
+                           50.0f, "%.1f");
+          trackPostEdit();
+          ImGui::DragFloat("Maximum Blur", &pp.dofMaxBlur, 0.1f, 1.0f,
+                           20.0f, "%.1f");
+          trackPostEdit();
+        }
+      }
+      ImGui::EndTabItem();
+    }
+
+    if (beginSystemsTab("World", 3)) {
+      if (!runtime) {
+        ImGui::TextDisabled("Runtime bindings are not connected.");
+      } else {
+        if (runtime->saveRuntimeSettings &&
+            ImGui::Button("Save Runtime Settings")) {
+          m_runtimeSettingsMessage = runtime->saveRuntimeSettings()
+                                         ? "Runtime settings saved."
+                                         : "Runtime settings save failed.";
+        }
+        if (runtime->loadRuntimeSettings) {
+          ImGui::SameLine();
+          if (ImGui::Button("Load")) {
+            m_runtimeSettingsMessage = runtime->loadRuntimeSettings()
+                                           ? "Runtime settings loaded."
+                                           : "Runtime settings load failed.";
+          }
+        }
+        if (!m_runtimeSettingsMessage.empty())
+          ImGui::TextWrapped("%s", m_runtimeSettingsMessage.c_str());
+        ImGui::Separator();
+
+        if (ImGui::CollapsingHeader("Water Surface",
+                                    ImGuiTreeNodeFlags_DefaultOpen)) {
+          if (runtime->waterWaveHeight)
+            ImGui::SliderFloat("Wave Height", runtime->waterWaveHeight, 0.0f,
+                               4.0f, "%.2f");
+          if (runtime->waterWaveSpeed)
+            ImGui::SliderFloat("Wave Speed", runtime->waterWaveSpeed, 0.0f,
+                               5.0f, "%.2f");
+          if (runtime->waterWaveFrequency)
+            ImGui::SliderFloat("Wave Frequency", runtime->waterWaveFrequency,
+                               0.0f, 5.0f, "%.2f");
+          if (runtime->waterTransparency &&
+              ImGui::SliderFloat("Transparency", runtime->waterTransparency,
+                                 0.0f, 1.0f, "%.2f")) {
+            if (runtime->setWaterTransparency)
+              runtime->setWaterTransparency(*runtime->waterTransparency);
+          }
+          if (runtime->resetWater && ImGui::Button("Reset Water"))
+            runtime->resetWater();
+        }
+
+        if (ImGui::CollapsingHeader("Wet Surfaces and Puddles")) {
+          if (runtime->wetSurfaceStrength)
+            ImGui::SliderFloat("Wet Strength", runtime->wetSurfaceStrength,
+                               0.0f, 2.0f, "%.2f");
+          if (runtime->wetSurfaceDrySeconds)
+            ImGui::DragFloat("Dry Time", runtime->wetSurfaceDrySeconds, 0.1f,
+                             0.0f, 30.0f, "%.1f s");
+          if (runtime->wetSurfaceImpactRadius)
+            ImGui::DragFloat("Impact Radius", runtime->wetSurfaceImpactRadius,
+                             0.1f, 0.0f, 20.0f, "%.1f");
+          if (runtime->wetSurfaceCycleSeconds)
+            ImGui::DragFloat("Cycle", runtime->wetSurfaceCycleSeconds, 0.1f,
+                             0.0f, 30.0f, "%.1f s");
+          if (runtime->puddleStrength)
+            ImGui::SliderFloat("Puddle Strength", runtime->puddleStrength,
+                               0.0f, 2.0f, "%.2f");
+          if (runtime->puddleBuildSeconds)
+            ImGui::DragFloat("Build Time", runtime->puddleBuildSeconds, 0.1f,
+                             0.0f, 30.0f, "%.1f s");
+          if (runtime->puddleRadius)
+            ImGui::DragFloat("Puddle Radius", runtime->puddleRadius, 0.1f,
+                             0.0f, 20.0f, "%.1f");
+          if (runtime->puddleClarity)
+            ImGui::SliderFloat("Clarity", runtime->puddleClarity, 0.0f, 1.0f,
+                               "%.2f");
+          if (runtime->puddleTint)
+            ImGui::SliderFloat("Tint", runtime->puddleTint, 0.0f, 1.0f,
+                               "%.2f");
+          if (runtime->puddleRippleStrength)
+            ImGui::SliderFloat("Ripple", runtime->puddleRippleStrength, 0.0f,
+                               2.0f, "%.2f");
+        }
+
+        if (ImGui::CollapsingHeader("Background Forest")) {
+          if (runtime->forestEnabled)
+            ImGui::Checkbox("Enabled##Forest", runtime->forestEnabled);
+          if (runtime->forestSingleCluster)
+            ImGui::Checkbox("Single Cluster", runtime->forestSingleCluster);
+          if (runtime->forestDensity)
+            ImGui::SliderInt("Density", runtime->forestDensity, 0, 3);
+          if (runtime->forestScale)
+            ImGui::SliderFloat("Scale##Forest", runtime->forestScale, 0.05f,
+                               2.0f, "%.2f");
+          if (runtime->forestDistance)
+            ImGui::DragFloat("Distance##Forest", runtime->forestDistance,
+                             0.5f, 5.0f, 150.0f, "%.1f");
+          if (runtime->forestSpacing)
+            ImGui::DragFloat("Spacing##Forest", runtime->forestSpacing, 0.05f,
+                             0.1f, 8.0f, "%.2f");
+          if (runtime->resetForest && ImGui::Button("Reset Forest"))
+            runtime->resetForest();
+          if (runtime->reloadPlacements) {
+            ImGui::SameLine();
+            if (ImGui::Button("Reload World"))
+              runtime->reloadPlacements();
+          }
+        }
+
+        if (ImGui::CollapsingHeader("Collision Debug")) {
+          if (runtime->collisionDebug)
+            ImGui::Checkbox("Collider Wireframes", runtime->collisionDebug);
+          if (runtime->modelMeshCollision)
+            ImGui::Checkbox("Model Mesh Collision", runtime->modelMeshCollision);
+          if (runtime->modelCollisionDebug)
+            ImGui::Checkbox("Model Collision Meshes",
+                            runtime->modelCollisionDebug);
+          if (runtime->gameFreeCamera)
+            ImGui::Checkbox("Game Free Camera", runtime->gameFreeCamera);
+        }
+      }
+      ImGui::EndTabItem();
+    }
+
+    if (beginSystemsTab("VFX", 4)) {
+      if (runtime) {
+        if (runtime->particlesEnabled)
+          ImGui::Checkbox("Particle System", runtime->particlesEnabled);
+        if (runtime->fireEnabled)
+          ImGui::Checkbox("Fire Emitter", runtime->fireEnabled);
+        if (runtime->smokeEnabled)
+          ImGui::Checkbox("Smoke Emitter", runtime->smokeEnabled);
+        if (runtime->sparkEnabled)
+          ImGui::Checkbox("Spark Emitter", runtime->sparkEnabled);
+        if (runtime->particleDepth)
+          ImGui::DragFloat("Particle Depth", runtime->particleDepth, 0.1f,
+                           -100.0f, 100.0f, "%.1f");
+        ImGui::Separator();
+        ImGui::TextWrapped(
+            "Gameplay-only boss and puzzle emitters are driven by the real "
+            "Game View state machine.");
+        if (runtime->drawAnimationControls &&
+            ImGui::CollapsingHeader("Player Animation Preview",
+                                    ImGuiTreeNodeFlags_DefaultOpen)) {
+          runtime->drawAnimationControls();
+        }
+      } else {
+        ImGui::TextDisabled("Runtime VFX bindings are not connected.");
+      }
+      ImGui::EndTabItem();
+    }
+
+    if (beginSystemsTab("Camera", 5)) {
+      if (!cam) {
+        ImGui::TextDisabled("No editor camera is connected.");
+      } else {
+        ImGui::Checkbox("Camera Navigation", &m_cameraNavigationEnabled);
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip(
+              "Disable to lock the Scene View camera. Numeric controls and "
+              "presets remain adjustable.");
+        }
+        ImGui::SameLine();
+        ImGui::TextColored(
+            m_cameraNavigationEnabled
+                ? ImVec4(0.35f, 0.9f, 0.45f, 1.0f)
+                : ImVec4(1.0f, 0.62f, 0.25f, 1.0f),
+            m_cameraNavigationEnabled ? "ACTIVE" : "LOCKED");
+        ImGui::Separator();
+
+        int mode = static_cast<int>(cam->Mode());
+        const char *modes[] = {"Free Fly", "Orbit", "Game Top-Down"};
+        if (ImGui::Combo("Mode", &mode, modes, IM_ARRAYSIZE(modes)))
+          cam->SetMode(static_cast<CameraMode>(mode));
+
+        DirectX::XMFLOAT3 position = cam->GetPosition();
+        if (cam->Mode() == CameraMode::FreeFly &&
+            ImGui::DragFloat3("Position", &position.x, 0.1f)) {
+          cam->SetPosition(position.x, position.y, position.z);
+        }
+        if (cam->Mode() == CameraMode::FreeFly) {
+          float yaw = DirectX::XMConvertToDegrees(cam->Yaw());
+          float pitch = DirectX::XMConvertToDegrees(cam->Pitch());
+          if (ImGui::DragFloat("Yaw", &yaw, 0.5f, -180.0f, 180.0f))
+            cam->SetYawPitch(DirectX::XMConvertToRadians(yaw), cam->Pitch());
+          if (ImGui::DragFloat("Pitch", &pitch, 0.5f, -89.0f, 89.0f))
+            cam->SetYawPitch(cam->Yaw(), DirectX::XMConvertToRadians(pitch));
+        } else {
+          ImGui::Text("Position: %.1f, %.1f, %.1f", position.x, position.y,
+                      position.z);
+        }
+
+        if (cam->Mode() == CameraMode::Orbit) {
+          DirectX::XMFLOAT3 target = cam->OrbitTarget();
+          if (ImGui::DragFloat3("Orbit Target", &target.x, 0.1f))
+            cam->SetOrbitTarget(target.x, target.y, target.z);
+          float distance = cam->OrbitDistance();
+          if (ImGui::DragFloat("Orbit Distance", &distance, 0.1f, 0.5f,
+                               500.0f))
+            cam->SetOrbitDistance(distance);
+        }
+
+        float fovDegrees = DirectX::XMConvertToDegrees(cam->FovY());
+        float nearPlane = cam->NearZ();
+        float farPlane = cam->FarZ();
+        bool lensChanged =
+            ImGui::SliderFloat("Field of View", &fovDegrees, 10.0f, 120.0f);
+        lensChanged |= ImGui::DragFloat("Near Plane", &nearPlane, 0.01f,
+                                        0.001f, 10.0f, "%.3f");
+        lensChanged |= ImGui::DragFloat("Far Plane", &farPlane, 1.0f, 10.0f,
+                                        10000.0f, "%.0f");
+        if (lensChanged) {
+          cam->SetLens(DirectX::XMConvertToRadians(fovDegrees), cam->Aspect(),
+                       nearPlane, farPlane);
+        }
+
+        float moveSpeed = cam->MoveSpeed();
+        float lookSpeed = cam->LookSpeed() * 1000.0f;
+        if (ImGui::DragFloat("Move Speed", &moveSpeed, 0.1f, 0.1f, 100.0f))
+          cam->SetMoveSpeed(moveSpeed);
+        if (ImGui::DragFloat("Look Speed", &lookSpeed, 0.1f, 0.1f, 20.0f))
+          cam->SetLookSpeed(lookSpeed * 0.001f);
+
+        ImGui::Separator();
+        ImGui::InputText("Preset Name", m_presetName, sizeof(m_presetName));
+        if (ImGui::Button("Save Camera Preset"))
+          scene.CameraPresets().push_back(cam->MakePreset(m_presetName));
+        for (int i = 0;
+             i < static_cast<int>(scene.CameraPresets().size()); ++i) {
+          ImGui::PushID(i);
+          if (ImGui::SmallButton("Load"))
+            cam->ApplyPreset(scene.CameraPresets()[i]);
+          ImGui::SameLine();
+          ImGui::TextUnformatted(scene.CameraPresets()[i].name.c_str());
+          ImGui::PopID();
+        }
+      }
+      ImGui::EndTabItem();
+    }
+
+    if (beginSystemsTab("Features", 6)) {
+      DrawFeatureCoveragePanel(scene, iblEnabled, runtime);
+      ImGui::EndTabItem();
+    }
+
+    ImGui::EndTabBar();
+  }
+
+  ImGui::End();
+}
+
+void SceneEditor::DrawFeatureCoveragePanel(
+    Scene &scene, bool *iblEnabled, EditorRuntimeBindings *runtime) {
+  if (!m_featureInventoryLoaded)
+    LoadFeatureInventory();
+
+  if (ImGui::Button("Reload feature.md"))
+    LoadFeatureInventory();
+  ImGui::SameLine();
+  ImGui::Text("%zu + %zu", m_featureInventory.size(),
+              m_featureShowcase.size());
+  if (!m_featureInventoryMessage.empty()) {
+    const bool warning =
+        m_featureInventoryMessage.find("warning") != std::string::npos ||
+        m_featureInventory.empty() || m_featureShowcase.empty();
+    ImGui::TextColored(warning ? ImVec4(1.0f, 0.40f, 0.30f, 1.0f)
+                               : ImVec4(0.35f, 0.90f, 0.45f, 1.0f),
+                       "%s", m_featureInventoryMessage.c_str());
+  }
+
+  if (runtime &&
+      (runtime->playTitle || runtime->playOverworld ||
+       runtime->playBossArena)) {
+    if (runtime->playTitle && ImGui::SmallButton("Run Title"))
+      runtime->playTitle();
+    if (runtime->playOverworld && ImGui::SmallButton("Run Overworld"))
+      runtime->playOverworld();
+    if (runtime->playBossArena) {
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Run Boss"))
+        runtime->playBossArena();
+    }
+    ImGui::TextDisabled("F1 returns to the Editor.");
+  }
+
+  if (ImGui::BeginTabBar("##FeatureCoverageViews",
+                         ImGuiTabBarFlags_FittingPolicyScroll)) {
+    if (ImGui::BeginTabItem("Showcase")) {
+      size_t unmapped = 0;
+      size_t duplicateIds = 0;
+      for (size_t index = 0; index < m_featureShowcase.size(); ++index) {
+        const FeatureShowcaseEntry &entry = m_featureShowcase[index];
+        if (RouteForShowcaseId(entry.id) == FeatureRoute::Unmapped)
+          ++unmapped;
+        for (size_t previous = 0; previous < index; ++previous) {
+          if (m_featureShowcase[previous].id == entry.id) {
+            ++duplicateIds;
+            break;
+          }
+        }
+      }
+      if (m_featureShowcase.size() == 42 && unmapped == 0 &&
+          duplicateIds == 0) {
+        ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.0f),
+                           "42 / 42 feature.md routes mapped");
+      } else {
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.28f, 1.0f),
+                           "%zu routes, %zu unmapped, %zu duplicate",
+                           m_featureShowcase.size(), unmapped, duplicateIds);
+      }
+      ImGui::TextWrapped(
+          "Checkboxes change real runtime state. Open/Run routes lead to "
+          "the real control panel or Game View. Core and Legacy entries are "
+          "never represented by fake switches.");
+      ImGui::Checkbox("Show Legacy IDs", &m_showLegacyFeatures);
+
+      ImGui::BeginChild("##ShowcaseFeatureList", ImVec2(0.0f, 0.0f), true);
+      for (const FeatureShowcaseEntry &entry : m_featureShowcase) {
+        const FeatureRoute route = RouteForShowcaseId(entry.id);
+        if (route == FeatureRoute::Legacy && !m_showLegacyFeatures)
+          continue;
+
+        bool *toggle = nullptr;
+        if (entry.id == "shadows")
+          toggle = &scene.ShadowSettings().shadowsEnabled;
+        else if (entry.id == "ssao")
+          toggle = &scene.ShadowSettings().ssaoEnabled;
+        else if (entry.id == "bloom")
+          toggle = &scene.PostProcessSettings().bloomEnabled;
+        else if (entry.id == "fxaa")
+          toggle = &scene.PostProcessSettings().fxaaEnabled;
+        else if (entry.id == "camera_orbit")
+          toggle = &m_cameraNavigationEnabled;
+        else if (runtime && entry.id == "rain")
+          toggle = runtime->rainEnabled;
+        else if (runtime && entry.id == "time_of_day")
+          toggle = runtime->automaticTime;
+        else if (runtime && entry.id == "particles")
+          toggle = runtime->particlesEnabled;
+        else if (runtime && entry.id == "collision_debug")
+          toggle = runtime->collisionDebug;
+
+        ImGui::PushID(entry.id.c_str());
+        if (toggle) {
+          ImGui::Checkbox("##RuntimeToggle", toggle);
+        } else {
+          switch (route) {
+          case FeatureRoute::SceneObjects:
+            if (ImGui::SmallButton("Scene")) {
+              m_featureInventoryMessage =
+                  "Use the always-visible Scene Objects and Inspector panels "
+                  "to edit or disable this entity/material feature.";
+            }
+            break;
+          case FeatureRoute::Environment:
+            if (ImGui::SmallButton("Open"))
+              m_requestedSystemsTab = 1;
+            break;
+          case FeatureRoute::Rendering:
+            if (ImGui::SmallButton("Open"))
+              m_requestedSystemsTab = 2;
+            break;
+          case FeatureRoute::World:
+            if (ImGui::SmallButton("Open"))
+              m_requestedSystemsTab = 3;
+            break;
+          case FeatureRoute::Vfx:
+            if (ImGui::SmallButton("Open"))
+              m_requestedSystemsTab = 4;
+            break;
+          case FeatureRoute::Camera:
+            if (ImGui::SmallButton("Open"))
+              m_requestedSystemsTab = 5;
+            break;
+          case FeatureRoute::Overworld:
+            if (runtime && runtime->playOverworld) {
+              if (ImGui::SmallButton("Run"))
+                runtime->playOverworld();
+            } else {
+              ImGui::TextDisabled("World");
+            }
+            break;
+          case FeatureRoute::Boss:
+            if (runtime && runtime->playBossArena) {
+              if (ImGui::SmallButton("Run"))
+                runtime->playBossArena();
+            } else {
+              ImGui::TextDisabled("Boss");
+            }
+            break;
+          case FeatureRoute::Observed:
+            if (runtime && runtime->playOverworld) {
+              if (ImGui::SmallButton("View"))
+                runtime->playOverworld();
+            } else {
+              ImGui::TextDisabled("Core");
+            }
+            break;
+          case FeatureRoute::Legacy:
+            ImGui::TextColored(ImVec4(0.65f, 0.65f, 0.68f, 1.0f),
+                               "Legacy");
+            break;
+          case FeatureRoute::Unmapped:
+            ImGui::TextColored(ImVec4(1.0f, 0.30f, 0.25f, 1.0f),
+                               "UNMAPPED");
+            break;
+          }
+        }
+
+        ImGui::SameLine();
+        const ImVec4 routeColor =
+            route == FeatureRoute::Legacy
+                ? ImVec4(0.62f, 0.62f, 0.65f, 1.0f)
+                : (route == FeatureRoute::Unmapped
+                       ? ImVec4(1.0f, 0.30f, 0.25f, 1.0f)
+                       : ImVec4(0.78f, 0.86f, 0.96f, 1.0f));
+        ImGui::TextColored(routeColor, "%s", entry.feature.c_str());
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("ID: %s\nCategory: %s\nDefault: %s\n%s",
+                            entry.id.c_str(), entry.category.c_str(),
+                            entry.defaultValue.c_str(), entry.detail.c_str());
+        }
+        ImGui::PopID();
+      }
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+
+    if (ImGui::BeginTabItem("Inventory")) {
+      ImGui::SetNextItemWidth(-1.0f);
+      ImGui::InputTextWithHint("##FeatureFilter", "Filter all features...",
+                               m_featureFilter, sizeof(m_featureFilter));
+      ImGui::Checkbox("Active", &m_showActiveFeatures);
+      ImGui::SameLine();
+      ImGui::Checkbox("Available", &m_showAvailableFeatures);
+      ImGui::Checkbox("Experimental", &m_showExperimentalFeatures);
+      ImGui::SameLine();
+      ImGui::Checkbox("Unavailable", &m_showUnavailableFeatures);
+
+      const std::string filter = LowerAscii(m_featureFilter);
+      ImGui::BeginChild("##CompleteFeatureInventory", ImVec2(0.0f, 0.0f),
+                        true);
+      for (size_t index = 0; index < m_featureInventory.size(); ++index) {
+        const FeatureInventoryEntry &entry = m_featureInventory[index];
+        const InventoryCoverage coverage = CoverageForInventory(entry);
+        const bool visible =
+            (coverage == InventoryCoverage::Active && m_showActiveFeatures) ||
+            (coverage == InventoryCoverage::Available &&
+             m_showAvailableFeatures) ||
+            (coverage == InventoryCoverage::Experimental &&
+             m_showExperimentalFeatures) ||
+            (coverage == InventoryCoverage::Unavailable &&
+             m_showUnavailableFeatures) ||
+            (coverage == InventoryCoverage::Legacy && m_showLegacyFeatures);
+        if (!visible)
+          continue;
+
+        if (!filter.empty()) {
+          const std::string searchable =
+              LowerAscii(entry.section + " " + entry.category + " " +
+                         entry.feature + " " + entry.status + " " +
+                         entry.source);
+          if (searchable.find(filter) == std::string::npos)
+            continue;
+        }
+
+        const char *label = "ACTIVE";
+        ImVec4 color(0.35f, 0.90f, 0.45f, 1.0f);
+        if (coverage == InventoryCoverage::Available) {
+          label = "AVAILABLE";
+          color = ImVec4(0.30f, 0.68f, 1.0f, 1.0f);
+        } else if (coverage == InventoryCoverage::Experimental) {
+          label = "EXPERIMENTAL";
+          color = ImVec4(1.0f, 0.65f, 0.25f, 1.0f);
+        } else if (coverage == InventoryCoverage::Unavailable) {
+          label = "UNAVAILABLE";
+          color = ImVec4(0.78f, 0.42f, 0.40f, 1.0f);
+        } else if (coverage == InventoryCoverage::Legacy) {
+          label = "LEGACY";
+          color = ImVec4(0.62f, 0.62f, 0.65f, 1.0f);
+        }
+
+        ImGui::PushID(static_cast<int>(index));
+        ImGui::TextColored(color, "[%s]", label);
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", entry.feature.c_str());
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("Section: %s\nCategory: %s\nStatus: %s\n%s\n%s",
+                            entry.section.c_str(), entry.category.c_str(),
+                            entry.status.c_str(), entry.detail.c_str(),
+                            entry.source.c_str());
+        }
+        ImGui::PopID();
+      }
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+
+    if (ImGui::BeginTabItem("Limits")) {
+      ImGui::TextWrapped(
+          "VILLIEN Editor exposes every feature.md row for audit, but only "
+          "safe runtime controls receive a checkbox. Renderer foundations "
+          "and gameplay state machines are inspected through real views, not "
+          "disabled with unsafe or simulated switches.");
+      ImGui::Separator();
+      ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.25f, 1.0f),
+                         "NOT IMPLEMENTED");
+      ImGui::BulletText("Audio authoring / BGM / SFX / Voice");
+      ImGui::BulletText("NPC dialogue, quests and inventory");
+      ImGui::BulletText("Gameplay save/load");
+      ImGui::BulletText("Parent-child scene hierarchy and prefabs");
+      ImGui::TextDisabled(
+          "These remain unavailable until a real runtime data model exists.");
+      if (iblEnabled) {
+        ImGui::Separator();
+        ImGui::Checkbox("Image Based Lighting", iblEnabled);
+        ImGui::TextDisabled("Additional root control not present in Lab IDs.");
+      }
+      ImGui::EndTabItem();
+    }
+
+    ImGui::EndTabBar();
+  }
+}
+
 void SceneEditor::BuildHighlightItems(const Scene &scene,
                                       FrameData &frame) const {
   if (m_selectedEntity == kInvalidEntityId)
@@ -1091,8 +2480,21 @@ void SceneEditor::HandleMousePick(const Scene &scene, int screenX, int screenY,
                                   const DirectX::XMMATRIX &proj) {
   using namespace DirectX;
 
-  float ndcX = 2.0f * screenX / screenW - 1.0f;
-  float ndcY = -(2.0f * screenY / screenH - 1.0f);
+  int pickX = screenX;
+  int pickY = screenY;
+  int pickW = screenW;
+  int pickH = screenH;
+  if (m_viewportRect.width > 2.0f && m_viewportRect.height > 2.0f) {
+    if (!m_viewportRect.Contains(screenX, screenY))
+      return;
+    pickX = screenX - static_cast<int>(m_viewportRect.x);
+    pickY = screenY - static_cast<int>(m_viewportRect.y);
+    pickW = std::max(1, static_cast<int>(m_viewportRect.width));
+    pickH = std::max(1, static_cast<int>(m_viewportRect.height));
+  }
+
+  float ndcX = 2.0f * pickX / pickW - 1.0f;
+  float ndcY = -(2.0f * pickY / pickH - 1.0f);
 
   XMMATRIX invViewProj = XMMatrixInverse(nullptr, view * proj);
   XMVECTOR nearPt =
@@ -1305,12 +2707,29 @@ void SceneEditor::ScanAssetDirectory() {
   m_assetCache.clear();
   namespace fs = std::filesystem;
   const fs::path root("Assets");
-  if (!fs::exists(root) || !fs::is_directory(root))
+  std::error_code error;
+  if (!fs::exists(root, error) || !fs::is_directory(root, error)) {
+    m_assetCacheValid = true;
+    m_selectedAssetIndex = -1;
     return;
+  }
 
-  for (auto &entry : fs::recursive_directory_iterator(root)) {
-    if (!entry.is_regular_file())
+  fs::recursive_directory_iterator iterator(
+      root, fs::directory_options::skip_permission_denied, error);
+  const fs::recursive_directory_iterator end;
+  while (iterator != end) {
+    if (error) {
+      error.clear();
+      iterator.increment(error);
       continue;
+    }
+
+    const fs::directory_entry entry = *iterator;
+    iterator.increment(error);
+    if (!entry.is_regular_file(error)) {
+      error.clear();
+      continue;
+    }
     std::string ext = entry.path().extension().string();
     // lowercase extension
     for (auto &c : ext)
@@ -1338,9 +2757,23 @@ void SceneEditor::ScanAssetDirectory() {
 }
 
 void SceneEditor::DrawAssetBrowser(Scene &scene, DxContext &dx) {
-  ImGui::SetNextWindowPos(ImVec2(0, 400), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(300, 350), ImGuiCond_FirstUseEver);
-  ImGui::Begin("Asset Browser");
+  const EditorWorkspaceLayout layout = BuildEditorWorkspaceLayout();
+  const ImVec2 display = ImGui::GetIO().DisplaySize;
+  const float maximumConsoleWidth =
+      std::max(140.0f, layout.viewport.width - 140.0f);
+  const float minimumConsoleWidth =
+      std::min(280.0f, maximumConsoleWidth);
+  const float consoleWidth =
+      std::clamp(layout.viewport.width * 0.38f, minimumConsoleWidth,
+                 std::min(500.0f, maximumConsoleWidth));
+  ImGui::SetNextWindowPos(
+      ImVec2(layout.leftWidth, display.y - layout.bottomHeight),
+      ImGuiCond_Always);
+  ImGui::SetNextWindowSize(
+      ImVec2(std::max(1.0f, layout.viewport.width - consoleWidth),
+             layout.bottomHeight),
+      ImGuiCond_Always);
+  ImGui::Begin("Project", nullptr, kFixedPanelFlags);
 
   // Scan / Refresh.
   if (!m_assetCacheValid || ImGui::Button("Refresh")) {
@@ -1362,7 +2795,11 @@ void SceneEditor::DrawAssetBrowser(Scene &scene, DxContext &dx) {
 
   // Build directory tree structure. We use a flat list grouped by parent dir.
   // Track which directories are open via TreeNode.
-  ImGui::BeginChild("AssetTree", ImVec2(0, -140), true);
+  const ImVec2 browserSpace = ImGui::GetContentRegionAvail();
+  const float treeWidth = std::clamp(
+      browserSpace.x * 0.58f, 180.0f,
+      std::max(180.0f, browserSpace.x - 180.0f));
+  ImGui::BeginChild("AssetTree", ImVec2(treeWidth, 0.0f), true);
 
   std::string lastDir;
   bool dirOpen = false;
@@ -1421,7 +2858,11 @@ void SceneEditor::DrawAssetBrowser(Scene &scene, DxContext &dx) {
     // Double-click scene files to load.
     if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0) &&
         asset.type == AssetType::Scene) {
-      scene.LoadFromFile(asset.path, dx);
+      if (scene.LoadFromFile(asset.path, dx)) {
+        m_history.Clear();
+        m_selectedEntity = kInvalidEntityId;
+        m_previewTexturePath.clear();
+      }
     }
 
     // Drag-drop source.
@@ -1441,7 +2882,8 @@ void SceneEditor::DrawAssetBrowser(Scene &scene, DxContext &dx) {
   ImGui::EndChild();
 
   // ---- Detail / Preview area ----
-  ImGui::Separator();
+  ImGui::SameLine();
+  ImGui::BeginChild("AssetDetails", ImVec2(0.0f, 0.0f), true);
 
   if (m_selectedAssetIndex >= 0 &&
       m_selectedAssetIndex < static_cast<int>(m_assetCache.size())) {
@@ -1514,6 +2956,80 @@ void SceneEditor::DrawAssetBrowser(Scene &scene, DxContext &dx) {
     }
   } else {
     ImGui::TextDisabled("Select an asset above.");
+  }
+
+  ImGui::EndChild();
+  ImGui::End();
+}
+
+// ---- Console and diagnostics ----
+
+void SceneEditor::DrawConsolePanel(const Scene &scene) {
+  const EditorWorkspaceLayout layout = BuildEditorWorkspaceLayout();
+  const ImVec2 display = ImGui::GetIO().DisplaySize;
+  const float maximumConsoleWidth =
+      std::max(140.0f, layout.viewport.width - 140.0f);
+  const float minimumConsoleWidth =
+      std::min(280.0f, maximumConsoleWidth);
+  const float consoleWidth =
+      std::clamp(layout.viewport.width * 0.38f, minimumConsoleWidth,
+                 std::min(500.0f, maximumConsoleWidth));
+  ImGui::SetNextWindowPos(
+      ImVec2(layout.leftWidth + layout.viewport.width - consoleWidth,
+             display.y - layout.bottomHeight),
+      ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(consoleWidth, layout.bottomHeight),
+                           ImGuiCond_Always);
+  ImGui::Begin("Console", nullptr, kFixedPanelFlags);
+
+  size_t meshCount = 0;
+  size_t pointLightCount = 0;
+  size_t spotLightCount = 0;
+  for (const Entity &entity : scene.Entities()) {
+    meshCount += entity.mesh.has_value() ? 1u : 0u;
+    pointLightCount += entity.pointLight.has_value() ? 1u : 0u;
+    spotLightCount += entity.spotLight.has_value() ? 1u : 0u;
+  }
+
+  if (ImGui::BeginTabBar("##ConsoleTabs")) {
+    if (ImGui::BeginTabItem("Console")) {
+      ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.0f),
+                         "[Ready] VILLIEN Editor is using the live DX12 engine.");
+      ImGui::TextWrapped(
+          "The central Scene View is the actual renderer, not a feature mockup.");
+      ImGui::Separator();
+      if (m_selectedEntity == kInvalidEntityId) {
+        ImGui::TextDisabled("No object selected.");
+      } else {
+        const Entity *selected = scene.FindEntity(m_selectedEntity);
+        ImGui::Text("Selected: %s", selected ? selected->name.c_str()
+                                             : "<deleted>");
+      }
+      ImGui::EndTabItem();
+    }
+
+    if (ImGui::BeginTabItem("Stats")) {
+      ImGui::Text("Objects: %zu", scene.Entities().size());
+      ImGui::Text("Meshes: %zu", meshCount);
+      ImGui::Text("Point lights: %zu", pointLightCount);
+      ImGui::Text("Spot lights: %zu", spotLightCount);
+      ImGui::Text("Indexed assets: %zu", m_assetCache.size());
+      ImGui::Text("Scene View: %.0f x %.0f", m_viewportRect.width,
+                  m_viewportRect.height);
+      ImGui::EndTabItem();
+    }
+
+    if (ImGui::BeginTabItem("Shortcuts")) {
+      ImGui::Text("W / E / R   Move / Rotate / Scale");
+      ImGui::Text("Ctrl+Z / Y  Undo / Redo");
+      ImGui::Text("Ctrl+D      Duplicate object");
+      ImGui::Text("Delete      Delete object");
+      ImGui::Text("F5          Play / Stop scene");
+      ImGui::Text("F6          Grid editor");
+      ImGui::Text("F9          Reload shaders");
+      ImGui::EndTabItem();
+    }
+    ImGui::EndTabBar();
   }
 
   ImGui::End();

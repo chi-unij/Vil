@@ -33,12 +33,16 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cwctype>
 #include <dbghelp.h>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <string_view>
 #include <vector>
 
 #include <imgui.h>
+#include <nlohmann/json.hpp>
 
 static volatile LONG g_startupStage = 0;
 static DxContext *g_crashDxContext = nullptr;
@@ -399,18 +403,201 @@ static bool DrawSettingsChoice(ImDrawList *draw, const char *id,
   return clicked;
 }
 
-int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
+static bool HasEditorCommandLineSwitch(const wchar_t *commandLine) {
+  if (!commandLine)
+    return false;
+
+  const wchar_t *cursor = commandLine;
+  while (*cursor != L'\0') {
+    while (std::iswspace(*cursor))
+      ++cursor;
+    if (*cursor == L'\0')
+      break;
+
+    const bool quoted = *cursor == L'"';
+    if (quoted)
+      ++cursor;
+    const wchar_t *argumentBegin = cursor;
+
+    while (*cursor != L'\0' &&
+           (quoted ? *cursor != L'"' : !std::iswspace(*cursor))) {
+      ++cursor;
+    }
+
+    if (std::wstring_view(argumentBegin,
+                          static_cast<size_t>(cursor - argumentBegin)) ==
+        L"--editor") {
+      return true;
+    }
+
+    if (quoted && *cursor == L'"')
+      ++cursor;
+  }
+
+  return false;
+}
+
+static bool SetWorkingDirectoryToContentRoot() {
+  std::array<wchar_t, 32768> executablePathBuffer{};
+  const DWORD pathLength =
+      GetModuleFileNameW(nullptr, executablePathBuffer.data(),
+                         static_cast<DWORD>(executablePathBuffer.size()));
+  if (pathLength == 0 ||
+      pathLength >= static_cast<DWORD>(executablePathBuffer.size()))
+    return false;
+
+  std::filesystem::path candidate =
+      std::filesystem::path(executablePathBuffer.data()).parent_path();
+  std::filesystem::path packagedContentFallback;
+  std::error_code error;
+  while (!candidate.empty()) {
+    error.clear();
+    const bool hasAssets =
+        std::filesystem::is_directory(candidate / L"Assets", error);
+    error.clear();
+    const bool hasShaders =
+        std::filesystem::is_directory(candidate / L"shaders", error);
+    if (hasAssets && hasShaders) {
+      // A developer build can sit beside a stale post-build Assets copy.
+      // Prefer the real repository root so the editor always reflects the
+      // current source Assets/shaders instead of yesterday's copied output.
+      error.clear();
+      const bool hasProjectFile =
+          std::filesystem::is_regular_file(candidate / L"CMakeLists.txt",
+                                           error);
+      error.clear();
+      const bool hasSourceTree =
+          std::filesystem::is_directory(candidate / L"src", error);
+      if (hasProjectFile && hasSourceTree &&
+          SetCurrentDirectoryW(candidate.c_str())) {
+        return true;
+      }
+      if (packagedContentFallback.empty())
+        packagedContentFallback = candidate;
+    }
+
+    const std::filesystem::path parent = candidate.parent_path();
+    if (parent == candidate)
+      break;
+    candidate = parent;
+  }
+
+  if (!packagedContentFallback.empty())
+    return SetCurrentDirectoryW(packagedContentFallback.c_str()) != FALSE;
+
+  return false;
+}
+
+static void PopulateEditorWelcomeScene(Scene &scene, DxContext &dx) {
+  if (!scene.Entities().empty())
+    return;
+
+  const auto addMesh = [&](const char *name, MeshSourceType sourceType,
+                           const DirectX::XMFLOAT3 &position,
+                           const DirectX::XMFLOAT4 &color, float metallic,
+                           float roughness) -> Entity & {
+    Entity entity;
+    entity.id = scene.AllocateId();
+    entity.name = name;
+    entity.transform.position = position;
+    entity.mesh = MeshComponent{};
+    entity.mesh->sourceType = sourceType;
+    entity.mesh->material.baseColorFactor = color;
+    entity.mesh->material.metallicFactor = metallic;
+    entity.mesh->material.roughnessFactor = roughness;
+    scene.AddEntityDirect(entity);
+    return scene.Entities().back();
+  };
+
+  Entity &ground = addMesh("PBR Ground", MeshSourceType::ProceduralPlane,
+                           {0.0f, -1.0f, 4.0f},
+                           {0.48f, 0.50f, 0.54f, 1.0f}, 0.0f, 0.82f);
+  ground.mesh->width = 18.0f;
+  ground.mesh->height = 18.0f;
+  ground.mesh->material.uvTiling = {5.0f, 5.0f};
+  ground.mesh->texturePaths[0] =
+      "Assets/textures/Floor_png/Ground037_2K-PNG_Color.png";
+  ground.mesh->texturePaths[1] =
+      "Assets/textures/Floor_png/Ground037_2K-PNG_NormalDX.png";
+  ground.mesh->texturePaths[2] =
+      "Assets/textures/Floor_png/Ground037_2K-PNG_Roughness.png";
+  ground.mesh->texturePaths[3] =
+      "Assets/textures/Floor_png/Ground037_2K-PNG_AmbientOcclusion.png";
+  ground.mesh->texturePaths[5] =
+      "Assets/textures/Floor_png/Ground037_2K-PNG_Displacement.png";
+
+  Entity &cube = addMesh("Metal Cube", MeshSourceType::ProceduralCube,
+                         {-2.2f, 0.0f, 3.0f},
+                         {0.74f, 0.16f, 0.12f, 1.0f}, 0.86f, 0.22f);
+  cube.mesh->size = 1.6f;
+  cube.transform.rotation = {0.0f, 24.0f, 0.0f};
+
+  Entity &sphere = addMesh("Ceramic Sphere",
+                           MeshSourceType::ProceduralSphere,
+                           {0.0f, 0.0f, 4.0f},
+                           {0.10f, 0.42f, 0.86f, 1.0f}, 0.05f, 0.18f);
+  sphere.mesh->size = 1.05f;
+  sphere.mesh->rings = 24;
+  sphere.mesh->segments = 32;
+
+  Entity &cylinder = addMesh("Rough Cylinder",
+                             MeshSourceType::ProceduralCylinder,
+                             {2.2f, -0.05f, 3.4f},
+                             {0.14f, 0.64f, 0.38f, 1.0f}, 0.12f, 0.74f);
+  cylinder.mesh->width = 0.9f;
+  cylinder.mesh->height = 1.9f;
+  cylinder.mesh->segments = 32;
+
+  Entity pointLight;
+  pointLight.id = scene.AllocateId();
+  pointLight.name = "Key Point Light";
+  pointLight.transform.position = {-2.0f, 3.5f, 0.5f};
+  pointLight.pointLight = PointLightComponent{};
+  pointLight.pointLight->color = {1.0f, 0.52f, 0.28f};
+  pointLight.pointLight->intensity = 16.0f;
+  pointLight.pointLight->range = 12.0f;
+  scene.AddEntityDirect(pointLight);
+
+  Entity spotLight;
+  spotLight.id = scene.AllocateId();
+  spotLight.name = "Fill Spot Light";
+  spotLight.transform.position = {3.5f, 4.5f, -0.5f};
+  spotLight.spotLight = SpotLightComponent{};
+  spotLight.spotLight->direction = {-0.35f, -0.8f, 0.45f};
+  spotLight.spotLight->color = {0.32f, 0.58f, 1.0f};
+  spotLight.spotLight->intensity = 22.0f;
+  spotLight.spotLight->range = 18.0f;
+  scene.AddEntityDirect(spotLight);
+
+  scene.CreateGpuResources(dx);
+}
+
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
   try {
+#if defined(VILLIEN_EDITOR_BUILD)
+    constexpr bool kDedicatedEditorBuild = true;
+#else
+    constexpr bool kDedicatedEditorBuild = false;
+#endif
+    const bool launchEditor =
+        kDedicatedEditorBuild || HasEditorCommandLineSwitch(commandLine);
+    const wchar_t *windowTitle =
+        launchEditor ? L"VILLIEN Editor" : L"VILLIEN";
+    const bool contentRootFound = SetWorkingDirectoryToContentRoot();
+
     {
       std::ofstream f("app_trace_log.txt", std::ios::out | std::ios::trunc);
-      if (f)
+      if (f) {
         f << "app start\n";
+        if (!contentRootFound)
+          f << "warning: Assets/shaders content root was not found\n";
+      }
     }
     SetUnhandledExceptionFilter(UnhandledExceptionHandler);
 
     Win32Window window;
     SetStartupStage(10);
-    window.Create(L"VILLIEN", 1920, 1080);
+    window.Create(windowTitle, 1920, 1080);
 
     DxContext dx;
     g_crashDxContext = &dx;
@@ -560,20 +747,252 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
 
     // ---- Editor/Game mode toggle (Milestone 4 Phase 0) ----
     enum class AppMode { Title, Game, BossArena, Editor };
-    AppMode appMode = AppMode::Title;
+    AppMode appMode = launchEditor ? AppMode::Editor : AppMode::Title;
     bool requestQuit = false;
     TitleScreen titleScreen;
     Scene editorScene;
     SceneEditor sceneEditor;
+    PopulateEditorWelcomeScene(editorScene, dx);
+    CameraPreset editorReturnCamera;
+    bool editorReturnCameraValid = false;
+    bool scenePlayMode = false;
+    std::string sceneSnapshot;
+    const auto stopEditorScenePreview = [&]() {
+      if (!scenePlayMode)
+        return;
+      dx.WaitForGpu();
+      editorScene.DeserializeFromString(sceneSnapshot, dx);
+      sceneSnapshot.clear();
+      scenePlayMode = false;
+    };
+    auto &forestDebugSettings = overworldScene.BackgroundForestDebug();
+    EditorRuntimeBindings editorRuntimeBindings;
+    editorRuntimeBindings.skyExposure = &skyExposure;
+    editorRuntimeBindings.timeOfDayHours = &gameTimeOfDayHours;
+    editorRuntimeBindings.automaticTime = &gameTimeAuto;
+    editorRuntimeBindings.hoursPerSecond = &gameHoursPerSecond;
+    editorRuntimeBindings.rainEnabled = &rainEnabled;
+    editorRuntimeBindings.waterWaveHeight = &waterWaveHeight;
+    editorRuntimeBindings.waterWaveSpeed = &waterWaveSpeed;
+    editorRuntimeBindings.waterWaveFrequency = &waterWaveFrequency;
+    editorRuntimeBindings.waterTransparency = &waterTransparency;
+    editorRuntimeBindings.wetSurfaceStrength = &wetSurfaceStrength;
+    editorRuntimeBindings.wetSurfaceDrySeconds = &wetSurfaceDrySeconds;
+    editorRuntimeBindings.wetSurfaceImpactRadius = &wetSurfaceImpactRadius;
+    editorRuntimeBindings.wetSurfaceCycleSeconds = &wetSurfaceCycleSeconds;
+    editorRuntimeBindings.puddleStrength = &puddleStrength;
+    editorRuntimeBindings.puddleBuildSeconds = &puddleBuildSeconds;
+    editorRuntimeBindings.puddleRadius = &puddleRadius;
+    editorRuntimeBindings.puddleClarity = &puddleClarity;
+    editorRuntimeBindings.puddleTint = &puddleTint;
+    editorRuntimeBindings.puddleRippleStrength = &puddleRippleStrength;
+    editorRuntimeBindings.forestEnabled = &forestDebugSettings.enabled;
+    editorRuntimeBindings.forestSingleCluster =
+        &forestDebugSettings.singleClusterPreview;
+    editorRuntimeBindings.forestDensity = &forestDebugSettings.densityLevel;
+    editorRuntimeBindings.forestScale = &forestDebugSettings.scaleMultiplier;
+    editorRuntimeBindings.forestDistance = &forestDebugSettings.distanceOffset;
+    editorRuntimeBindings.forestSpacing = &forestDebugSettings.spacingMultiplier;
+    editorRuntimeBindings.particlesEnabled = &particlesEnabled;
+    editorRuntimeBindings.fireEnabled = &fireEnabled;
+    editorRuntimeBindings.smokeEnabled = &smokeEnabled;
+    editorRuntimeBindings.sparkEnabled = &sparkEnabled;
+    editorRuntimeBindings.particleDepth = &particleDepth;
+    editorRuntimeBindings.collisionDebug = &showCollisionDebug;
+    editorRuntimeBindings.modelMeshCollision = &useModelMeshCollision;
+    editorRuntimeBindings.modelCollisionDebug = &showModelCollisionDebug;
+    editorRuntimeBindings.gameFreeCamera = &gameFreeCameraEnabled;
+    editorRuntimeBindings.setWaterTransparency = [&](float transparency) {
+      overworldScene.SetWaterTransparency(dx, transparency);
+    };
+    editorRuntimeBindings.resetWater = [&]() {
+      waterWaveHeight = 1.0f;
+      waterWaveSpeed = 1.0f;
+      waterWaveFrequency = 1.0f;
+      waterTransparency = 0.45f;
+      overworldScene.SetWaterTransparency(dx, waterTransparency);
+      wetSurfaceStrength = 0.9f;
+      wetSurfaceDrySeconds = 4.0f;
+      wetSurfaceImpactRadius = 4.5f;
+      wetSurfaceCycleSeconds = 5.5f;
+      puddleStrength = 1.0f;
+      puddleBuildSeconds = 0.0f;
+      puddleRadius = 3.2f;
+      puddleClarity = 0.90f;
+      puddleTint = 0.28f;
+      puddleRippleStrength = 0.35f;
+    };
+    editorRuntimeBindings.resetForest = [&]() {
+      forestDebugSettings.enabled = true;
+      forestDebugSettings.singleClusterPreview = false;
+      forestDebugSettings.densityLevel = 3;
+      forestDebugSettings.scaleMultiplier = 0.40f;
+      forestDebugSettings.distanceOffset = 32.0f;
+      forestDebugSettings.spacingMultiplier = 0.5f;
+    };
+    editorRuntimeBindings.reloadPlacements = [&]() {
+      if (overworldScene.ReloadPlacements(dx)) {
+        overworldCollisionShapes = overworldScene.BuildDefaultCollisionShapes();
+        overworldCollisionColliders =
+            overworldScene.BuildCollisionColliders(overworldCollisionShapes);
+      }
+    };
+    editorRuntimeBindings.drawAnimationControls = [&]() {
+      playerPreview.DrawDebugControls();
+    };
+    editorRuntimeBindings.playTitle = [&]() {
+      stopEditorScenePreview();
+      editorReturnCamera = cam.MakePreset("Editor Return");
+      editorReturnCameraValid = true;
+      appMode = AppMode::Title;
+      showSettings = false;
+    };
+    editorRuntimeBindings.playOverworld = [&]() {
+      stopEditorScenePreview();
+      editorReturnCamera = cam.MakePreset("Editor Return");
+      editorReturnCameraValid = true;
+      appMode = AppMode::Game;
+      showSettings = false;
+      gameRuntimeSeconds = 0.0f;
+      playerPreview.SetPosition(overworldScene.PlayerSpawnPosition());
+      playerPreview.SetYaw(0.0f);
+      const DirectX::XMFLOAT3 spawn = playerPreview.Position();
+      gameCameraPosition = {spawn.x, 3.2f, spawn.z - 5.8f};
+      cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
+                      gameCameraPosition.z);
+      cam.SetYawPitch(0.0f, -0.28f);
+      cam.SetLens(DirectX::XM_PIDIV4,
+                  static_cast<float>(window.Width()) /
+                      static_cast<float>(window.Height()),
+                  0.1f, 1000.0f);
+    };
+    editorRuntimeBindings.playBossArena = [&]() {
+      stopEditorScenePreview();
+      editorReturnCamera = cam.MakePreset("Editor Return");
+      editorReturnCameraValid = true;
+      appMode = AppMode::BossArena;
+      showSettings = false;
+      gameRuntimeSeconds = 0.0f;
+      bossArenaScene.Reset(playerPreview);
+      const DirectX::XMFLOAT3 playerPosition = playerPreview.Position();
+      gameCameraPosition = {playerPosition.x, 3.2f,
+                            playerPosition.z - 5.8f};
+      cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
+                      gameCameraPosition.z);
+      cam.SetYawPitch(0.0f, -0.28f);
+      cam.SetLens(DirectX::XM_PIDIV4,
+                  static_cast<float>(window.Width()) /
+                      static_cast<float>(window.Height()),
+                  0.1f, 1000.0f);
+    };
+    editorRuntimeBindings.saveRuntimeSettings = [&]() {
+      try {
+        nlohmann::json settings = {
+            {"schemaVersion", 1},
+            {"skyExposure", skyExposure},
+            {"timeOfDayHours", gameTimeOfDayHours},
+            {"automaticTime", gameTimeAuto},
+            {"hoursPerSecond", gameHoursPerSecond},
+            {"rainEnabled", rainEnabled},
+            {"waterWaveHeight", waterWaveHeight},
+            {"waterWaveSpeed", waterWaveSpeed},
+            {"waterWaveFrequency", waterWaveFrequency},
+            {"waterTransparency", waterTransparency},
+            {"wetSurfaceStrength", wetSurfaceStrength},
+            {"wetSurfaceDrySeconds", wetSurfaceDrySeconds},
+            {"wetSurfaceImpactRadius", wetSurfaceImpactRadius},
+            {"wetSurfaceCycleSeconds", wetSurfaceCycleSeconds},
+            {"puddleStrength", puddleStrength},
+            {"puddleBuildSeconds", puddleBuildSeconds},
+            {"puddleRadius", puddleRadius},
+            {"puddleClarity", puddleClarity},
+            {"puddleTint", puddleTint},
+            {"puddleRippleStrength", puddleRippleStrength},
+            {"forestEnabled", forestDebugSettings.enabled},
+            {"forestSingleCluster",
+             forestDebugSettings.singleClusterPreview},
+            {"forestDensity", forestDebugSettings.densityLevel},
+            {"forestScale", forestDebugSettings.scaleMultiplier},
+            {"forestDistance", forestDebugSettings.distanceOffset},
+            {"forestSpacing", forestDebugSettings.spacingMultiplier},
+            {"particlesEnabled", particlesEnabled},
+            {"fireEnabled", fireEnabled},
+            {"smokeEnabled", smokeEnabled},
+            {"sparkEnabled", sparkEnabled},
+            {"particleDepth", particleDepth},
+            {"collisionDebug", showCollisionDebug},
+            {"modelMeshCollision", useModelMeshCollision},
+            {"modelCollisionDebug", showModelCollisionDebug},
+            {"gameFreeCamera", gameFreeCameraEnabled},
+        };
+        std::ofstream output("featuretools/editor_runtime_settings.json",
+                             std::ios::out | std::ios::trunc);
+        if (!output)
+          return false;
+        output << settings.dump(2) << '\n';
+        return output.good();
+      } catch (...) {
+        return false;
+      }
+    };
+    editorRuntimeBindings.loadRuntimeSettings = [&]() {
+      try {
+        std::ifstream input("featuretools/editor_runtime_settings.json");
+        if (!input)
+          return false;
+        nlohmann::json settings;
+        input >> settings;
+        const auto loadValue = [&](const char *key, auto &value) {
+          if (settings.contains(key))
+            settings.at(key).get_to(value);
+        };
+        loadValue("skyExposure", skyExposure);
+        loadValue("timeOfDayHours", gameTimeOfDayHours);
+        loadValue("automaticTime", gameTimeAuto);
+        loadValue("hoursPerSecond", gameHoursPerSecond);
+        loadValue("rainEnabled", rainEnabled);
+        loadValue("waterWaveHeight", waterWaveHeight);
+        loadValue("waterWaveSpeed", waterWaveSpeed);
+        loadValue("waterWaveFrequency", waterWaveFrequency);
+        loadValue("waterTransparency", waterTransparency);
+        loadValue("wetSurfaceStrength", wetSurfaceStrength);
+        loadValue("wetSurfaceDrySeconds", wetSurfaceDrySeconds);
+        loadValue("wetSurfaceImpactRadius", wetSurfaceImpactRadius);
+        loadValue("wetSurfaceCycleSeconds", wetSurfaceCycleSeconds);
+        loadValue("puddleStrength", puddleStrength);
+        loadValue("puddleBuildSeconds", puddleBuildSeconds);
+        loadValue("puddleRadius", puddleRadius);
+        loadValue("puddleClarity", puddleClarity);
+        loadValue("puddleTint", puddleTint);
+        loadValue("puddleRippleStrength", puddleRippleStrength);
+        loadValue("forestEnabled", forestDebugSettings.enabled);
+        loadValue("forestSingleCluster",
+                  forestDebugSettings.singleClusterPreview);
+        loadValue("forestDensity", forestDebugSettings.densityLevel);
+        loadValue("forestScale", forestDebugSettings.scaleMultiplier);
+        loadValue("forestDistance", forestDebugSettings.distanceOffset);
+        loadValue("forestSpacing", forestDebugSettings.spacingMultiplier);
+        loadValue("particlesEnabled", particlesEnabled);
+        loadValue("fireEnabled", fireEnabled);
+        loadValue("smokeEnabled", smokeEnabled);
+        loadValue("sparkEnabled", sparkEnabled);
+        loadValue("particleDepth", particleDepth);
+        loadValue("collisionDebug", showCollisionDebug);
+        loadValue("modelMeshCollision", useModelMeshCollision);
+        loadValue("modelCollisionDebug", showModelCollisionDebug);
+        loadValue("gameFreeCamera", gameFreeCameraEnabled);
+        overworldScene.SetWaterTransparency(dx, waterTransparency);
+        return true;
+      } catch (...) {
+        return false;
+      }
+    };
     StageData editStage; // Grid editor stage data (Phase 5).
     editStage.Clear();   // Initialize with default grid.
     sceneEditor.InitEditorMeshes(dx); // Phase 5B: create viewport tile meshes.
+    bool prevF1 = false;
     bool prevF5 = false;
     bool prevLButton = false; // for edge-detection of left-click (mouse pick)
-
-    // Scene play mode (Phase 8).
-    bool scenePlayMode = false;
-    std::string sceneSnapshot;
 
     // Shader hot-reload (Phase 8).
     bool prevF9 = false;
@@ -627,10 +1046,23 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       auto &input = window.GetInput();
       input.PollGamepad();
 
+      // The dedicated editor can run the real game full-screen. F1 restores
+      // the authoring camera and workspace without restarting the process.
+      const bool f1Now = input.IsKeyDown(VK_F1);
+      if (launchEditor && f1Now && !prevF1 &&
+          (appMode == AppMode::Title || appMode == AppMode::Game ||
+           appMode == AppMode::BossArena)) {
+        appMode = AppMode::Editor;
+        showSettings = false;
+        if (editorReturnCameraValid)
+          cam.ApplyPreset(editorReturnCamera);
+      }
+      prevF1 = f1Now;
+
       // ---- F5: シーンプレイモードのトグル（ゲームロジック未実装のためエディタ⇔シーンプレイのみ） ----
       {
         const bool f5Now = input.IsKeyDown(VK_F5);
-        if (f5Now && !prevF5) {
+        if (f5Now && !prevF5 && appMode == AppMode::Editor) {
           if (scenePlayMode) {
             // シーンプレイを停止し、スナップショットから復元する。
             dx.WaitForGpu();
@@ -647,10 +1079,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       }
 
       // Check scene play request from menu bar (Phase 8).
-      if (appMode == AppMode::Editor && !scenePlayMode &&
+      if (appMode == AppMode::Editor &&
           sceneEditor.ConsumeScenePlayRequest()) {
-        sceneSnapshot = editorScene.SerializeToString();
-        scenePlayMode = true;
+        if (scenePlayMode) {
+          dx.WaitForGpu();
+          editorScene.DeserializeFromString(sceneSnapshot, dx);
+          sceneSnapshot.clear();
+          scenePlayMode = false;
+        } else {
+          sceneSnapshot = editorScene.SerializeToString();
+          scenePlayMode = true;
+        }
       }
 
       // ---- F6: toggle Grid Editor panel (Phase 5) ----
@@ -704,6 +1143,29 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       const bool uiWantsMouse = imgui.WantCaptureMouse();
       const bool uiWantsKeyboard = imgui.WantCaptureKeyboard();
 
+      bool cursorInEditorViewport = false;
+      if (appMode == AppMode::Editor) {
+        const EditorViewportRect &viewport = sceneEditor.ViewportRect();
+        if (viewport.width >= 64.0f && viewport.height >= 64.0f) {
+          const float viewportAspect = viewport.width / viewport.height;
+          if (std::isfinite(viewportAspect) && viewportAspect > 0.0f &&
+              std::abs(viewportAspect - cam.Aspect()) > 0.0001f) {
+            cam.SetLens(cam.FovY(), viewportAspect, cam.NearZ(), cam.FarZ());
+          }
+
+          POINT cursorPos;
+          if (GetCursorPos(&cursorPos) &&
+              ScreenToClient(window.Handle(), &cursorPos)) {
+            cursorInEditorViewport =
+                viewport.Contains(cursorPos.x, cursorPos.y);
+          }
+        }
+      }
+      const bool cameraPointerInputAllowed =
+          (appMode != AppMode::Editor || cursorInEditorViewport) &&
+          (appMode != AppMode::Editor ||
+           sceneEditor.CameraNavigationEnabled());
+
       // Camera input routing — mode-dependent (Phase 6).
       const bool isPlaying = appMode == AppMode::Game || appMode == AppMode::BossArena;
 
@@ -724,30 +1186,36 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
 
         switch (cam.Mode()) {
         case CameraMode::FreeFly: {
-          const bool wantMouseLook = !uiWantsMouse && input.IsKeyDown(VK_RBUTTON);
+          const bool wantMouseLook = cameraPointerInputAllowed &&
+                                     !uiWantsMouse && !uiWantsKeyboard &&
+                                     input.IsKeyDown(VK_RBUTTON);
           if (wantMouseLook)
             cam.AddYawPitch(md.dx * cam.LookSpeed(), -md.dy * cam.LookSpeed());
           cam.Update(dt, input, wantMouseLook);
-          if (!uiWantsMouse)
+          if (cameraPointerInputAllowed && !uiWantsMouse)
             cam.ApplyScrollZoom(scroll);
           break;
         }
         case CameraMode::Orbit: {
-          const bool wantOrbit = !uiWantsMouse && input.IsKeyDown(VK_RBUTTON);
+          const bool wantOrbit = cameraPointerInputAllowed && !uiWantsMouse &&
+                                 !uiWantsKeyboard &&
+                                 input.IsKeyDown(VK_RBUTTON);
           if (wantOrbit) {
             cam.SetOrbitAngles(
                 cam.OrbitYaw() + md.dx * cam.LookSpeed(),
                 cam.OrbitPitch() - md.dy * cam.LookSpeed());
           }
-          cam.UpdateOrbit(dt, input, wantOrbit);
-          if (!uiWantsMouse)
+          if (cameraPointerInputAllowed && !uiWantsKeyboard)
+            cam.UpdateOrbit(dt, input, wantOrbit);
+          if (cameraPointerInputAllowed && !uiWantsMouse)
             cam.ApplyOrbitScrollZoom(scroll);
           break;
         }
         case CameraMode::GameTopDown: {
-          cam.UpdateGameTopDown(dt, input);
+          if (cameraPointerInputAllowed && !uiWantsKeyboard)
+            cam.UpdateGameTopDown(dt, input);
           // Scroll adjusts height.
-          if (!uiWantsMouse && scroll != 0.0f) {
+          if (cameraPointerInputAllowed && !uiWantsMouse && scroll != 0.0f) {
             DirectX::XMFLOAT3 pos = cam.GetPosition();
             pos.y -= scroll * cam.MoveSpeed() * 0.5f;
             pos.y = std::max(1.0f, pos.y);
@@ -760,61 +1228,58 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       }
 
       // ---- Mouse picking (editor, left-click) ----
-      if (appMode == AppMode::Editor && !uiWantsMouse &&
-          !sceneEditor.GetGizmo().IsActive()) {
-        bool lbNow = input.IsKeyDown(VK_LBUTTON);
+      const bool lbNow = input.IsKeyDown(VK_LBUTTON);
+      if (appMode == AppMode::Editor) {
+        const bool viewportInteractionAllowed =
+            !uiWantsMouse && !sceneEditor.GetGizmo().IsActive() &&
+            !sceneEditor.GetGizmo().IsHovered();
+        const EditorViewportRect &viewport = sceneEditor.ViewportRect();
+        POINT cursorPos{};
+        const bool cursorAvailable =
+            GetCursorPos(&cursorPos) &&
+            ScreenToClient(window.Handle(), &cursorPos);
+        const bool cursorInViewport =
+            cursorAvailable && viewport.Contains(cursorPos.x, cursorPos.y);
 
-        if (sceneEditor.IsGridEditorOpen()) {
-          // Phase 5B: viewport tile picking + painting.
-          // Phase 5C: also try tower picking on click.
-          POINT cursorPos;
-          GetCursorPos(&cursorPos);
-          ScreenToClient(window.Handle(), &cursorPos);
-          if (cursorPos.x >= 0 &&
-              cursorPos.x < static_cast<LONG>(window.Width()) &&
-              cursorPos.y >= 0 &&
-              cursorPos.y < static_cast<LONG>(window.Height())) {
+        if (viewportInteractionAllowed && cursorInViewport) {
+          if (sceneEditor.IsGridEditorOpen()) {
+            const int localX = static_cast<int>(cursorPos.x - viewport.x);
+            const int localY = static_cast<int>(cursorPos.y - viewport.y);
+            const int viewportWidth =
+                std::max(1, static_cast<int>(viewport.width));
+            const int viewportHeight =
+                std::max(1, static_cast<int>(viewport.height));
+
+            // Phase 5B/5C: tower picking and tile painting use coordinates
+            // local to the Scene View, not the complete editor window.
             if (lbNow && !prevLButton) {
-              // Try tower pick first (Phase 5C).
-              int towerIdx = sceneEditor.ViewportPickTower(
-                  editStage, cursorPos.x, cursorPos.y,
-                  static_cast<int>(window.Width()),
-                  static_cast<int>(window.Height()), cam.View(), cam.Proj());
-              if (towerIdx >= 0) {
+              const int towerIdx = sceneEditor.ViewportPickTower(
+                  editStage, localX, localY, viewportWidth, viewportHeight,
+                  cam.View(), cam.Proj());
+              if (towerIdx >= 0)
                 sceneEditor.SelectTower(towerIdx);
-              }
             }
             if (lbNow) {
               sceneEditor.HandleViewportTilePaint(
-                  editStage, cursorPos.x, cursorPos.y,
-                  static_cast<int>(window.Width()),
-                  static_cast<int>(window.Height()), cam.View(), cam.Proj());
+                  editStage, localX, localY, viewportWidth, viewportHeight,
+                  cam.View(), cam.Proj());
             }
-          }
-          if (!lbNow && prevLButton) {
-            sceneEditor.FinalizeViewportPaintStroke(editStage);
-          }
-        } else {
-          // Normal entity picking (edge-detect only).
-          if (lbNow && !prevLButton) {
-            POINT cursorPos;
-            GetCursorPos(&cursorPos);
-            ScreenToClient(window.Handle(), &cursorPos);
-            if (cursorPos.x >= 0 &&
-                cursorPos.x < static_cast<LONG>(window.Width()) &&
-                cursorPos.y >= 0 &&
-                cursorPos.y < static_cast<LONG>(window.Height())) {
-              sceneEditor.HandleMousePick(
-                  editorScene, cursorPos.x, cursorPos.y,
-                  static_cast<int>(window.Width()),
-                  static_cast<int>(window.Height()), cam.View(), cam.Proj());
-            }
+          } else if (lbNow && !prevLButton) {
+            // HandleMousePick owns the viewport-to-local conversion so its
+            // entity ray stays in sync with SceneEditor::ViewportRect().
+            sceneEditor.HandleMousePick(
+                editorScene, cursorPos.x, cursorPos.y,
+                static_cast<int>(window.Width()),
+                static_cast<int>(window.Height()), cam.View(), cam.Proj());
           }
         }
-        prevLButton = lbNow;
-      } else {
-        prevLButton = input.IsKeyDown(VK_LBUTTON);
+
+        // Always close a grid paint stroke on release, even when the pointer
+        // was released over another editor panel.
+        if (sceneEditor.IsGridEditorOpen() && !lbNow && prevLButton)
+          sceneEditor.FinalizeViewportPaintStroke(editStage);
       }
+      prevLButton = lbNow;
 
       // Update particle emitters (demo only — not during gameplay).
       if (particlesEnabled && !isPlaying) {
@@ -824,12 +1289,27 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
           GetCursorPos(&cursorPos);
           ScreenToClient(window.Handle(), &cursorPos);
 
-          if (cursorPos.x >= 0 &&
+          int projectionX = cursorPos.x;
+          int projectionY = cursorPos.y;
+          int projectionWidth = static_cast<int>(window.Width());
+          int projectionHeight = static_cast<int>(window.Height());
+          bool cursorInProjection =
+              cursorPos.x >= 0 &&
               cursorPos.x < static_cast<LONG>(window.Width()) &&
               cursorPos.y >= 0 &&
-              cursorPos.y < static_cast<LONG>(window.Height())) {
+              cursorPos.y < static_cast<LONG>(window.Height());
+          if (appMode == AppMode::Editor) {
+            const EditorViewportRect &viewport = sceneEditor.ViewportRect();
+            cursorInProjection = viewport.Contains(cursorPos.x, cursorPos.y);
+            projectionX = static_cast<int>(cursorPos.x - viewport.x);
+            projectionY = static_cast<int>(cursorPos.y - viewport.y);
+            projectionWidth = std::max(1, static_cast<int>(viewport.width));
+            projectionHeight = std::max(1, static_cast<int>(viewport.height));
+          }
+
+          if (cursorInProjection) {
             DirectX::XMVECTOR worldPos = ScreenToWorld(
-                cursorPos.x, cursorPos.y, window.Width(), window.Height(),
+                projectionX, projectionY, projectionWidth, projectionHeight,
                 cam.View(), cam.Proj(), particleDepth);
             fireEmitter.SetPosition(worldPos);
           }
@@ -922,11 +1402,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         std::wstringstream ss;
         ss.setf(std::ios::fixed);
         ss.precision(2);
-        ss << L"VILLIEN [Debug] | FPS: " << fpsValue << L" | Cam: (" << p.x
-           << L", " << p.y << L", " << p.z << L")";
+        ss << windowTitle << L" [Debug] | FPS: " << fpsValue << L" | Cam: ("
+           << p.x << L", " << p.y << L", " << p.z << L")";
         window.SetTitle(ss.str());
 #else
-        window.SetTitle(L"VILLIEN");
+        window.SetTitle(windowTitle);
 #endif
       }
 
@@ -1242,63 +1722,6 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
         }
       }
 
-      if (appMode == AppMode::Editor) {   
-        imgui.DrawDebugWindow(cam, fpsValue, dt);
-        ImGui::SetNextWindowCollapsed(true, ImGuiCond_FirstUseEver);
-        ImGui::Begin("Sky");
-        ImGui::SliderFloat("Exposure", &skyExposure, 0.01f, 8.0f, "%.2f",
-                           ImGuiSliderFlags_Logarithmic);
-        ImGui::End();
-
-        playerPreview.DrawDebugUi();
-
-        ImGui::SetNextWindowCollapsed(true, ImGuiCond_FirstUseEver);
-        ImGui::Begin("Particles");
-        ImGui::Checkbox("Enable All", &particlesEnabled);
-        ImGui::Separator();
-
-        if (ImGui::CollapsingHeader("Fire (cursor)", ImGuiTreeNodeFlags_DefaultOpen)) {
-          ImGui::Checkbox("Fire Enable", &fireEnabled);
-          ImGui::SliderFloat("Cursor depth", &particleDepth, 1.0f, 30.0f, "%.1f");
-          ImGui::Text("Alive: %zu", fireEmitter.GetCount());
-          if (ImGui::Button(fireEmitter.isEmmit() ? "Stop Fire" : "Start Fire")) {
-            fireEmitter.Emmit(!fireEmitter.isEmmit());
-          }
-        }
-
-        if (ImGui::CollapsingHeader("Smoke", ImGuiTreeNodeFlags_DefaultOpen)) {
-          ImGui::Checkbox("Smoke Enable", &smokeEnabled);
-          ImGui::Text("Alive: %zu", smokeEmitter.GetCount());
-          if (ImGui::Button(smokeEmitter.isEmmit() ? "Stop Smoke" : "Start Smoke")) {
-            smokeEmitter.Emmit(!smokeEmitter.isEmmit());
-          }
-          static float smokeX = -3.0f, smokeY = 0.0f, smokeZ = 3.0f;
-          bool smokePosDirty = false;
-          smokePosDirty |= ImGui::SliderFloat("Smoke X", &smokeX, -20.0f, 20.0f, "%.1f");
-          smokePosDirty |= ImGui::SliderFloat("Smoke Y", &smokeY, -5.0f, 20.0f, "%.1f");
-          smokePosDirty |= ImGui::SliderFloat("Smoke Z", &smokeZ, -20.0f, 20.0f, "%.1f");
-          if (smokePosDirty)
-            smokeEmitter.SetPosition(DirectX::XMVectorSet(smokeX, smokeY, smokeZ, 0.0f));
-        }
-
-        if (ImGui::CollapsingHeader("Sparks", ImGuiTreeNodeFlags_DefaultOpen)) {
-          ImGui::Checkbox("Spark Enable", &sparkEnabled);
-          ImGui::Text("Alive: %zu", sparkEmitter.GetCount());
-          if (ImGui::Button(sparkEmitter.isEmmit() ? "Stop Sparks" : "Start Sparks")) {
-            sparkEmitter.Emmit(!sparkEmitter.isEmmit());
-          }
-          static float sparkX = 3.0f, sparkY = 0.0f, sparkZ = 3.0f;
-          bool sparkPosDirty = false;
-          sparkPosDirty |= ImGui::SliderFloat("Spark X", &sparkX, -20.0f, 20.0f, "%.1f");
-          sparkPosDirty |= ImGui::SliderFloat("Spark Y", &sparkY, -5.0f, 20.0f, "%.1f");
-          sparkPosDirty |= ImGui::SliderFloat("Spark Z", &sparkZ, -20.0f, 20.0f, "%.1f");
-          if (sparkPosDirty)
-            sparkEmitter.SetPosition(DirectX::XMVectorSet(sparkX, sparkY, sparkZ, 0.0f));
-        }
-
-        ImGui::End();
-      }
-
       // SSAO, Post Processing, and Cascaded Shadows panels moved to SceneEditor (Phase 4).
       if (appMode == AppMode::Game) {
         overworldCollisionColliders =
@@ -1444,11 +1867,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
             std::max(frame.bloomIntensity, bossPhaseTwo ? 1.02f : 0.88f);
         bossArenaScene.ApplyTechShowcase(frame);
       } else if (scenePlayMode) {
-        // Scene play mode (Phase 8): build frame data but skip editor UI.
+        // Keep the complete shell visible during play, including Stop.
         editorScene.BuildFrameData(frame);
+        sceneEditor.DrawUI(editorScene, dx, cam.View(), cam.Proj(), &iblEnabled,
+                           &editStage, &cam, &editorRuntimeBindings, true);
       } else {
         sceneEditor.DrawUI(editorScene, dx, cam.View(), cam.Proj(), &iblEnabled,
-                           &editStage, &cam);
+                           &editStage, &cam, &editorRuntimeBindings, false);
         editorScene.BuildFrameData(frame);
         sceneEditor.BuildHighlightItems(editorScene, frame);
 
@@ -1460,7 +1885,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
 
       // Mode indicator overlay.
       if (appMode == AppMode::Editor) {
-        ImGui::SetNextWindowPos(ImVec2(10, static_cast<float>(window.Height()) - 30.0f));
+        const EditorViewportRect &modeViewport = sceneEditor.ViewportRect();
+        ImGui::SetNextWindowPos(
+            ImVec2(modeViewport.x + 10.0f,
+                   modeViewport.y + modeViewport.height - 30.0f));
         ImGui::Begin("##ModeIndicator", nullptr,
             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
@@ -1475,6 +1903,21 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
           // 通常エディタ状態。
           ImGui::TextColored(ImVec4(0,1,0.5f,1), "[EDITOR] F5=Scene Play  F6=Grid Editor");
         }
+        ImGui::End();
+      }
+
+      if (launchEditor &&
+          (appMode == AppMode::Game || appMode == AppMode::BossArena)) {
+        ImGui::SetNextWindowPos(
+            ImVec2(static_cast<float>(window.Width()) - 18.0f, 18.0f),
+            ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+        ImGui::SetNextWindowBgAlpha(0.72f);
+        ImGui::Begin("##ReturnToEditor", nullptr,
+                     ImGuiWindowFlags_NoDecoration |
+                         ImGuiWindowFlags_AlwaysAutoResize |
+                         ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoNav);
+        ImGui::Text("F1  Return to VILLIEN Editor");
         ImGui::End();
       }
 
@@ -1575,6 +2018,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int nCmdShow) {
       if (traceGameFrame)
         TraceAppEvent("pass: FXAA");
       fxaaPass.Execute(dx, frame);
+      if (appMode == AppMode::Editor)
+        dx.CaptureBackBufferForEditor();
       if (traceGameFrame)
         TraceAppEvent("pass: UI");
       uiPass.Execute(dx, frame);

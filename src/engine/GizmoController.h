@@ -33,8 +33,17 @@ public:
   void ProcessHotkeys();
 
   Operation GetOperation() const { return m_operation; }
+  void SetOperation(Operation operation) { m_operation = operation; }
   Space GetSpace() const { return m_space; }
+  void SetSpace(Space space) { m_space = space; }
+  void SetViewportRect(float x, float y, float width, float height) {
+    m_viewportX = x;
+    m_viewportY = y;
+    m_viewportWidth = width;
+    m_viewportHeight = height;
+  }
   bool IsActive() const;
+  bool IsHovered() const { return m_isHovered; }
 
   // Snap settings (public for ImGui editing).
   bool snapEnabled = false;
@@ -48,6 +57,11 @@ private:
 
   // Drag coalescing for undo.
   bool m_isDragging = false;
+  bool m_isHovered = false;
   EntityId m_dragEntityId = kInvalidEntityId;
   Transform m_dragStartTransform;
+  float m_viewportX = 0.0f;
+  float m_viewportY = 0.0f;
+  float m_viewportWidth = 0.0f;
+  float m_viewportHeight = 0.0f;
 };

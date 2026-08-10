@@ -213,6 +213,11 @@ void PlayerAnimationPreview::DrawDebugUi() {
     return;
   }
 
+  DrawDebugControls();
+  ImGui::End();
+}
+
+void PlayerAnimationPreview::DrawDebugControls() {
   ImGui::Text("Player: Assets/models/MyFirstChar.vrm");
   ImGui::Text("Skeleton: %s", m_hasSkeleton ? "OK" : "NG");
   ImGui::Separator();
@@ -242,6 +247,4 @@ void PlayerAnimationPreview::DrawDebugUi() {
   ImGui::Checkbox("Auto cycle", &m_autoCycle);
   ImGui::SliderFloat("Yaw", &m_previewYaw, -3.14159265f, 3.14159265f);
   ImGui::SliderFloat("Scale", &m_previewScale, 0.2f, 2.0f);
-
-  ImGui::End();
 }

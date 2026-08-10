@@ -32,6 +32,7 @@ public:
               bool debugFly = false);
   void BuildFrame(FrameData &frame) const;
   void DrawDebugUi();
+  void DrawDebugControls();
 
   bool IsReady() const { return m_ready; }
   DirectX::XMFLOAT3 Position() const { return m_previewPosition; }

@@ -261,6 +261,24 @@ void DxContext::SetViewportScissorFull() {
   m_cmdList->RSSetScissorRects(1, &scissor);
 }
 
+void DxContext::CaptureBackBufferForEditor() {
+  if (!CurrentBackBuffer())
+    return;
+  if (!m_editorViewportTexture)
+    CreateEditorViewportResource();
+
+  Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+             D3D12_RESOURCE_STATE_COPY_SOURCE);
+  Transition(m_editorViewportTexture.Get(),
+             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+             D3D12_RESOURCE_STATE_COPY_DEST);
+  m_cmdList->CopyResource(m_editorViewportTexture.Get(), CurrentBackBuffer());
+  Transition(m_editorViewportTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+  Transition(CurrentBackBuffer(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+             D3D12_RESOURCE_STATE_RENDER_TARGET);
+}
+
 MeshRenderer &DxContext::GetMeshRenderer() {
   if (!m_meshRenderer)
     throw std::runtime_error("GetMeshRenderer: not initialized");
@@ -1371,6 +1389,48 @@ void DxContext::CreatePostProcessResources() {
 
   m_taaCurrentIndex = 0;
   m_taaFirstFrame = true;
+
+  // Recreate this optional copy only after an Editor session has requested
+  // it. The normal game target never pays for an unused full-screen texture.
+  if (m_editorViewportSrvAllocated)
+    CreateEditorViewportResource();
+}
+
+void DxContext::CreateEditorViewportResource() {
+  if (!m_editorViewportSrvAllocated) {
+    ImGuiAllocSrv(&m_editorViewportSrvCpu, &m_editorViewportSrvGpu);
+    m_editorViewportSrvAllocated = true;
+  }
+
+  m_editorViewportTexture.Reset();
+
+  D3D12_HEAP_PROPERTIES heapProperties{};
+  heapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+  D3D12_RESOURCE_DESC desc{};
+  desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+  desc.Width = m_width;
+  desc.Height = m_height;
+  desc.DepthOrArraySize = 1;
+  desc.MipLevels = 1;
+  desc.Format = m_backBufferFormat;
+  desc.SampleDesc.Count = 1;
+  desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+  ThrowIfFailed(m_device->CreateCommittedResource(
+                    &heapProperties, D3D12_HEAP_FLAG_NONE, &desc,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr,
+                    IID_PPV_ARGS(&m_editorViewportTexture)),
+                "CreateCommittedResource (Editor viewport) failed");
+  SetDebugName(m_editorViewportTexture.Get(), L"DxContext.EditorViewport");
+
+  D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+  srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+  srv.Format = m_backBufferFormat;
+  srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+  srv.Texture2D.MipLevels = 1;
+  m_device->CreateShaderResourceView(m_editorViewportTexture.Get(), &srv,
+                                     m_editorViewportSrvCpu);
 }
 
 // ---- Resize ----

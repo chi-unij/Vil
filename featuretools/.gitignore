@@ -1,0 +1,7 @@
+/build/
+/build-ninja/
+/.vs/
+*.state
+*.png
+featuretools_error.log
+featuretools-*.log
