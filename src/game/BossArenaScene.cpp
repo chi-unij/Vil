@@ -2566,58 +2566,32 @@ void BossArenaScene::AppendTelegraphLines(FrameData &frame) const {
   const float telegraphRemain =
       std::clamp(m_phaseTimer / TelegraphDuration(), 0.0f, 1.0f);
   const float chargeT = 1.0f - telegraphRemain;
-  const float scanRadius =
-      m_attackRadius * std::lerp(0.35f, 1.0f, chargeT);
   const XMFLOAT4 warnColor =
       m_phase == AttackPhase::Telegraph
           ? XMFLOAT4{1.0f, 0.08f + chargeT * 0.34f, 0.02f, 1.0f}
-          : XMFLOAT4{1.0f, 0.92f, 0.18f, 1.0f};
-  const XMFLOAT4 innerColor{1.0f, 0.92f, 0.22f, 0.92f};
+          : XMFLOAT4{1.0f, 0.18f, 0.06f, 0.88f};
 
   if (m_attack == AttackType::MeteorAoE) {
     const XMFLOAT3 curvedCenter =
         CurvePoint(m_attackCenter.x, m_attackCenter.y, m_attackCenter.z);
-    PushThickCircle(frame, curvedCenter, m_attackRadius, warnColor, 3);
-    PushCircle(frame, curvedCenter, scanRadius, innerColor);
-    PushCircle(frame, curvedCenter, m_attackRadius * 0.62f, warnColor);
-    PushCurvedLine(frame, m_attackCenter.x - m_attackRadius, 0.03f,
-                   m_attackCenter.z, m_attackCenter.x + m_attackRadius,
-                   0.03f, m_attackCenter.z, warnColor, 4);
-    PushCurvedLine(frame, m_attackCenter.x, 0.03f,
-                   m_attackCenter.z - m_attackRadius, m_attackCenter.x,
-                   0.03f, m_attackCenter.z + m_attackRadius, warnColor, 10);
+    PushCircle(frame, curvedCenter, m_attackRadius, warnColor);
   } else if (m_attack == AttackType::LaserLine) {
-    const float focusWidth = std::max(0.18f, m_laserHalfWidth * (1.0f - chargeT * 0.78f));
     if (m_laserVertical) {
-      PushCurvedRect(frame, -m_laserHalfWidth, kRunnerMinZ,
-                     m_laserHalfWidth, kRunnerMaxZ, 0.03f, warnColor);
-      PushCurvedRect(frame, -focusWidth, kRunnerMinZ, focusWidth,
-                     kRunnerMaxZ, 0.045f, innerColor);
-      PushCurvedLine(frame, 0.0f, 0.055f, kRunnerMinZ, 0.0f, 0.055f,
-                     kRunnerMaxZ, innerColor, 10);
+      PushCurvedRect(frame, -m_laserHalfWidth, kRunnerMinZ, m_laserHalfWidth,
+                     kRunnerMaxZ, 0.03f, warnColor);
     } else {
       PushCurvedRect(frame, -kLaneHalfWidth - 0.70f,
                      m_attackCenter.z - m_laserHalfWidth,
                      kLaneHalfWidth + 0.70f,
-                     m_attackCenter.z + m_laserHalfWidth, 0.03f,
-                     warnColor);
-      PushCurvedRect(frame, -kLaneHalfWidth - 0.70f,
-                     m_attackCenter.z - focusWidth,
-                     kLaneHalfWidth + 0.70f,
-                     m_attackCenter.z + focusWidth, 0.045f, innerColor);
-      PushCurvedLine(frame, -kLaneHalfWidth - 0.70f, 0.055f,
-                     m_attackCenter.z, kLaneHalfWidth + 0.70f, 0.055f,
-                     m_attackCenter.z, innerColor, 4);
+                     m_attackCenter.z + m_laserHalfWidth, 0.03f, warnColor);
     }
   } else if (m_attack == AttackType::SanctuarySeal) {
     const XMFLOAT3 curvedCenter =
         CurvePoint(m_attackCenter.x, m_attackCenter.y, m_attackCenter.z);
-    const float gatherRadius =
-        m_attackRadius * std::lerp(1.0f, 0.28f, chargeT);
-    const XMFLOAT4 sanctuaryBorder =
-        m_phase == AttackPhase::Telegraph
-            ? XMFLOAT4{0.30f, 1.0f, 0.86f, 1.0f}
-            : XMFLOAT4{0.82f, 1.0f, 0.96f, 1.0f};
+    const float gatherRadius = m_attackRadius * std::lerp(1.0f, 0.28f, chargeT);
+    const XMFLOAT4 sanctuaryBorder = m_phase == AttackPhase::Telegraph
+                                         ? XMFLOAT4{0.30f, 1.0f, 0.86f, 1.0f}
+                                         : XMFLOAT4{0.82f, 1.0f, 0.96f, 1.0f};
     const XMFLOAT4 sanctuaryInner{0.48f, 0.90f, 1.0f, 0.90f};
     PushThickCircle(frame, curvedCenter, m_attackRadius, sanctuaryBorder, 4);
     PushCircle(frame, curvedCenter, gatherRadius, sanctuaryInner);
@@ -2846,7 +2820,8 @@ void BossArenaScene::PrepareReflectionTracePattern(
                         variant == ReflectionTraceVariant::PhaseTwoReversed;
   m_reflectionTracePattern.roadHalfWidth = phaseTwo ? 0.055f : 0.07f;
   m_reflectionTracePattern.dropletRadius = 0.018f;
-  m_reflectionTracePattern.startEndRadius = phaseTwo ? 0.046f : 0.05f;
+  m_reflectionTracePattern.startEndRadius =
+      m_reflectionTracePattern.roadHalfWidth + 0.012f;
   m_reflectionTracePattern.nodeRadius = phaseTwo ? 0.038f : 0.042f;
   m_reflectionTracePattern.timeLimit = phaseTwo ? 6.5f : 8.0f;
   m_reflectionTracePattern.reversed = false;
@@ -3259,12 +3234,6 @@ void BossArenaScene::AppendMirrorCharges(FrameData &frame) const {
          CurveWorld(0.72f * pulse, 0.72f * pulse, 0.72f * pulse, pos.x,
                     pos.y + bob, pos.z)});
 
-    const XMFLOAT3 center = CurvePoint(pos.x, 0.16f, pos.z);
-    const XMFLOAT4 ringColor{0.34f, 1.0f, 0.86f, 0.78f};
-    PushCircle(frame, center, 0.72f + 0.12f * pulse, ringColor);
-    PushCurvedLine(frame, pos.x - 0.48f, 0.22f, pos.z, pos.x + 0.48f,
-                   0.22f, pos.z, ringColor, 2);
-
     GPUPointLight chargeLight{};
     chargeLight.position = CurvePoint(pos.x, 1.1f + bob, pos.z);
     chargeLight.range = 4.8f;
@@ -3353,46 +3322,35 @@ void BossArenaScene::DrawReflectionTracePuzzle(
       m_reflectionTracePattern.roadHalfWidth * 2.0f * shortSide;
   const float dropletRadius =
       m_reflectionTracePattern.dropletRadius * shortSide;
-  const float safeWidth = std::max(2.0f, roadWidth - dropletRadius * 2.0f);
   const ImU32 edgeColor =
       failed
-          ? Rgba(1.0f, 0.22f, 0.08f, 0.82f * screenAlpha)
-          : Rgba(0.24f, 0.92f, 1.0f, (succeeded ? 0.96f : 0.62f) * screenAlpha);
-  const ImU32 roadColor = Rgba(0.012f, 0.055f, 0.064f, 0.98f * screenAlpha);
-  const ImU32 safeColor = succeeded
-                              ? Rgba(0.42f, 1.0f, 0.80f, 0.74f * screenAlpha)
-                              : Rgba(0.10f, 0.34f, 0.34f, 0.72f * screenAlpha);
-
-  for (int i = 0; i < m_reflectionTracePattern.roadSegmentCount; ++i) {
-    const ImVec2 a = toScreen(m_reflectionTracePattern.roadSegments[i].a);
-    const ImVec2 b = toScreen(m_reflectionTracePattern.roadSegments[i].b);
-    draw->AddLine(a, b, edgeColor, roadWidth + 4.0f);
-    draw->AddLine(a, b, roadColor, roadWidth);
-    draw->AddLine(a, b, safeColor, safeWidth);
-  }
-  for (int i = 0; i < m_reflectionTracePattern.roadSegmentCount; ++i) {
-    const std::array<ImVec2, 2> joints = {
-        toScreen(m_reflectionTracePattern.roadSegments[i].a),
-        toScreen(m_reflectionTracePattern.roadSegments[i].b)};
-    for (const ImVec2 &joint : joints) {
-      draw->AddCircleFilled(joint, roadWidth * 0.50f + 2.0f, edgeColor, 24);
-      draw->AddCircleFilled(joint, roadWidth * 0.50f, roadColor, 24);
-      draw->AddCircleFilled(joint, safeWidth * 0.50f, safeColor, 24);
-    }
-  }
+          ? Rgba(1.0f, 0.22f, 0.08f, 0.90f * screenAlpha)
+          : Rgba(0.24f, 0.92f, 1.0f, (succeeded ? 0.94f : 0.72f) * screenAlpha);
+  const ImU32 roadColor = Rgba(0.008f, 0.045f, 0.052f, 0.99f * screenAlpha);
+  const auto strokeRoad = [&](ImU32 color, float thickness) {
+    if (m_reflectionTracePattern.roadSegmentCount <= 0)
+      return;
+    draw->PathClear();
+    draw->PathLineTo(toScreen(m_reflectionTracePattern.roadSegments[0].a));
+    for (int i = 0; i < m_reflectionTracePattern.roadSegmentCount; ++i)
+      draw->PathLineTo(toScreen(m_reflectionTracePattern.roadSegments[i].b));
+    draw->PathStroke(color, ImDrawFlags_None, thickness);
+  };
+  strokeRoad(edgeColor, roadWidth + 3.0f);
+  strokeRoad(roadColor, roadWidth);
 
   const float startEndRadius =
       m_reflectionTracePattern.startEndRadius * shortSide;
   const ImVec2 startCenter = toScreen(m_reflectionTracePattern.start);
   const ImVec2 endCenter = toScreen(m_reflectionTracePattern.end);
   draw->AddCircleFilled(startCenter, startEndRadius,
-                        Rgba(0.04f, 0.24f, 0.23f, 0.96f * screenAlpha), 32);
+                        Rgba(0.04f, 0.24f, 0.23f, 0.96f * screenAlpha), 48);
   draw->AddCircle(startCenter, startEndRadius,
-                  Rgba(0.44f, 1.0f, 0.84f, screenAlpha), 32, 2.2f);
+                  Rgba(0.44f, 1.0f, 0.84f, screenAlpha), 48, 2.2f);
   draw->AddCircleFilled(endCenter, startEndRadius,
-                        Rgba(0.10f, 0.13f, 0.17f, 0.96f * screenAlpha), 32);
+                        Rgba(0.10f, 0.13f, 0.17f, 0.96f * screenAlpha), 48);
   draw->AddCircle(endCenter, startEndRadius,
-                  Rgba(0.46f, 0.86f, 1.0f, screenAlpha), 32, 2.2f);
+                  Rgba(0.46f, 0.86f, 1.0f, screenAlpha), 48, 2.2f);
   const char *startLabel = m_reflectionTracePattern.reversed ? "END" : "START";
   const char *endLabel = m_reflectionTracePattern.reversed ? "START" : "END";
   const ImVec2 startLabelSize = ImGui::CalcTextSize(startLabel);
@@ -3404,7 +3362,6 @@ void BossArenaScene::DrawReflectionTracePuzzle(
                        endCenter.y - endLabelSize.y * 0.5f),
                 Rgba(0.80f, 0.94f, 1.0f, screenAlpha), endLabel);
 
-  const float nodeRadius = m_reflectionTracePattern.nodeRadius * shortSide;
   for (int i = 0; i < m_reflectionTracePattern.nodeCount; ++i) {
     const ImVec2 center = toScreen(m_reflectionTracePattern.nodes[i]);
     const bool completed = i < m_reflectionTraceNextNode;
@@ -3415,21 +3372,20 @@ void BossArenaScene::DrawReflectionTracePuzzle(
                : 0.0f;
     const ImU32 nodeColor =
         completed ? Rgba(0.38f, 1.0f, 0.72f, screenAlpha)
-                  : (active ? Rgba(0.70f, 1.0f, 0.94f, screenAlpha)
+                  : (active ? Rgba(0.70f, 1.0f, 0.94f,
+                                   (0.82f + pulse * 0.18f) * screenAlpha)
                             : Rgba(0.34f, 0.64f, 0.64f, 0.74f * screenAlpha));
-    draw->AddCircleFilled(center, nodeRadius,
-                          Rgba(0.015f, 0.08f, 0.085f, 0.94f * screenAlpha), 28);
-    draw->AddCircle(center, nodeRadius + pulse * 2.2f, nodeColor, 28,
-                    active ? 2.6f : 1.8f);
     char nodeLabel[4]{};
     const int visibleNode = m_reflectionTracePattern.reversed
                                 ? m_reflectionTracePattern.nodeCount - i
                                 : i + 1;
     std::snprintf(nodeLabel, sizeof(nodeLabel), "%d", visibleNode);
     const ImVec2 labelSize = ImGui::CalcTextSize(nodeLabel);
-    draw->AddText(
-        ImVec2(center.x - labelSize.x * 0.5f, center.y - labelSize.y * 0.5f),
-        nodeColor, nodeLabel);
+    const ImVec2 labelPosition(center.x - labelSize.x * 0.5f,
+                               center.y - labelSize.y * 0.5f);
+    draw->AddText(ImVec2(labelPosition.x + 1.0f, labelPosition.y + 1.0f),
+                  Rgba(0.0f, 0.02f, 0.025f, 0.96f * screenAlpha), nodeLabel);
+    draw->AddText(labelPosition, nodeColor, nodeLabel);
   }
 
   if (m_reflectionTraceTrailCount > 1) {
@@ -3590,64 +3546,70 @@ void BossArenaScene::DrawPhoneOverlay(int viewportWidth, int viewportHeight) {
     }
 
     draw->AddText(ImVec2(screenMin.x + 24.0f, screenMin.y + 24.0f),
-                  Rgba(0.76f, 0.92f, 0.88f, screenAlpha),
-                  "MIZUKAGAMI");
+                  Rgba(0.76f, 0.92f, 0.88f, screenAlpha), "MIZUKAGAMI");
     draw->AddText(ImVec2(screenMin.x + 24.0f, screenMin.y + 50.0f),
-                  Rgba(0.46f, 0.66f, 0.62f, screenAlpha),
-                  "REVERSE SCRIPT");
+                  Rgba(0.46f, 0.66f, 0.62f, screenAlpha), "REVERSE SCRIPT");
 
     const ImVec2 puzzleMin(screenMin.x + 30.0f, screenMin.y + 102.0f);
     const ImVec2 puzzleMax(screenMax.x - 30.0f, screenMax.y - 76.0f);
-    draw->AddRect(puzzleMin, puzzleMax,
-                  Rgba(0.55f, 0.95f, 0.82f, 0.62f * screenAlpha), 10.0f, 0,
-                  1.6f);
-
     const ImVec2 puzzleCenter((puzzleMin.x + puzzleMax.x) * 0.5f,
                               (puzzleMin.y + puzzleMax.y) * 0.5f);
     const float mirrorTime = static_cast<float>(ImGui::GetTime());
     const float mirrorPulse = SmoothPulse(mirrorTime, 3.4f, 0.32f);
-    draw->AddRectFilled(puzzleMin, puzzleMax,
-                        Rgba(0.012f, 0.082f, 0.092f, 0.24f * screenAlpha),
-                        10.0f);
-    for (int i = 0; i < 5; ++i) {
-      const float ringRadius =
-          (puzzleMax.x - puzzleMin.x) * (0.14f + i * 0.072f) +
-          std::sin(mirrorTime * 1.2f + static_cast<float>(i)) * 4.0f;
-      DrawArc(draw, puzzleCenter, ringRadius,
-              mirrorTime * (0.20f + i * 0.025f) + i * 0.68f,
-              mirrorTime * (0.20f + i * 0.025f) + i * 0.68f + 4.35f,
-              Rgba(0.32f, 1.0f, 0.86f,
-                   (0.13f + 0.04f * mirrorPulse) * screenAlpha),
-              1.4f);
-    }
-    constexpr int kMirrorStrands = 9;
-    for (int i = 0; i < kMirrorStrands; ++i) {
-      const float t = static_cast<float>(i) /
-                      static_cast<float>(kMirrorStrands - 1);
-      const float y = std::lerp(puzzleMin.y + 36.0f, puzzleMax.y - 38.0f, t);
-      const float wave = std::sin(mirrorTime * 2.1f + t * 8.4f);
-      draw->AddLine(ImVec2(puzzleMin.x + 28.0f, y + wave * 4.0f),
-                    ImVec2(puzzleMax.x - 28.0f, y - wave * 4.0f),
-                    Rgba(0.18f, 0.78f, 1.0f, 0.065f * screenAlpha), 1.0f);
+    const bool showReflectionTrace =
+        m_mirrorPuzzleType == MirrorPuzzleType::ReflectionTrace &&
+        (m_mirrorPuzzleReady ||
+         m_reflectionTraceState == ReflectionTraceState::Succeeded ||
+         m_reflectionTraceState == ReflectionTraceState::Failed);
+    draw->AddRectFilled(
+        puzzleMin, puzzleMax,
+        Rgba(0.012f, 0.082f, 0.092f,
+             (showReflectionTrace ? 0.94f : 0.24f) * screenAlpha),
+        10.0f);
+    draw->AddRect(puzzleMin, puzzleMax,
+                  Rgba(0.55f, 0.95f, 0.82f, 0.62f * screenAlpha), 10.0f, 0,
+                  1.6f);
+    if (!showReflectionTrace) {
+      for (int i = 0; i < 5; ++i) {
+        const float ringRadius =
+            (puzzleMax.x - puzzleMin.x) * (0.14f + i * 0.072f) +
+            std::sin(mirrorTime * 1.2f + static_cast<float>(i)) * 4.0f;
+        DrawArc(draw, puzzleCenter, ringRadius,
+                mirrorTime * (0.20f + i * 0.025f) + i * 0.68f,
+                mirrorTime * (0.20f + i * 0.025f) + i * 0.68f + 4.35f,
+                Rgba(0.32f, 1.0f, 0.86f,
+                     (0.13f + 0.04f * mirrorPulse) * screenAlpha),
+                1.4f);
+      }
+      constexpr int kMirrorStrands = 9;
+      for (int i = 0; i < kMirrorStrands; ++i) {
+        const float t =
+            static_cast<float>(i) / static_cast<float>(kMirrorStrands - 1);
+        const float y = std::lerp(puzzleMin.y + 36.0f, puzzleMax.y - 38.0f, t);
+        const float wave = std::sin(mirrorTime * 2.1f + t * 8.4f);
+        draw->AddLine(ImVec2(puzzleMin.x + 28.0f, y + wave * 4.0f),
+                      ImVec2(puzzleMax.x - 28.0f, y - wave * 4.0f),
+                      Rgba(0.18f, 0.78f, 1.0f, 0.065f * screenAlpha), 1.0f);
+      }
     }
     if (m_mirrorMessageTimer > 0.0f || m_memoryFailTimer > 0.0f) {
       const bool failPulse = m_memoryFailTimer > 0.0f;
-      const float fxTimer = failPulse ? m_memoryFailTimer : m_mirrorMessageTimer;
-      const float fxAlpha = std::clamp(fxTimer / (failPulse ? 0.85f : 1.4f),
-                                       0.0f, 1.0f) *
-                            screenAlpha;
-      const ImU32 fxColor =
-          failPulse ? Rgba(1.0f, 0.12f, 0.06f, 0.42f * fxAlpha)
-                    : Rgba(0.34f, 1.0f, 0.86f, 0.36f * fxAlpha);
+      const float fxTimer =
+          failPulse ? m_memoryFailTimer : m_mirrorMessageTimer;
+      const float fxAlpha =
+          std::clamp(fxTimer / (failPulse ? 0.85f : 1.4f), 0.0f, 1.0f) *
+          screenAlpha;
+      const ImU32 fxColor = failPulse
+                                ? Rgba(1.0f, 0.12f, 0.06f, 0.42f * fxAlpha)
+                                : Rgba(0.34f, 1.0f, 0.86f, 0.36f * fxAlpha);
       draw->AddRectFilled(puzzleMin, puzzleMax,
                           failPulse
                               ? Rgba(0.34f, 0.015f, 0.010f, 0.20f * fxAlpha)
                               : Rgba(0.020f, 0.24f, 0.20f, 0.16f * fxAlpha),
                           10.0f);
       for (int i = 0; i < 4; ++i) {
-        const float radius =
-            (puzzleMax.x - puzzleMin.x) * (0.16f + i * 0.09f) +
-            (1.0f - fxAlpha) * 24.0f;
+        const float radius = (puzzleMax.x - puzzleMin.x) * (0.16f + i * 0.09f) +
+                             (1.0f - fxAlpha) * 24.0f;
         DrawArc(draw, puzzleCenter, radius, i * 0.72f,
                 i * 0.72f + (failPulse ? 2.1f : 5.4f), fxColor,
                 failPulse ? 2.4f : 1.8f);
@@ -3664,40 +3626,39 @@ void BossArenaScene::DrawPhoneOverlay(int viewportWidth, int viewportHeight) {
         }
       }
     }
-    const ImU32 glyphColor = Rgba(0.58f, 0.95f, 0.86f, 0.46f * screenAlpha);
-    if (m_mirrorAttack == AttackType::MeteorAoE) {
-      const float r = (puzzleMax.x - puzzleMin.x) * 0.24f;
-      DrawArc(draw, puzzleCenter, r, 0.15f, 1.35f, glyphColor, 3.0f);
-      DrawArc(draw, puzzleCenter, r, 1.70f, 3.05f, glyphColor, 3.0f);
-      DrawArc(draw, puzzleCenter, r, 3.42f, 5.88f, glyphColor, 3.0f);
-      draw->AddLine(ImVec2(puzzleCenter.x - r * 0.72f, puzzleCenter.y),
-                    ImVec2(puzzleCenter.x + r * 0.72f, puzzleCenter.y),
-                    glyphColor, 1.8f);
-      draw->AddLine(ImVec2(puzzleCenter.x, puzzleCenter.y - r * 0.72f),
-                    ImVec2(puzzleCenter.x, puzzleCenter.y + r * 0.72f),
-                    glyphColor, 1.8f);
-    } else if (m_mirrorAttack == AttackType::LaserLine) {
-      const ImVec2 a(puzzleMin.x + 48.0f, puzzleMin.y + 58.0f);
-      const ImVec2 b(puzzleMax.x - 42.0f, puzzleMax.y - 62.0f);
-      draw->AddLine(a, b, glyphColor, 5.0f);
-      draw->AddLine(ImVec2(a.x + 34.0f, a.y + 30.0f),
-                    ImVec2(b.x - 42.0f, b.y - 28.0f), glyphColor, 1.8f);
-      draw->AddLine(ImVec2(a.x + 76.0f, a.y - 12.0f),
-                    ImVec2(a.x + 104.0f, a.y + 36.0f), glyphColor, 1.8f);
-      draw->AddLine(ImVec2(b.x - 92.0f, b.y - 34.0f),
-                    ImVec2(b.x - 54.0f, b.y + 10.0f), glyphColor, 1.8f);
-    } else {
-      const float maxR = (puzzleMax.x - puzzleMin.x) * 0.31f;
-      DrawArc(draw, puzzleCenter, maxR * 0.36f, 0.0f, XM_2PI, glyphColor, 2.0f);
-      DrawArc(draw, puzzleCenter, maxR * 0.62f, 0.0f, XM_2PI, glyphColor, 2.0f);
-      DrawArc(draw, puzzleCenter, maxR, 0.0f, XM_2PI, glyphColor, 2.0f);
+    if (!showReflectionTrace) {
+      const ImU32 glyphColor = Rgba(0.58f, 0.95f, 0.86f, 0.46f * screenAlpha);
+      if (m_mirrorAttack == AttackType::MeteorAoE) {
+        const float r = (puzzleMax.x - puzzleMin.x) * 0.24f;
+        DrawArc(draw, puzzleCenter, r, 0.15f, 1.35f, glyphColor, 3.0f);
+        DrawArc(draw, puzzleCenter, r, 1.70f, 3.05f, glyphColor, 3.0f);
+        DrawArc(draw, puzzleCenter, r, 3.42f, 5.88f, glyphColor, 3.0f);
+        draw->AddLine(ImVec2(puzzleCenter.x - r * 0.72f, puzzleCenter.y),
+                      ImVec2(puzzleCenter.x + r * 0.72f, puzzleCenter.y),
+                      glyphColor, 1.8f);
+        draw->AddLine(ImVec2(puzzleCenter.x, puzzleCenter.y - r * 0.72f),
+                      ImVec2(puzzleCenter.x, puzzleCenter.y + r * 0.72f),
+                      glyphColor, 1.8f);
+      } else if (m_mirrorAttack == AttackType::LaserLine) {
+        const ImVec2 a(puzzleMin.x + 48.0f, puzzleMin.y + 58.0f);
+        const ImVec2 b(puzzleMax.x - 42.0f, puzzleMax.y - 62.0f);
+        draw->AddLine(a, b, glyphColor, 5.0f);
+        draw->AddLine(ImVec2(a.x + 34.0f, a.y + 30.0f),
+                      ImVec2(b.x - 42.0f, b.y - 28.0f), glyphColor, 1.8f);
+        draw->AddLine(ImVec2(a.x + 76.0f, a.y - 12.0f),
+                      ImVec2(a.x + 104.0f, a.y + 36.0f), glyphColor, 1.8f);
+        draw->AddLine(ImVec2(b.x - 92.0f, b.y - 34.0f),
+                      ImVec2(b.x - 54.0f, b.y + 10.0f), glyphColor, 1.8f);
+      } else {
+        const float maxR = (puzzleMax.x - puzzleMin.x) * 0.31f;
+        DrawArc(draw, puzzleCenter, maxR * 0.36f, 0.0f, XM_2PI, glyphColor,
+                2.0f);
+        DrawArc(draw, puzzleCenter, maxR * 0.62f, 0.0f, XM_2PI, glyphColor,
+                2.0f);
+        DrawArc(draw, puzzleCenter, maxR, 0.0f, XM_2PI, glyphColor, 2.0f);
+      }
     }
 
-    const bool showReflectionTrace =
-        m_mirrorPuzzleType == MirrorPuzzleType::ReflectionTrace &&
-        (m_mirrorPuzzleReady ||
-         m_reflectionTraceState == ReflectionTraceState::Succeeded ||
-         m_reflectionTraceState == ReflectionTraceState::Failed);
     if (showReflectionTrace) {
       DrawReflectionTracePuzzle(draw, puzzleMin.x, puzzleMin.y, puzzleMax.x,
                                 puzzleMax.y, screenAlpha);
