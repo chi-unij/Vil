@@ -10,6 +10,7 @@
 #include "ShaderCompiler.h"
 
 #include <DirectXMath.h>
+#include <algorithm>
 #include <cstring>
 #include <d3dcompiler.h>
 #include <stdexcept>
@@ -44,16 +45,17 @@ static ComPtr<ID3DBlob> CompileShader(const wchar_t *filePath,
   return bytecode;
 }
 
-// Helper: create a root signature with 1 root constants slot + 1-2 SRV tables +
-// bilinear clamp sampler.
+// Helper: create a root signature with one root-constants slot, SRV tables,
+// and a bilinear clamp sampler.
 static ComPtr<ID3D12RootSignature>
-CreatePostProcessRootSig(ID3D12Device *device, uint32_t numSrvTables) {
-  // Root param 0: 4 root constants (b0)
+CreatePostProcessRootSig(ID3D12Device *device, uint32_t numSrvTables,
+                         uint32_t num32BitConstants = 4) {
+  // Root param 0: post-process constants (b0)
   D3D12_ROOT_PARAMETER params[4]{};
   params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
   params[0].Constants.ShaderRegister = 0; // b0
   params[0].Constants.RegisterSpace = 0;
-  params[0].Constants.Num32BitValues = 4;
+  params[0].Constants.Num32BitValues = num32BitConstants;
   params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
   D3D12_DESCRIPTOR_RANGE srvRanges[3]{};
@@ -165,7 +167,7 @@ void PostProcessRenderer::Initialize(DxContext &dx) {
                                      bloomUpPS.Get(), dx.HdrFormat(), true);
 
   // ---- Tonemap (3 SRVs: HDR scene t0, bloom t1, AO t2) ----
-  m_tonemapRootSig = CreatePostProcessRootSig(dev, 3);
+  m_tonemapRootSig = CreatePostProcessRootSig(dev, 3, 8);
 
   auto tonemapVS =
       CompileShader(L"shaders/postprocess.hlsl", "VSFullscreen", "vs_5_0");
@@ -468,19 +470,26 @@ void PostProcessRenderer::ExecuteTonemap(DxContext &dx,
     float exposure;
     float bloomIntensity;
     float aoStrength;
-    float pad;
+    float inkWashStrength;
+    float inkFlowStrength;
+    float gameTime;
+    float inkFlowSpeed;
+    float pad1;
   } cb;
   cb.exposure = params.exposure;
   cb.bloomIntensity = params.bloomEnabled ? params.bloomIntensity : 0.0f;
   cb.aoStrength = params.aoStrength;
-  cb.pad = 0.0f;
+  cb.inkWashStrength = std::clamp(params.inkWashStrength, 0.0f, 1.0f);
+  cb.inkFlowStrength = std::clamp(params.inkFlowStrength, 0.0f, 1.0f);
+  cb.gameTime = params.gameTime;
+  cb.inkFlowSpeed = std::clamp(params.inkFlowSpeed, 0.0f, 2.0f);
+  cb.pad1 = 0.0f;
 
-  cmd->SetGraphicsRoot32BitConstants(0, 4, &cb, 0);
+  cmd->SetGraphicsRoot32BitConstants(0, 8, &cb, 0);
 
   // HDR scene SRV (or TAA output override, already in SRV state after bloom)
-  auto hdrSrv = (params.hdrOverrideSrvGpu.ptr != 0)
-                    ? params.hdrOverrideSrvGpu
-                    : dx.HdrSrvGpu();
+  auto hdrSrv = (params.hdrOverrideSrvGpu.ptr != 0) ? params.hdrOverrideSrvGpu
+                                                    : dx.HdrSrvGpu();
   cmd->SetGraphicsRootDescriptorTable(1, hdrSrv);
   // Bloom result (mip 0) SRV
   cmd->SetGraphicsRootDescriptorTable(2, dx.GetBloomMip(0).srvGpu);

@@ -805,6 +805,10 @@ void TonemapPass::Execute(DxContext &dx, const FrameData &frame) {
   params.exposure = frame.exposure;
   params.bloomThreshold = frame.bloomThreshold;
   params.bloomIntensity = frame.bloomIntensity;
+  params.inkWashStrength = frame.inkWashStrength;
+  params.inkFlowStrength = frame.inkFlowStrength;
+  params.inkFlowSpeed = frame.inkFlowSpeed;
+  params.gameTime = frame.gameTime;
   params.bloomEnabled = frame.bloomEnabled;
   params.fxaaEnabled = frame.fxaaEnabled;
   params.motionBlurEnabled = frame.motionBlurEnabled && frame.hasPrevViewProj;

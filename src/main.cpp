@@ -735,6 +735,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     float puddleClarity = 0.90f;
     float puddleTint = 0.28f;
     float puddleRippleStrength = 0.35f;
+    constexpr float kInkEdgeReviewStrength = 0.65f;
+    constexpr float kInkFlowReviewStrength = 0.90f;
+    constexpr float kInkFlowReviewSpeed = 1.50f;
+    float inkWashStrength = kInkEdgeReviewStrength;
+    float inkFlowStrength = kInkFlowReviewStrength;
+    float inkFlowSpeed = kInkFlowReviewSpeed;
     overworldScene.SetWaterTransparency(dx, waterTransparency);
 
     // IBL (Phase 10.2)
@@ -992,6 +998,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     sceneEditor.InitEditorMeshes(dx); // Phase 5B: create viewport tile meshes.
     bool prevF1 = false;
     bool prevF5 = false;
+#if defined(_DEBUG)
+    bool prevF7 = false;
+#endif
     bool prevLButton = false; // for edge-detection of left-click (mouse pick)
 
     // Shader hot-reload (Phase 8).
@@ -1100,6 +1109,23 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
           sceneEditor.ToggleGridEditor();
         prevF6 = f6Now;
       }
+
+      // ---- F7: Phase 2 水墨輪郭と墨流れの比較切り替え（Debug のみ） ----
+#if defined(_DEBUG)
+      {
+        const bool f7Now = input.IsKeyDown(VK_F7);
+        if (f7Now && !prevF7 &&
+            appMode == AppMode::BossArena && bossArenaScene.PhaseTwoActive()) {
+          const bool inkEnabled =
+              inkWashStrength > 0.001f || inkFlowStrength > 0.001f;
+          inkWashStrength = inkEnabled ? 0.0f : kInkEdgeReviewStrength;
+          inkFlowStrength = inkEnabled ? 0.0f : kInkFlowReviewStrength;
+          if (!inkEnabled)
+            inkFlowSpeed = kInkFlowReviewSpeed;
+        }
+        prevF7 = f7Now;
+      }
+#endif
 
       // ---- F9: shader hot-reload (Phase 8) ----
       {
@@ -1600,11 +1626,31 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         ImGui::Text("Sun Dir: %.2f, %.2f, %.2f",
                     gameLighting.sunDirection.x, gameLighting.sunDirection.y,
                     gameLighting.sunDirection.z);
-        ImGui::Text("Sun Color: %.2f, %.2f, %.2f",
-                    gameLighting.sunColor.x, gameLighting.sunColor.y,
-                    gameLighting.sunColor.z);
+        ImGui::Text("Sun Color: %.2f, %.2f, %.2f", gameLighting.sunColor.x,
+                    gameLighting.sunColor.y, gameLighting.sunColor.z);
         ImGui::Text("Sun Intensity: %.2f", gameLighting.sunIntensity);
         ImGui::Text("IBL Intensity: %.2f", kGameIblIntensity);
+        ImGui::Separator();
+        ImGui::Text("Sumi-e Tonemap Prototype");
+        ImGui::SliderFloat("Ink Edge Strength", &inkWashStrength, 0.0f, 1.0f,
+                           "%.2f");
+        ImGui::SliderFloat("Ink Flow Strength", &inkFlowStrength, 0.0f, 1.0f,
+                           "%.2f");
+        ImGui::SliderFloat("Ink Flow Speed", &inkFlowSpeed, 0.0f, 2.0f,
+                           "%.2f");
+        if (ImGui::Button("Ink Effects Off")) {
+          inkWashStrength = 0.0f;
+          inkFlowStrength = 0.0f;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Review Preset")) {
+          inkWashStrength = kInkEdgeReviewStrength;
+          inkFlowStrength = kInkFlowReviewStrength;
+          inkFlowSpeed = kInkFlowReviewSpeed;
+        }
+        ImGui::TextDisabled("Boss Phase 2 only");
+        ImGui::TextDisabled("F7 toggles Off / Review Preset in Phase 2");
+        ImGui::TextDisabled("0.00 = 06df2b9 visual baseline");
         if (ImGui::Button("Midnight")) {
           gameTimeOfDayHours = 0.0f;
         }
@@ -1881,6 +1927,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         if (sceneEditor.IsGridEditorOpen()) {
           sceneEditor.BuildStageViewportItems(editStage, frame);
         }
+      }
+
+      // 水墨輪郭と墨流れは Boss Phase 2 の世界変化としてのみ適用する。
+      if (appMode == AppMode::BossArena && bossArenaScene.PhaseTwoActive()) {
+        frame.inkWashStrength = inkWashStrength;
+        frame.inkFlowStrength = inkFlowStrength;
+        frame.inkFlowSpeed = inkFlowSpeed;
       }
 
       // Mode indicator overlay.

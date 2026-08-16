@@ -83,6 +83,9 @@ struct FrameData {
   float exposure = 1.0f;
   float bloomThreshold = 1.0f;
   float bloomIntensity = 0.5f;
+  float inkWashStrength = 0.0f;
+  float inkFlowStrength = 0.0f;
+  float inkFlowSpeed = 1.5f;
   bool bloomEnabled = true;
   bool fxaaEnabled = true;
 
