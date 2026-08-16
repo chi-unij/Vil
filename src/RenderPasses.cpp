@@ -621,7 +621,7 @@ std::string SSRPass::ReloadShaders(DxContext &dx) {
 }
 
 void SSRPass::Execute(DxContext &dx, const FrameData &frame) {
-  if (!frame.ssrEnabled)
+  if (!frame.ssrEnabled || frame.reflectionMode != ReflectionMode::SSR)
     return;
 
   CreatePipelineOnce(dx);

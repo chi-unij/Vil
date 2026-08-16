@@ -1159,6 +1159,41 @@ void SceneEditor::DrawInspector(Scene &scene, DxContext &dx) {
         matChanged |= ImGui::ColorEdit3("Emissive", &mat.emissiveFactor.x);
         CheckDragStart(); CheckDragEnd();
 
+        // 反射を受ける役割と、DXR scene に含める役割を別々に編集する。
+        ImGui::Separator();
+        ImGui::Text("Ray Tracing Reflection");
+        constexpr const char *kReceiverNames[] = {"None", "Water", "Mirror"};
+        const int receiverIndex =
+            static_cast<int>(mat.reflectionReceiver);
+        if (ImGui::BeginCombo("Reflection Receiver",
+                              kReceiverNames[receiverIndex])) {
+          for (int receiver = 0; receiver < 3; ++receiver) {
+            if (ImGui::Selectable(kReceiverNames[receiver],
+                                  receiver == receiverIndex)) {
+              Material oldMat = mat;
+              auto oldPaths = mc.texturePaths;
+              mat.reflectionReceiver =
+                  static_cast<ReflectionReceiver>(receiver);
+              m_history.Execute(std::make_unique<MaterialCommand>(
+                  scene, dx, e->id, oldMat, mat, oldPaths, mc.texturePaths));
+              matChanged = true;
+            }
+          }
+          ImGui::EndCombo();
+        }
+        matChanged |= ImGui::SliderFloat("Reflection Strength",
+                                         &mat.reflectionStrength, 0.0f, 1.0f);
+        CheckDragStart(); CheckDragEnd();
+        bool rayTracingVisible = mat.rayTracingVisible;
+        if (ImGui::Checkbox("Ray Tracing Visible", &rayTracingVisible)) {
+          Material oldMat = mat;
+          auto oldPaths = mc.texturePaths;
+          mat.rayTracingVisible = rayTracingVisible;
+          m_history.Execute(std::make_unique<MaterialCommand>(
+              scene, dx, e->id, oldMat, mat, oldPaths, mc.texturePaths));
+          matChanged = true;
+        }
+
         // UV tiling/offset.
         ImGui::Separator();
         ImGui::Text("UV Transform");

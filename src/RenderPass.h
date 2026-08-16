@@ -36,6 +36,13 @@ struct InstanceBatch {
   std::vector<DirectX::XMMATRIX> worldMatrices;
 };
 
+// 反射経路を明示的に切り替え、DXR 非対応環境では SSR を維持する。
+enum class ReflectionMode : uint8_t {
+  Off,
+  SSR,
+  HybridDXR,
+};
+
 // Bundles all per-frame state that render passes need.
 // Built fresh each frame in main.cpp and passed to every pass.
 struct FrameData {
@@ -127,6 +134,7 @@ struct FrameData {
   DirectX::XMFLOAT4 wetSurfaceParams = {0.9f, 4.0f, 4.5f, 5.5f};
   DirectX::XMFLOAT4 puddleParams = {1.0f, 0.0f, 3.2f, 0.35f};
   DirectX::XMFLOAT4 puddleVisualParams = {0.90f, 0.28f, 1.0f, 0.0f};
+  ReflectionMode reflectionMode = ReflectionMode::SSR;
   bool ssrEnabled = true;
   DirectX::XMFLOAT4 ssrReflectionParams = {0.85f, 28.0f, 0.35f, 0.35f};
 };

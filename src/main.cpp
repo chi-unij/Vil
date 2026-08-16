@@ -7,6 +7,7 @@
 #include "Camera.h"
 #include "DxContext.h"
 #include "GridRenderer.h"
+#include "HybridReflectionRenderer.h"
 #include "ImGuiLayer.h"
 #include "Input.h"
 #include "PostProcess.h"
@@ -403,8 +404,9 @@ static bool DrawSettingsChoice(ImDrawList *draw, const char *id,
   return clicked;
 }
 
-static bool HasEditorCommandLineSwitch(const wchar_t *commandLine) {
-  if (!commandLine)
+static bool HasCommandLineSwitch(const wchar_t *commandLine,
+                                 std::wstring_view expectedSwitch) {
+  if (!commandLine || expectedSwitch.empty())
     return false;
 
   const wchar_t *cursor = commandLine;
@@ -426,7 +428,7 @@ static bool HasEditorCommandLineSwitch(const wchar_t *commandLine) {
 
     if (std::wstring_view(argumentBegin,
                           static_cast<size_t>(cursor - argumentBegin)) ==
-        L"--editor") {
+        expectedSwitch) {
       return true;
     }
 
@@ -515,6 +517,10 @@ static void PopulateEditorWelcomeScene(Scene &scene, DxContext &dx) {
   ground.mesh->width = 18.0f;
   ground.mesh->height = 18.0f;
   ground.mesh->material.uvTiling = {5.0f, 5.0f};
+  ground.mesh->material.proceduralTypeId = 7.0f;
+  ground.mesh->material.reflectionReceiver = ReflectionReceiver::Water;
+  ground.mesh->material.reflectionStrength = 1.0f;
+  ground.mesh->material.rayTracingVisible = false;
   ground.mesh->texturePaths[0] =
       "Assets/textures/Floor_png/Ground037_2K-PNG_Color.png";
   ground.mesh->texturePaths[1] =
@@ -548,6 +554,16 @@ static void PopulateEditorWelcomeScene(Scene &scene, DxContext &dx) {
   cylinder.mesh->height = 1.9f;
   cylinder.mesh->segments = 32;
 
+  Entity &mirror = addMesh("DXR Mirror", MeshSourceType::ProceduralPlane,
+                           {0.0f, 1.25f, 7.2f},
+                           {0.08f, 0.09f, 0.11f, 1.0f}, 0.94f, 0.035f);
+  mirror.mesh->width = 7.2f;
+  mirror.mesh->height = 4.5f;
+  mirror.transform.rotation = {-90.0f, 0.0f, 0.0f};
+  mirror.mesh->material.reflectionReceiver = ReflectionReceiver::Mirror;
+  mirror.mesh->material.reflectionStrength = 1.0f;
+  mirror.mesh->material.rayTracingVisible = false;
+
   Entity pointLight;
   pointLight.id = scene.AllocateId();
   pointLight.name = "Key Point Light";
@@ -579,8 +595,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
 #else
     constexpr bool kDedicatedEditorBuild = false;
 #endif
+    const bool dxrSmokeRequested =
+        HasCommandLineSwitch(commandLine, L"--dxr-smoke");
+    const bool dxrProofRequested =
+        HasCommandLineSwitch(commandLine, L"--dxr-proof") ||
+        dxrSmokeRequested;
     const bool launchEditor =
-        kDedicatedEditorBuild || HasEditorCommandLineSwitch(commandLine);
+        kDedicatedEditorBuild ||
+        HasCommandLineSwitch(commandLine, L"--editor") ||
+        dxrProofRequested;
     const wchar_t *windowTitle =
         launchEditor ? L"VILLIEN Editor" : L"VILLIEN";
     const bool contentRootFound = SetWorkingDirectoryToContentRoot();
@@ -610,6 +633,21 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     dx.Initialize(window.Handle(), window.Width(), window.Height(),
                   kEnableD3D12DebugLayer);
 
+    // DXR 1.1 / DXIL の前提だけを検証する。失敗時は既存 SSR を維持する。
+    HybridReflectionRenderer hybridReflection;
+    hybridReflection.Initialize(dx);
+    bool dxrProofSceneLogged = false;
+    bool dxrProofAuditLogged = false;
+    bool dxrProofDispatchLogged = false;
+    int dxrSmokeFramesRemaining = dxrSmokeRequested ? 4 : -1;
+    ReflectionMode reflectionMode =
+        dxrProofRequested && hybridReflection.IsSupported()
+            ? ReflectionMode::HybridDXR
+            : ReflectionMode::SSR;
+    const std::string dxrStartupStatus =
+        "DXR preflight: " + hybridReflection.Status();
+    TraceAppEvent(dxrStartupStatus.c_str());
+
     Camera cam;
     cam.SetPosition(0.0f, 1.5f, -4.0f);
     cam.SetYawPitch(0.0f, 0.0f);
@@ -626,13 +664,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     ImGuiLayer imgui;
     SetStartupStage(40);
     imgui.Initialize(window, dx);
+    TraceAppEvent("startup: ImGui ready");
 
     // ---- Initialize renderer modules (Phase 8) ----
     SkyRenderer skyRenderer;
     skyRenderer.Initialize(dx);
+    TraceAppEvent("startup: sky ready");
 
     IBLGenerator iblGenerator;
     iblGenerator.Initialize(dx, skyRenderer.HdriTexture(), skyRenderer.HdriSrvGpu());
+    TraceAppEvent("startup: IBL ready");
 
     GridRenderer gridRenderer;
     gridRenderer.Initialize(dx);
@@ -644,11 +685,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     // CHI-35: Player / Idle / Walk / Run クリップ確認用プレビュー。
     PlayerAnimationPreview playerPreview;
     playerPreview.Initialize(dx);
+    TraceAppEvent("startup: player preview ready");
     BossArenaScene bossArenaScene;
     bossArenaScene.Initialize(dx);
     bossArenaScene.Reset(playerPreview);
+    TraceAppEvent("startup: boss arena ready");
     OverworldScene overworldScene;
     overworldScene.Initialize(dx);
+    TraceAppEvent("startup: overworld ready");
     std::vector<OverworldScene::CollisionShapeConfig> overworldCollisionShapes =
         overworldScene.BuildDefaultCollisionShapes();
     std::vector<CollisionSystem::Collider> overworldCollisionColliders =
@@ -683,10 +727,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     // ---- Initialize post-processing (Phase 9) ----
     PostProcessRenderer postProcess;
     postProcess.Initialize(dx);
+    TraceAppEvent("startup: post process ready");
 
     // ---- Initialize SSAO (Phase 10.3) ----
     SSAORenderer ssaoRenderer;
     ssaoRenderer.Initialize(dx);
+    TraceAppEvent("startup: SSAO ready");
 
     // ---- Create render passes (Phase 8 + Phase 9 + Phase 12.1) ----
     ShadowPass shadowPass(dx.GetShadowMap(), dx.GetMeshRenderer());
@@ -759,6 +805,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     Scene editorScene;
     SceneEditor sceneEditor;
     PopulateEditorWelcomeScene(editorScene, dx);
+    TraceAppEvent("startup: editor welcome scene ready");
     CameraPreset editorReturnCamera;
     bool editorReturnCameraValid = false;
     bool scenePlayMode = false;
@@ -1000,6 +1047,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     bool prevF5 = false;
 #if defined(_DEBUG)
     bool prevF7 = false;
+    bool prevF8 = false;
 #endif
     bool prevLButton = false; // for edge-detection of left-click (mouse pick)
 
@@ -1013,6 +1061,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     int gameTraceFramesRemaining = 12;
 
     SetStartupStage(70);
+    TraceAppEvent("startup: entering main loop");
     while (window.PumpMessages()) {
       if (resizeCtx.pendingResize) {
         resizeCtx.pendingResize = false;
@@ -1124,6 +1173,35 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
             inkFlowSpeed = kInkFlowReviewSpeed;
         }
         prevF7 = f7Now;
+      }
+#endif
+
+      // ---- F8: 反射経路の比較（Debug のみ） ----
+#if defined(_DEBUG)
+      {
+        const bool f8Now = input.IsKeyDown(VK_F8);
+        if (f8Now && !prevF8) {
+          switch (reflectionMode) {
+          case ReflectionMode::Off:
+            reflectionMode = ReflectionMode::SSR;
+            TraceAppEvent("reflection mode: SSR");
+            break;
+          case ReflectionMode::SSR:
+            if (hybridReflection.IsSupported()) {
+              reflectionMode = ReflectionMode::HybridDXR;
+              TraceAppEvent("reflection mode: HybridDXR");
+            } else {
+              reflectionMode = ReflectionMode::Off;
+              TraceAppEvent("reflection mode: Off (DXR unavailable)");
+            }
+            break;
+          case ReflectionMode::HybridDXR:
+            reflectionMode = ReflectionMode::Off;
+            TraceAppEvent("reflection mode: Off");
+            break;
+          }
+        }
+        prevF8 = f8Now;
       }
 #endif
 
@@ -1820,6 +1898,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       frame.puddleParams = {puddleStrength, puddleBuildSeconds, puddleRadius,
                             puddleRippleStrength};
       frame.puddleVisualParams = {puddleClarity, puddleTint, 1.0f, 0.0f};
+      frame.reflectionMode = reflectionMode;
       frame.cascadeCount = cascadeCount;
       frame.cascadeLightViewProj = cascadeVP;
       frame.cascadeSplitDistances = cascadeSplitDists;
@@ -1941,7 +2020,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         const EditorViewportRect &modeViewport = sceneEditor.ViewportRect();
         ImGui::SetNextWindowPos(
             ImVec2(modeViewport.x + 10.0f,
-                   modeViewport.y + modeViewport.height - 30.0f));
+                   modeViewport.y + modeViewport.height - 8.0f),
+            ImGuiCond_Always, ImVec2(0.0f, 1.0f));
         ImGui::Begin("##ModeIndicator", nullptr,
             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
@@ -1956,6 +2036,25 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
           // 通常エディタ状態。
           ImGui::TextColored(ImVec4(0,1,0.5f,1), "[EDITOR] F5=Scene Play  F6=Grid Editor");
         }
+        ImGui::TextUnformatted("Reflection [F8]");
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Off##ReflectionMode",
+                               reflectionMode == ReflectionMode::Off)) {
+          reflectionMode = ReflectionMode::Off;
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("SSR##ReflectionMode",
+                               reflectionMode == ReflectionMode::SSR)) {
+          reflectionMode = ReflectionMode::SSR;
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!hybridReflection.IsSupported());
+        if (ImGui::RadioButton(
+                "Hybrid DXR##ReflectionMode",
+                reflectionMode == ReflectionMode::HybridDXR)) {
+          reflectionMode = ReflectionMode::HybridDXR;
+        }
+        ImGui::EndDisabled();
         ImGui::End();
       }
 
@@ -2030,6 +2129,40 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       if (traceGameFrame)
         TraceAppEvent("pass: DeferredLighting");
       deferredLightingPass.Execute(dx, frame);
+      bool dxrProofSceneReady = hybridReflection.SceneReady();
+      if (frame.reflectionMode == ReflectionMode::HybridDXR) {
+        dxrProofSceneReady = hybridReflection.PrepareScene(
+            dx, frame, dx.GetMeshRenderer());
+        if (!dxrProofAuditLogged) {
+          const std::string dxrAudit =
+              "DXR scene audit: opaqueItems=" +
+              std::to_string(frame.opaqueItems.size()) + " status=" +
+              hybridReflection.Status();
+          TraceAppEvent(dxrAudit.c_str());
+          dxrProofAuditLogged = true;
+        }
+        if (dxrProofSceneReady && !dxrProofSceneLogged) {
+          const std::string dxrSceneStatus =
+              "DXR scene ready: " + hybridReflection.Status() +
+              " instances=" +
+              std::to_string(hybridReflection.SceneInstanceCount()) +
+              " cachedBlas=" +
+              std::to_string(hybridReflection.BlasCount());
+          TraceAppEvent(dxrSceneStatus.c_str());
+          dxrProofSceneLogged = true;
+        }
+        if (dxrProofSceneReady && hybridReflection.Execute(dx, frame)) {
+          if (!dxrProofDispatchLogged) {
+            const std::string dxrDispatchStatus =
+                "DXR dispatch proof: " + hybridReflection.Status();
+            TraceAppEvent(dxrDispatchStatus.c_str());
+            dxrProofDispatchLogged = true;
+          }
+        } else {
+          // Scene data がまだ揃わない frame では既存 SSR へ安全に戻す。
+          frame.reflectionMode = ReflectionMode::SSR;
+        }
+      }
       // SSR は opaque scene と対応する depth だけを参照する。
       // Particle／debug overlay を先に描くと、深度を持たない色が水面へ伸びる。
       if (traceGameFrame)
@@ -2079,6 +2212,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       if (traceGameFrame)
         TraceAppEvent("pass: EndFrame");
       dx.EndFrame();
+      if (dxrSmokeRequested && dxrProofDispatchLogged &&
+          dxrSmokeFramesRemaining > 0) {
+        --dxrSmokeFramesRemaining;
+        if (dxrSmokeFramesRemaining == 0) {
+          TraceAppEvent("DXR smoke: completed four rendered frames");
+          requestQuit = true;
+        }
+      }
       if (traceGameFrame)
         TraceAppEvent("game frame: end");
 
@@ -2098,6 +2239,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
 
     // ---- Shutdown (reverse init order) ----
     dx.WaitForGpu(); // Flush GPU before releasing any resources
+    if (dxrSmokeRequested) {
+      std::ofstream debugLog("dxr_smoke_debug_log.txt",
+                             std::ios::out | std::ios::trunc);
+      if (debugLog)
+        dx.DumpDebugMessages(debugLog);
+    }
+    hybridReflection.Reset();
     ssaoRenderer.Reset();
     postProcess.Reset();
     iblGenerator.Reset();

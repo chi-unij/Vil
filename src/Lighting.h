@@ -8,6 +8,14 @@
 #pragma once
 
 #include <DirectXMath.h>
+#include <cstdint>
+
+// 反射レイを受け取るサーフェスの種類。
+enum class ReflectionReceiver : uint8_t {
+  None = 0,
+  Water = 1,
+  Mirror = 2,
+};
 
 // Per-mesh material properties. Populated from glTF, editable via ImGui.
 // Stored per-mesh inside MeshRenderer so different objects can have different
@@ -29,6 +37,11 @@ struct Material {
   float vertexDeformTypeId = 0.0f;
   // 細長い発光物など、screen-space 反射で不安定になる面を除外する。
   bool ssrExcluded = false;
+
+  // DXR の走査対象と、反射を受け取る側の役割は独立して設定する。
+  ReflectionReceiver reflectionReceiver = ReflectionReceiver::None;
+  float reflectionStrength = 1.0f;
+  bool rayTracingVisible = true;
 
   // glTF alpha cutout for foliage/card materials.
   bool alphaCutout = false;

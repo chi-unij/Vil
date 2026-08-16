@@ -125,6 +125,8 @@ set(VILLIEN_SOURCES
     src/SSAORenderer.cpp
     src/PostProcess.h
     src/PostProcess.cpp
+    src/HybridReflectionRenderer.h
+    src/HybridReflectionRenderer.cpp
     src/TerrainLOD.h
     src/TerrainLOD.cpp
     src/ProceduralMesh.h
@@ -203,6 +205,44 @@ foreach(VILLIEN_TARGET IN ITEMS SoloAssignment VillienEditor)
 endforeach()
 target_compile_definitions(VillienEditor PRIVATE VILLIEN_EDITOR_BUILD=1)
 
+# ---- DXR / Shader Model 6.5 compile proof ----
+# Raster shaders keep the existing D3DCompile hot-reload path. Only the
+# isolated Inline RayQuery shader is compiled with Windows SDK DXC.
+find_program(VILLIEN_DXC_EXECUTABLE
+    NAMES dxc.exe dxc
+    HINTS
+        "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64"
+        "C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64"
+)
+
+set(VILLIEN_GENERATED_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated_shaders")
+set(VILLIEN_HYBRID_REFLECTION_DXIL
+    "${VILLIEN_GENERATED_SHADER_DIR}/hybrid_reflection.dxil")
+
+if (VILLIEN_DXC_EXECUTABLE)
+    add_custom_command(
+        OUTPUT "${VILLIEN_HYBRID_REFLECTION_DXIL}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${VILLIEN_GENERATED_SHADER_DIR}"
+        COMMAND "${VILLIEN_DXC_EXECUTABLE}"
+                -T cs_6_5
+                -E CSMain
+                -Fo "${VILLIEN_HYBRID_REFLECTION_DXIL}"
+                "${CMAKE_SOURCE_DIR}/shaders/hybrid_reflection.hlsl"
+        DEPENDS "${CMAKE_SOURCE_DIR}/shaders/hybrid_reflection.hlsl"
+        COMMENT "Compiling Hybrid DXR reflection shader (cs_6_5)"
+        VERBATIM
+    )
+    add_custom_target(VillienDxrShaders DEPENDS "${VILLIEN_HYBRID_REFLECTION_DXIL}")
+    add_dependencies(SoloAssignment VillienDxrShaders)
+    add_dependencies(VillienEditor VillienDxrShaders)
+    target_compile_definitions(SoloAssignment PRIVATE VILLIEN_DXR_SHADER_BUILD=1)
+    target_compile_definitions(VillienEditor PRIVATE VILLIEN_DXR_SHADER_BUILD=1)
+else()
+    message(WARNING "Windows SDK dxc.exe was not found; Hybrid DXR will use SSR fallback")
+    target_compile_definitions(SoloAssignment PRIVATE VILLIEN_DXR_SHADER_BUILD=0)
+    target_compile_definitions(VillienEditor PRIVATE VILLIEN_DXR_SHADER_BUILD=0)
+endif()
+
 # ---- MSVC 警告レベル ----
 if (MSVC)
     foreach(VILLIEN_TARGET IN ITEMS SoloAssignment VillienEditor)
@@ -248,8 +288,24 @@ add_custom_command(TARGET SoloAssignment POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Assets" "$<TARGET_FILE_DIR:SoloAssignment>/Assets"
 )
 
+if (VILLIEN_DXC_EXECUTABLE)
+    add_custom_command(TARGET SoloAssignment POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${VILLIEN_HYBRID_REFLECTION_DXIL}"
+                "$<TARGET_FILE_DIR:SoloAssignment>/shaders/hybrid_reflection.dxil"
+    )
+endif()
+
 # Editor はルートの Assets を直接使用し、巨大アセットの複製を避ける。
 add_custom_command(TARGET VillienEditor POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:VillienEditor>/shaders"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/shaders" "$<TARGET_FILE_DIR:VillienEditor>/shaders"
 )
+
+if (VILLIEN_DXC_EXECUTABLE)
+    add_custom_command(TARGET VillienEditor POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${VILLIEN_HYBRID_REFLECTION_DXIL}"
+                "$<TARGET_FILE_DIR:VillienEditor>/shaders/hybrid_reflection.dxil"
+    )
+endif()

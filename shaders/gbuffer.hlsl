@@ -11,6 +11,7 @@ cbuffer GBufferCB : register(b0)
     float4x4 gProj;
     float4   gCameraPos;        // xyz
     float4   gMaterialFactors;  // x=metallic, y=roughness, z=SSR exclusion
+    float4   gReflectionMaterialParams; // x=receiver type, y=strength
     float4   gEmissiveFactor;   // rgb=emissive factor, w=unused
     float4   gPOMParams;        // x=heightScale, y=minLayers, z=maxLayers, w=enabled
     float4   gBaseColorFactor;  // rgba multiplier for base color
@@ -287,15 +288,33 @@ PSOut PSMain(PSIn i)
     PSOut output;
     output.albedo   = float4(albedo, 1.0f);
     output.normal   = float4(N, 0.0f);
-    // Material alpha は水面 mask と SSR hit exclusion を共有する。
-    // exclusion は小さい予約値にし、反射を受ける水面 mask と区別する。
-    float proceduralWaterMask = (proceduralTypeId == 6 || proceduralTypeId == 8)
-        ? 1.0f
-        : 0.0f;
-    float ssrWaterMask = max(proceduralWaterMask, puddleReflectionMask);
+    // Material alpha に receiver type と coverage をまとめて格納する。
+    // 0.00-0.06: none/exclusion, 0.125-0.50: water, 0.625-1.00: mirror。
+    const int reflectionReceiver =
+        (int)(gReflectionMaterialParams.x + 0.5f);
+    const float receiverStrength = saturate(gReflectionMaterialParams.y);
+    float receiverCoverage = 0.0f;
+    if (reflectionReceiver == 1)
+    {
+        receiverCoverage = (proceduralTypeId == 7)
+            ? puddleReflectionMask
+            : 1.0f;
+    }
+
+    float encodedReflectionReceiver = 0.0f;
+    if (reflectionReceiver == 1 && receiverCoverage > 0.001f)
+    {
+        encodedReflectionReceiver =
+            0.125f + saturate(receiverCoverage * receiverStrength) * 0.375f;
+    }
+    else if (reflectionReceiver == 2 && receiverStrength > 0.001f)
+    {
+        encodedReflectionReceiver = 0.625f + receiverStrength * 0.375f;
+    }
+
     float ssrExclusionMask = (gMaterialFactors.z > 0.5f) ? 0.01f : 0.0f;
     output.material = float4(metallic, roughness, ao,
-                             max(saturate(ssrWaterMask), ssrExclusionMask));
+                             max(encodedReflectionReceiver, ssrExclusionMask));
     output.emissive = float4(emissive, 0.0f);
     return output;
 }

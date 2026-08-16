@@ -76,6 +76,26 @@ static MeshSourceType MeshSourceTypeFromString(const std::string &s) {
   return MeshSourceType::ProceduralCube;
 }
 
+static const char *ReflectionReceiverToString(ReflectionReceiver receiver) {
+  switch (receiver) {
+  case ReflectionReceiver::Water:
+    return "Water";
+  case ReflectionReceiver::Mirror:
+    return "Mirror";
+  case ReflectionReceiver::None:
+  default:
+    return "None";
+  }
+}
+
+static ReflectionReceiver ReflectionReceiverFromString(const std::string &s) {
+  if (s == "Water")
+    return ReflectionReceiver::Water;
+  if (s == "Mirror")
+    return ReflectionReceiver::Mirror;
+  return ReflectionReceiver::None;
+}
+
 // ---- Manual JSON: Transform ----
 
 static json TransformToJson(const Transform &t) {
@@ -103,6 +123,10 @@ static json MaterialToJson(const Material &m) {
   j["emissiveFactor"] = Float3ToJson(m.emissiveFactor);
   j["uvTiling"] = Float2ToJson(m.uvTiling);
   j["uvOffset"] = Float2ToJson(m.uvOffset);
+  j["reflectionReceiver"] =
+      ReflectionReceiverToString(m.reflectionReceiver);
+  j["reflectionStrength"] = m.reflectionStrength;
+  j["rayTracingVisible"] = m.rayTracingVisible;
   j["pomEnabled"] = m.pomEnabled;
   j["heightScale"] = m.heightScale;
   j["pomMinLayers"] = m.pomMinLayers;
@@ -123,6 +147,13 @@ static Material JsonToMaterial(const json &j) {
     m.uvTiling = JsonToFloat2(j["uvTiling"]);
   if (j.contains("uvOffset"))
     m.uvOffset = JsonToFloat2(j["uvOffset"]);
+  if (j.contains("reflectionReceiver"))
+    m.reflectionReceiver = ReflectionReceiverFromString(
+        j["reflectionReceiver"].get<std::string>());
+  if (j.contains("reflectionStrength"))
+    m.reflectionStrength = j["reflectionStrength"].get<float>();
+  if (j.contains("rayTracingVisible"))
+    m.rayTracingVisible = j["rayTracingVisible"].get<bool>();
   if (j.contains("pomEnabled"))
     m.pomEnabled = j["pomEnabled"].get<bool>();
   if (j.contains("heightScale"))

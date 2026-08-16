@@ -366,6 +366,8 @@ void BossArenaScene::Initialize(DxContext &dx) {
   floorMaterial.roughnessFactor = 0.92f;
   floorMaterial.uvTiling = {8.0f, 8.0f};
   floorMaterial.proceduralTypeId = 7.0f;
+  floorMaterial.reflectionReceiver = ReflectionReceiver::Water;
+  floorMaterial.rayTracingVisible = false;
   m_floorMeshId = dx.CreateMeshResources(floorMesh, {}, floorMaterial);
 
   const LoadedMesh bossMesh = ProceduralMesh::CreateCube(1.0f);
@@ -451,6 +453,8 @@ void BossArenaScene::Initialize(DxContext &dx) {
   pathStoneMaterial.emissiveFactor = {0.010f, 0.016f, 0.018f};
   pathStoneMaterial.roughnessFactor = 0.72f;
   pathStoneMaterial.proceduralTypeId = 7.0f;
+  pathStoneMaterial.reflectionReceiver = ReflectionReceiver::Water;
+  pathStoneMaterial.rayTracingVisible = false;
   pathStoneMaterial.ssrExcluded = true;
   m_pathStoneMeshId = dx.CreateMeshResources(cubeMesh, {}, pathStoneMaterial);
 
@@ -471,6 +475,8 @@ void BossArenaScene::Initialize(DxContext &dx) {
   mossBankMaterial.baseColorFactor = {0.10f, 0.19f, 0.12f, 1.0f};
   mossBankMaterial.roughnessFactor = 0.98f;
   mossBankMaterial.proceduralTypeId = 7.0f;
+  mossBankMaterial.reflectionReceiver = ReflectionReceiver::Water;
+  mossBankMaterial.rayTracingVisible = false;
   m_mossBankMeshId = dx.CreateMeshResources(cubeMesh, {}, mossBankMaterial);
 
   Material lanternPostMaterial{};
@@ -534,6 +540,8 @@ void BossArenaScene::Initialize(DxContext &dx) {
   riverWaterMaterial.uvTiling = {1.0f, 1.0f};
   riverWaterMaterial.proceduralTypeId = 8.0f;
   riverWaterMaterial.vertexDeformTypeId = 0.0f;
+  riverWaterMaterial.reflectionReceiver = ReflectionReceiver::Water;
+  riverWaterMaterial.rayTracingVisible = false;
   m_riverWaterMeshId =
       dx.CreateMeshResources(riverWaterMesh, {}, riverWaterMaterial);
 

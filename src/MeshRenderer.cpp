@@ -667,6 +667,7 @@ void MeshRenderer::DrawMeshGBufferInstanced(
     DirectX::XMFLOAT4X4 projMat;
     DirectX::XMFLOAT4 cameraPosV;
     DirectX::XMFLOAT4 materialFactors; // x=metallic, y=roughness, z=SSR exclusion
+    DirectX::XMFLOAT4 reflectionMaterialParams; // x=receiver, y=strength
     DirectX::XMFLOAT4 emissiveFactor;
     DirectX::XMFLOAT4 pomParams;
     DirectX::XMFLOAT4 baseColorFactor; // rgba multiplier
@@ -686,6 +687,9 @@ void MeshRenderer::DrawMeshGBufferInstanced(
   const auto &mat = mesh.material;
   cb.materialFactors = {mat.metallicFactor, mat.roughnessFactor,
                         mat.ssrExcluded ? 1.0f : 0.0f, 0.0f};
+  cb.reflectionMaterialParams = {
+      static_cast<float>(static_cast<uint8_t>(mat.reflectionReceiver)),
+      mat.reflectionStrength, mat.rayTracingVisible ? 1.0f : 0.0f, 0.0f};
   cb.emissiveFactor = {mat.emissiveFactor.x, mat.emissiveFactor.y,
                        mat.emissiveFactor.z, 0.0f};
   cb.pomParams = {mat.heightScale, mat.pomMinLayers, mat.pomMaxLayers,
@@ -1000,6 +1004,7 @@ uint32_t MeshRenderer::CreateMeshResources(DxContext &dx, const LoadedMesh &mesh
 
   MeshGpuResources gpu{};
   gpu.indexCount = static_cast<uint32_t>(mesh.indices.size());
+  gpu.hasSkeleton = mesh.hasSkeleton;
 
   // Upload heaps for simplicity.
   const UINT vbSize =
@@ -1115,6 +1120,32 @@ uint32_t MeshRenderer::CreateMeshResources(DxContext &dx, const LoadedMesh &mesh
 
   m_meshes.push_back(std::move(gpu));
   return static_cast<uint32_t>(m_meshes.size() - 1);
+}
+
+bool MeshRenderer::GetRayTracingGeometry(
+    uint32_t meshId, RayTracingGeometryView &outView) const {
+  if (meshId >= m_meshes.size())
+    return false;
+
+  const MeshGpuResources &mesh = m_meshes[meshId];
+  if (!mesh.vb || !mesh.ib || mesh.vbView.StrideInBytes == 0 ||
+      mesh.indexCount < 3)
+    return false;
+
+  outView.vertexBuffer = mesh.vbView.BufferLocation;
+  outView.vertexStride = mesh.vbView.StrideInBytes;
+  outView.vertexCount =
+      mesh.vbView.SizeInBytes / mesh.vbView.StrideInBytes;
+  outView.indexBuffer = mesh.ibView.BufferLocation;
+  outView.indexCount = mesh.indexCount;
+  outView.indexFormat = mesh.ibView.Format;
+  outView.baseColor = mesh.material.baseColorFactor;
+  outView.hasSkeleton = mesh.hasSkeleton;
+  outView.hasVertexDeformation =
+      mesh.material.vertexDeformTypeId != 0.0f;
+  outView.rayTracingVisible = mesh.material.rayTracingVisible;
+  return outView.vertexBuffer != 0 && outView.indexBuffer != 0 &&
+         outView.vertexCount >= 3;
 }
 
 // ---- Texture replacement (Phase 2 — Material & Texture Editor) ----

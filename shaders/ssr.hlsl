@@ -85,10 +85,16 @@ float4 PSMain(VSOut pin) : SV_TARGET
     float3 normalW = normalize(gNormalTex.Sample(gPointClamp, pin.uv).xyz);
     float4 material = gMaterialTex.Sample(gPointClamp, pin.uv);
     float roughness = material.g;
-    // 0.01 は hit exclusion の予約値。0.05 以上だけを反射面として扱う。
-    float waterMask = (material.a >= 0.05f) ? material.a : 0.0f;
+    const bool isWaterReceiver =
+        material.a >= 0.0625f && material.a < 0.5625f;
+    const bool isMirrorReceiver = material.a >= 0.5625f;
+    const float receiverMask = isMirrorReceiver
+        ? saturate((material.a - 0.625f) / 0.375f)
+        : (isWaterReceiver
+            ? saturate((material.a - 0.125f) / 0.375f)
+            : 0.0f);
 
-    if (waterMask <= 0.001f)
+    if (receiverMask <= 0.001f)
         return float4(sceneColor, 1.0f);
 
     float3 posW = ReconstructWorldPos(pin.uv, depth);
@@ -99,9 +105,15 @@ float4 PSMain(VSOut pin) : SV_TARGET
     float3 reflectRay = normalize(reflect(viewRay, normalV));
     if (reflectRay.z <= 0.02f)
     {
-        float3 fallback = lerp(float3(0.05f, 0.14f, 0.18f), float3(0.20f, 0.36f, 0.42f),
-                               saturate(normalW.y));
-        float fallbackMix = waterMask * gReflectionParams.x * (1.0f - roughness);
+        float3 fallback = isMirrorReceiver
+            ? lerp(float3(0.025f, 0.03f, 0.04f),
+                   float3(0.24f, 0.27f, 0.32f), saturate(normalW.y))
+            : lerp(float3(0.05f, 0.14f, 0.18f),
+                   float3(0.20f, 0.36f, 0.42f), saturate(normalW.y));
+        float fallbackMix = receiverMask * gReflectionParams.x
+                          * (isMirrorReceiver
+                              ? (1.0f - roughness * 0.45f)
+                              : (1.0f - roughness));
         return float4(lerp(sceneColor, fallback, fallbackMix * 0.35f), 1.0f);
     }
 
@@ -175,17 +187,24 @@ float4 PSMain(VSOut pin) : SV_TARGET
         }
     }
 
-    float3 fallbackColor = lerp(float3(0.04f, 0.12f, 0.16f),
-                                float3(0.18f, 0.34f, 0.40f),
-                                saturate(normalW.y));
+    float3 fallbackColor = isMirrorReceiver
+        ? lerp(float3(0.025f, 0.03f, 0.04f),
+               float3(0.24f, 0.27f, 0.32f), saturate(normalW.y))
+        : lerp(float3(0.04f, 0.12f, 0.16f),
+               float3(0.18f, 0.34f, 0.40f), saturate(normalW.y));
     float3 reflectionColor = lerp(fallbackColor, skyReflectionColor,
                                   skyReflectionWeight);
     reflectionColor = lerp(reflectionColor, hitColor, hitWeight);
     float fresnel = pow(1.0f - saturate(dot(-viewRay, normalV)), 5.0f);
-    float surfaceFresnel = lerp(0.46f, 0.92f, fresnel);
-    float reflectionStrength = saturate(waterMask * gReflectionParams.x
+    float surfaceFresnel = isMirrorReceiver
+        ? lerp(0.92f, 1.0f, fresnel)
+        : lerp(0.46f, 0.92f, fresnel);
+    float roughnessAttenuation = isMirrorReceiver
+        ? (1.0f - saturate(roughness) * 0.45f)
+        : (1.0f - saturate(roughness));
+    float reflectionStrength = saturate(receiverMask * gReflectionParams.x
                                       * surfaceFresnel
-                                      * (1.0f - saturate(roughness)));
+                                      * roughnessAttenuation);
 
     return float4(lerp(sceneColor, reflectionColor, reflectionStrength), 1.0f);
 }

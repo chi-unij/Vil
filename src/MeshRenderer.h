@@ -24,6 +24,19 @@ class DxContext;
 
 class MeshRenderer {
 public:
+  struct RayTracingGeometryView {
+    D3D12_GPU_VIRTUAL_ADDRESS vertexBuffer = 0;
+    uint32_t vertexStride = 0;
+    uint32_t vertexCount = 0;
+    D3D12_GPU_VIRTUAL_ADDRESS indexBuffer = 0;
+    uint32_t indexCount = 0;
+    DXGI_FORMAT indexFormat = DXGI_FORMAT_UNKNOWN;
+    DirectX::XMFLOAT4 baseColor = {1.0f, 1.0f, 1.0f, 1.0f};
+    bool hasSkeleton = false;
+    bool hasVertexDeformation = false;
+    bool rayTracingVisible = true;
+  };
+
   uint32_t CreateMeshResources(DxContext &dx, const LoadedMesh &mesh,
                                const MaterialImages &images = {},
                                const Material &material = {});
@@ -36,6 +49,10 @@ public:
   // Access per-mesh material for ImGui editing.
   Material &GetMeshMaterial(uint32_t meshId);
   const Material &GetMeshMaterial(uint32_t meshId) const;
+
+  // DXR acceleration-structure build 用の読み取り専用 geometry view。
+  bool GetRayTracingGeometry(uint32_t meshId,
+                             RayTracingGeometryView &outView) const;
 
   // Replace a single texture slot on an existing mesh (editor texture assignment).
   void ReplaceMeshTexture(DxContext &dx, uint32_t meshId, uint32_t slot,
@@ -164,6 +181,7 @@ private:
     D3D12_VERTEX_BUFFER_VIEW vbView{};
     D3D12_INDEX_BUFFER_VIEW ibView{};
     uint32_t indexCount = 0;
+    bool hasSkeleton = false;
 
     // Material textures (6 slots: baseColor, normal, metalRough, AO, emissive, height).
     Microsoft::WRL::ComPtr<ID3D12Resource> matTex[6];

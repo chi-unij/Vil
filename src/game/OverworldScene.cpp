@@ -141,6 +141,8 @@ void OverworldScene::Initialize(DxContext &dx) {
   floorMaterial.pomMinLayers = 8.0f;
   floorMaterial.pomMaxLayers = 20.0f;
   floorMaterial.proceduralTypeId = 7.0f;
+  floorMaterial.reflectionReceiver = ReflectionReceiver::Water;
+  floorMaterial.rayTracingVisible = false;
 
   m_floorMeshId = dx.CreateMeshResources(floorMesh, images, floorMaterial);
 
@@ -230,6 +232,8 @@ void OverworldScene::Initialize(DxContext &dx) {
   pathStoneMaterial.metallicFactor = 0.0f;
   pathStoneMaterial.roughnessFactor = 0.72f;
   pathStoneMaterial.proceduralTypeId = 7.0f;
+  pathStoneMaterial.reflectionReceiver = ReflectionReceiver::Water;
+  pathStoneMaterial.rayTracingVisible = false;
   m_pathStoneMeshId =
       dx.CreateMeshResources(pathStoneMesh, {}, pathStoneMaterial);
 
@@ -274,6 +278,8 @@ void OverworldScene::Initialize(DxContext &dx) {
   waystoneMaterial.roughnessFactor = 0.9f;
   waystoneMaterial.emissiveFactor = {0.0f, 0.025f, 0.04f};
   waystoneMaterial.proceduralTypeId = 7.0f;
+  waystoneMaterial.reflectionReceiver = ReflectionReceiver::Water;
+  waystoneMaterial.rayTracingVisible = false;
   m_waystoneMeshId =
       dx.CreateMeshResources(waystoneMesh, {}, waystoneMaterial);
 
