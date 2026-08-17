@@ -101,6 +101,7 @@ private:
   StageModel *FindOrLoadModel(DxContext &dx, const std::string &path);
   void BuildBackgroundForest(DxContext &dx);
   void AppendWorldPolishProps(FrameData &frame) const;
+  void AppendReflectionMonolith(FrameData &frame) const;
   void AppendBackgroundForestCluster(float x, float z, float scale,
                                      float yawDegrees, int densityTier);
 
@@ -115,6 +116,8 @@ private:
   uint32_t m_lanternCapMeshId = UINT32_MAX;
   uint32_t m_lanternGlowMeshId = UINT32_MAX;
   uint32_t m_waystoneMeshId = UINT32_MAX;
+  uint32_t m_reflectionMonolithMirrorMeshId = UINT32_MAX;
+  uint32_t m_reflectionMonolithFrameMeshId = UINT32_MAX;
   std::vector<uint32_t> m_shrineLanternMeshIds;
   std::vector<uint32_t> m_backgroundForestMeshIds;
   std::vector<BackgroundForestCluster> m_backgroundForestClusters;

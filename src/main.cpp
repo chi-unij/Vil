@@ -599,6 +599,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
 #endif
     const bool dxrSmokeRequested =
         HasCommandLineSwitch(commandLine, L"--dxr-smoke");
+    const bool dxrOverworldSmokeRequested =
+        HasCommandLineSwitch(commandLine, L"--dxr-overworld-smoke");
+    const bool dxrOverworldRequested =
+        HasCommandLineSwitch(commandLine, L"--dxr-overworld") ||
+        dxrOverworldSmokeRequested;
+    const bool dxrSmokeMode = dxrSmokeRequested || dxrOverworldSmokeRequested;
     const bool dxrProofRequested =
         HasCommandLineSwitch(commandLine, L"--dxr-proof") ||
         dxrSmokeRequested;
@@ -641,9 +647,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     bool dxrProofSceneLogged = false;
     bool dxrProofAuditLogged = false;
     bool dxrProofDispatchLogged = false;
-    int dxrSmokeFramesRemaining = dxrSmokeRequested ? 4 : -1;
+    int dxrSmokeFramesRemaining = dxrSmokeMode ? 4 : -1;
     ReflectionMode reflectionMode =
-        dxrProofRequested && hybridReflection.IsSupported()
+        (dxrProofRequested || dxrOverworldRequested) &&
+                hybridReflection.IsSupported()
             ? ReflectionMode::HybridDXR
             : ReflectionMode::SSR;
     const std::string dxrStartupStatus =
@@ -801,7 +808,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
 
     // ---- Editor/Game mode toggle (Milestone 4 Phase 0) ----
     enum class AppMode { Title, Game, BossArena, Editor };
-    AppMode appMode = launchEditor ? AppMode::Editor : AppMode::Title;
+    AppMode appMode = dxrOverworldRequested
+                          ? AppMode::Game
+                          : (launchEditor ? AppMode::Editor : AppMode::Title);
     bool requestQuit = false;
     TitleScreen titleScreen;
     Scene editorScene;
@@ -810,6 +819,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     TraceAppEvent("startup: editor welcome scene ready");
     CameraPreset editorReturnCamera;
     bool editorReturnCameraValid = false;
+    if (dxrOverworldRequested) {
+      playerPreview.SetPosition(overworldScene.PlayerSpawnPosition());
+      playerPreview.SetYaw(0.0f);
+      const DirectX::XMFLOAT3 spawn = playerPreview.Position();
+      gameCameraPosition = {spawn.x, 3.2f, spawn.z - 5.8f};
+      cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
+                      gameCameraPosition.z);
+      cam.SetYawPitch(0.0f, -0.28f);
+      TraceAppEvent(
+          dxrOverworldSmokeRequested
+              ? "DXR overworld smoke: reflection monolith route ready"
+              : "DXR overworld review: reflection monolith route ready");
+    }
     bool scenePlayMode = false;
     std::string sceneSnapshot;
     const auto stopEditorScenePreview = [&]() {
@@ -2216,11 +2238,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       if (traceGameFrame)
         TraceAppEvent("pass: EndFrame");
       dx.EndFrame();
-      if (dxrSmokeRequested && dxrProofDispatchLogged &&
+      if (dxrSmokeMode && dxrProofDispatchLogged &&
           dxrSmokeFramesRemaining > 0) {
         --dxrSmokeFramesRemaining;
         if (dxrSmokeFramesRemaining == 0) {
-          TraceAppEvent("DXR smoke: completed four rendered frames");
+          TraceAppEvent(
+              dxrOverworldSmokeRequested
+                  ? "DXR overworld smoke: completed four rendered frames"
+                  : "DXR smoke: completed four rendered frames");
           requestQuit = true;
         }
       }
@@ -2243,7 +2268,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
 
     // ---- Shutdown (reverse init order) ----
     dx.WaitForGpu(); // Flush GPU before releasing any resources
-    if (dxrSmokeRequested) {
+    if (dxrSmokeMode) {
       std::ofstream debugLog("dxr_smoke_debug_log.txt",
                              std::ios::out | std::ios::trunc);
       if (debugLog)

@@ -142,7 +142,8 @@ void OverworldScene::Initialize(DxContext &dx) {
   floorMaterial.pomMaxLayers = 20.0f;
   floorMaterial.proceduralTypeId = 7.0f;
   floorMaterial.reflectionReceiver = ReflectionReceiver::Water;
-  floorMaterial.rayTracingVisible = false;
+  // Mirror ray には地面を見せる。Water ray は instance mask で除外する。
+  floorMaterial.rayTracingVisible = true;
 
   m_floorMeshId = dx.CreateMeshResources(floorMesh, images, floorMaterial);
 
@@ -283,6 +284,32 @@ void OverworldScene::Initialize(DxContext &dx) {
   m_waystoneMeshId =
       dx.CreateMeshResources(waystoneMesh, {}, waystoneMaterial);
 
+  // 城下に物語・遊びへ発展できる「反写の大鏡」を置く。
+  const LoadedMesh reflectionMonolithMirrorMesh =
+      ProceduralMesh::CreatePlane(1.0f, 1.0f);
+  Material reflectionMonolithMirrorMaterial{};
+  reflectionMonolithMirrorMaterial.baseColorFactor = {0.055f, 0.075f, 0.095f,
+                                                      1.0f};
+  reflectionMonolithMirrorMaterial.metallicFactor = 0.96f;
+  reflectionMonolithMirrorMaterial.roughnessFactor = 0.035f;
+  reflectionMonolithMirrorMaterial.emissiveFactor = {0.004f, 0.012f, 0.020f};
+  reflectionMonolithMirrorMaterial.reflectionReceiver =
+      ReflectionReceiver::Mirror;
+  reflectionMonolithMirrorMaterial.reflectionStrength = 1.0f;
+  reflectionMonolithMirrorMaterial.rayTracingVisible = false;
+  m_reflectionMonolithMirrorMeshId = dx.CreateMeshResources(
+      reflectionMonolithMirrorMesh, {}, reflectionMonolithMirrorMaterial);
+
+  const LoadedMesh reflectionMonolithFrameMesh =
+      ProceduralMesh::CreateCube(1.0f);
+  Material reflectionMonolithFrameMaterial{};
+  reflectionMonolithFrameMaterial.baseColorFactor = {0.11f, 0.15f, 0.17f, 1.0f};
+  reflectionMonolithFrameMaterial.metallicFactor = 0.52f;
+  reflectionMonolithFrameMaterial.roughnessFactor = 0.26f;
+  reflectionMonolithFrameMaterial.emissiveFactor = {0.008f, 0.045f, 0.065f};
+  m_reflectionMonolithFrameMeshId = dx.CreateMeshResources(
+      reflectionMonolithFrameMesh, {}, reflectionMonolithFrameMaterial);
+
   m_ready =
       (m_floorMeshId != UINT32_MAX && m_castleWallMeshId != UINT32_MAX &&
        m_waterMeshId != UINT32_MAX &&
@@ -293,7 +320,9 @@ void OverworldScene::Initialize(DxContext &dx) {
        m_lanternPostMeshId != UINT32_MAX &&
        m_lanternCapMeshId != UINT32_MAX &&
        m_lanternGlowMeshId != UINT32_MAX &&
-       m_waystoneMeshId != UINT32_MAX);
+       m_waystoneMeshId != UINT32_MAX &&
+       m_reflectionMonolithMirrorMeshId != UINT32_MAX &&
+       m_reflectionMonolithFrameMeshId != UINT32_MAX);
 
   if (m_ready) {
     OutputDebugStringA(
@@ -423,6 +452,7 @@ void OverworldScene::BuildFrame(FrameData &frame) const {
   }
 
   AppendWorldPolishProps(frame);
+  AppendReflectionMonolith(frame);
 
   const auto &forestDebug = m_backgroundForestDebug;
   if (forestDebug.enabled && !m_backgroundForestMeshIds.empty()) {
@@ -556,6 +586,64 @@ void OverworldScene::AppendWorldPolishProps(FrameData &frame) const {
                stone.height * 0.5f, stone.z, stone.yaw);
   }
 }
+
+void OverworldScene::AppendReflectionMonolith(FrameData &frame) const {
+  if (m_reflectionMonolithMirrorMeshId == UINT32_MAX ||
+      m_reflectionMonolithFrameMeshId == UINT32_MAX) {
+    return;
+  }
+
+  // 西北側の空き地から出生地点へ向け、主経路と既存モデルを避ける。
+  constexpr float centerX = -18.0f;
+  constexpr float centerY = 3.25f;
+  constexpr float centerZ = 16.0f;
+  constexpr float yawRadians = -24.0f * XM_PI / 180.0f;
+  constexpr float mirrorWidth = 8.0f;
+  constexpr float mirrorHeight = 5.2f;
+  constexpr float frameThickness = 0.46f;
+  constexpr float frameDepth = 0.50f;
+  constexpr float outerHeight = 6.1f;
+  const float yawCos = std::cos(yawRadians);
+  const float yawSin = std::sin(yawRadians);
+
+  auto localPosition = [=](float x, float y, float z) {
+    return XMFLOAT3{centerX + x * yawCos + z * yawSin, y,
+                    centerZ - x * yawSin + z * yawCos};
+  };
+
+  const XMFLOAT3 mirrorPosition =
+      localPosition(0.0f, centerY, -frameDepth * 0.5f - 0.03f);
+  const XMMATRIX mirrorWorld =
+      XMMatrixScaling(mirrorWidth, 1.0f, mirrorHeight) *
+      XMMatrixRotationX(-XM_PIDIV2) * XMMatrixRotationY(yawRadians) *
+      XMMatrixTranslation(mirrorPosition.x, mirrorPosition.y, mirrorPosition.z);
+  frame.opaqueItems.push_back({m_reflectionMonolithMirrorMeshId, mirrorWorld});
+
+  auto pushFrame = [&frame](uint32_t meshId, float sx, float sy, float sz,
+                            float x, float y, float z, float yaw) {
+    frame.opaqueItems.push_back(
+        {meshId, XMMatrixScaling(sx, sy, sz) * XMMatrixRotationY(yaw) *
+                     XMMatrixTranslation(x, y, z)});
+  };
+
+  const float sideX = mirrorWidth * 0.5f + frameThickness * 0.5f;
+  const float bottomY = centerY - mirrorHeight * 0.5f - frameThickness * 0.5f;
+  const float topY = centerY + mirrorHeight * 0.5f + frameThickness * 0.5f;
+  const XMFLOAT3 leftPosition = localPosition(-sideX, centerY, 0.0f);
+  const XMFLOAT3 rightPosition = localPosition(sideX, centerY, 0.0f);
+  pushFrame(m_reflectionMonolithFrameMeshId, frameThickness, outerHeight,
+            frameDepth, leftPosition.x, leftPosition.y, leftPosition.z,
+            yawRadians);
+  pushFrame(m_reflectionMonolithFrameMeshId, frameThickness, outerHeight,
+            frameDepth, rightPosition.x, rightPosition.y, rightPosition.z,
+            yawRadians);
+  pushFrame(m_reflectionMonolithFrameMeshId, mirrorWidth, frameThickness,
+            frameDepth, centerX, bottomY, centerZ, yawRadians);
+  pushFrame(m_reflectionMonolithFrameMeshId, mirrorWidth, frameThickness,
+            frameDepth, centerX, topY, centerZ, yawRadians);
+  pushFrame(m_reflectionMonolithFrameMeshId, mirrorWidth + 1.4f, 0.30f, 1.25f,
+            centerX, 0.15f, centerZ, yawRadians);
+}
 XMFLOAT3 OverworldScene::PlayerSpawnPosition() const {
   return {0.0f, 0.0f, -18.0f};
 }
@@ -613,7 +701,7 @@ OverworldScene::BuildDefaultCollisionShapes() const {
   };
 
   std::vector<CollisionShapeConfig> boxes;
-  boxes.reserve(15);
+  boxes.reserve(16);
   boxes.push_back(makeBox("South Wall", wallLength, wallHeight, wallThickness,
                           0.0f, wallHeight * 0.5f,
                           -kCastleWallHalfExtentMeters));
@@ -656,6 +744,9 @@ OverworldScene::BuildDefaultCollisionShapes() const {
   boxes.push_back(makeBox("Tower NE", towerSize, towerHeight, towerSize,
                           kCastleWallHalfExtentMeters, towerHeight * 0.5f,
                           kCastleWallHalfExtentMeters));
+  boxes.push_back(
+      makeBox("反写の大鏡", 9.0f, 6.3f, 0.70f, -18.0f, 3.15f, 16.0f));
+  boxes.back().yawRadians = -24.0f * XM_PI / 180.0f;
   return boxes;
 }
 

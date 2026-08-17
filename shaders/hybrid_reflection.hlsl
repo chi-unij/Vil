@@ -8,7 +8,7 @@ cbuffer ReflectionConstants : register(b0)
     float4x4 gInvViewProj;
     float4x4 gViewProj;
     float4 gCameraAndMaxDistance;
-    float4 gReflectionParams;
+    float4 gReflectionParams; // x=強度、w=Mirror 専用最大距離
     float4 gLightDirectionIntensity;
     float4 gLightColorAmbient;
     float4 gLightCounts; // x=point light 数、y=spot light 数
@@ -207,7 +207,10 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     ray.Origin = worldSurface.xyz + normalW * 0.04f;
     ray.Direction = reflectionRay;
     ray.TMin = 0.01f;
-    ray.TMax = gCameraAndMaxDistance.w;
+    // Water は既存範囲を維持し、大鏡だけ遠景まで走査する。
+    ray.TMax = isMirrorReceiver
+        ? max(gReflectionParams.w, gCameraAndMaxDistance.w)
+        : gCameraAndMaxDistance.w;
 
     // Water は receiver geometry を除外し、Mirror は textured ground を含める。
     const uint instanceInclusionMask = isMirrorReceiver ? 0x03u : 0x01u;

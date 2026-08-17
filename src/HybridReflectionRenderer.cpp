@@ -39,6 +39,7 @@ static_assert(sizeof(InstanceShadingData) == 128,
 constexpr uint8_t kRayMaskGeneralOpaque = 0x01;
 constexpr uint8_t kRayMaskWaterReceiver = 0x02;
 constexpr uint8_t kRayMaskMirrorReceiver = 0x04;
+constexpr float kMirrorMaxRayDistanceMeters = 96.0f;
 
 bool CreateBuffer(ID3D12Device *device, uint64_t byteSize,
                   D3D12_HEAP_TYPE heapType,
@@ -787,7 +788,8 @@ bool HybridReflectionRenderer::Execute(
                                              1.0f)};
   constants.reflectionParams = {frame.ssrReflectionParams.x,
                                 frame.ssrReflectionParams.z,
-                                frame.ssrReflectionParams.w, 0.0f};
+                                frame.ssrReflectionParams.w,
+                                kMirrorMaxRayDistanceMeters};
   constants.lightDirectionIntensity = {
       frame.lighting.lightDir.x, frame.lighting.lightDir.y,
       frame.lighting.lightDir.z, frame.lighting.lightIntensity};
