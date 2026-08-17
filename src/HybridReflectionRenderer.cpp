@@ -24,6 +24,22 @@
 #endif
 
 namespace {
+struct alignas(16) InstanceShadingData {
+  DirectX::XMFLOAT4 baseColor;
+  DirectX::XMFLOAT4 materialParams;
+  DirectX::XMFLOAT4 uvTilingOffset;
+  DirectX::XMFLOAT4X4 world;
+  uint32_t triangleVertexAttributeOffset = 0;
+  uint32_t baseColorTextureIndex = UINT32_MAX;
+  uint32_t padding[2]{};
+};
+static_assert(sizeof(InstanceShadingData) == 128,
+              "InstanceShadingData must match HLSL layout");
+
+constexpr uint8_t kRayMaskGeneralOpaque = 0x01;
+constexpr uint8_t kRayMaskWaterReceiver = 0x02;
+constexpr uint8_t kRayMaskMirrorReceiver = 0x04;
+
 bool CreateBuffer(ID3D12Device *device, uint64_t byteSize,
                   D3D12_HEAP_TYPE heapType,
                   D3D12_RESOURCE_FLAGS resourceFlags,
@@ -144,7 +160,21 @@ bool HybridReflectionRenderer::CreateProofPipeline(DxContext &dx) {
     inputRanges[index].OffsetInDescriptorsFromTableStart = 0;
   }
 
-  D3D12_ROOT_PARAMETER parameters[8]{};
+  D3D12_DESCRIPTOR_RANGE baseColorTextureRange{};
+  baseColorTextureRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+  baseColorTextureRange.NumDescriptors = kMaxBaseColorTextures;
+  baseColorTextureRange.BaseShaderRegister = 10;
+  baseColorTextureRange.RegisterSpace = 0;
+  baseColorTextureRange.OffsetInDescriptorsFromTableStart = 0;
+
+  D3D12_DESCRIPTOR_RANGE environmentRange{};
+  environmentRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+  environmentRange.NumDescriptors = 1;
+  environmentRange.BaseShaderRegister = 74;
+  environmentRange.RegisterSpace = 0;
+  environmentRange.OffsetInDescriptorsFromTableStart = 0;
+
+  D3D12_ROOT_PARAMETER parameters[14]{};
   parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
   parameters[0].Descriptor.ShaderRegister = 0;
   parameters[0].Descriptor.RegisterSpace = 0;
@@ -169,15 +199,65 @@ bool HybridReflectionRenderer::CreateProofPipeline(DxContext &dx) {
     parameters[3 + index].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
   }
 
-  // t5: InstanceID から参照する per-instance base color buffer。
+  // t5: InstanceID から参照する per-instance shading metadata。
   parameters[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
   parameters[7].Descriptor.ShaderRegister = 5;
   parameters[7].Descriptor.RegisterSpace = 0;
   parameters[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
+  // t6: CommittedPrimitiveIndex から参照する triangle vertex normals。
+  parameters[8].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+  parameters[8].Descriptor.ShaderRegister = 6;
+  parameters[8].Descriptor.RegisterSpace = 0;
+  parameters[8].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+  // t7: CommittedPrimitiveIndex から参照する triangle vertex UV。
+  parameters[9].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+  parameters[9].Descriptor.ShaderRegister = 7;
+  parameters[9].Descriptor.RegisterSpace = 0;
+  parameters[9].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+  // t8-t9: deferred lighting と同じ point / spot light 配列。
+  parameters[10].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+  parameters[10].Descriptor.ShaderRegister = 8;
+  parameters[10].Descriptor.RegisterSpace = 0;
+  parameters[10].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+  parameters[11].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+  parameters[11].Descriptor.ShaderRegister = 9;
+  parameters[11].Descriptor.RegisterSpace = 0;
+  parameters[11].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+  // t10-t73: scene unique base-color texture table。
+  parameters[12].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  parameters[12].DescriptorTable.NumDescriptorRanges = 1;
+  parameters[12].DescriptorTable.pDescriptorRanges = &baseColorTextureRange;
+  parameters[12].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+  // t74: SkyRenderer と共有する equirectangular HDRI。
+  parameters[13].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  parameters[13].DescriptorTable.NumDescriptorRanges = 1;
+  parameters[13].DescriptorTable.pDescriptorRanges = &environmentRange;
+  parameters[13].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+  D3D12_STATIC_SAMPLER_DESC samplers[2]{};
+  samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+  samplers[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+  samplers[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+  samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+  samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
+  samplers[0].ShaderRegister = 0;
+  samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+  samplers[1] = samplers[0];
+  samplers[1].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+  samplers[1].ShaderRegister = 1;
+
   D3D12_ROOT_SIGNATURE_DESC rootDesc{};
   rootDesc.NumParameters = static_cast<UINT>(std::size(parameters));
   rootDesc.pParameters = parameters;
+  rootDesc.NumStaticSamplers = static_cast<UINT>(std::size(samplers));
+  rootDesc.pStaticSamplers = samplers;
   rootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
 
   Microsoft::WRL::ComPtr<ID3DBlob> rootBlob;
@@ -201,6 +281,28 @@ bool HybridReflectionRenderer::CreateProofPipeline(DxContext &dx) {
     m_rootSignature.Reset();
     m_status = "DXR proof compute pipeline の作成に失敗しました。SSR を使用します。";
     return false;
+  }
+
+  if (!m_baseColorTextureDescriptorsAllocated) {
+    m_baseColorTextureTableCpu =
+        dx.AllocMainSrvCpu(kMaxBaseColorTextures);
+    m_baseColorTextureTableGpu =
+        dx.MainSrvGpuFromCpu(m_baseColorTextureTableCpu);
+    const UINT descriptorSize = dx.Device()->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_SHADER_RESOURCE_VIEW_DESC nullTextureView{};
+    nullTextureView.Shader4ComponentMapping =
+        D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    nullTextureView.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    nullTextureView.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    nullTextureView.Texture2D.MipLevels = 1;
+    for (uint32_t index = 0; index < kMaxBaseColorTextures; ++index) {
+      D3D12_CPU_DESCRIPTOR_HANDLE textureCpu = m_baseColorTextureTableCpu;
+      textureCpu.ptr += static_cast<SIZE_T>(index) * descriptorSize;
+      dx.Device()->CreateShaderResourceView(nullptr, &nullTextureView,
+                                            textureCpu);
+    }
+    m_baseColorTextureDescriptorsAllocated = true;
   }
 
   return true;
@@ -360,6 +462,22 @@ bool HybridReflectionRenderer::PrepareScene(
     instance.meshId = item.meshId;
     DirectX::XMStoreFloat4x4(&instance.world, item.world);
     instance.baseColor = geometryView.baseColor;
+    instance.materialParams = geometryView.materialParams;
+    instance.uvTilingOffset = geometryView.uvTilingOffset;
+    instance.baseColorTexture = geometryView.baseColorTexture;
+    instance.baseColorTextureFormat = geometryView.baseColorTextureFormat;
+    switch (geometryView.reflectionReceiver) {
+    case ReflectionReceiver::Water:
+      instance.instanceMask = kRayMaskWaterReceiver;
+      break;
+    case ReflectionReceiver::Mirror:
+      instance.instanceMask = kRayMaskMirrorReceiver;
+      break;
+    case ReflectionReceiver::None:
+    default:
+      instance.instanceMask = kRayMaskGeneralOpaque;
+      break;
+    }
     collectedInstances.push_back(instance);
   }
 
@@ -373,7 +491,15 @@ bool HybridReflectionRenderer::PrepareScene(
           std::memcmp(&current.world, &previous.world,
                       sizeof(current.world)) != 0 ||
           std::memcmp(&current.baseColor, &previous.baseColor,
-                      sizeof(current.baseColor)) != 0) {
+                      sizeof(current.baseColor)) != 0 ||
+          std::memcmp(&current.materialParams, &previous.materialParams,
+                      sizeof(current.materialParams)) != 0 ||
+          std::memcmp(&current.uvTilingOffset, &previous.uvTilingOffset,
+                      sizeof(current.uvTilingOffset)) != 0 ||
+          current.baseColorTexture != previous.baseColorTexture ||
+          current.baseColorTextureFormat !=
+              previous.baseColorTextureFormat ||
+          current.instanceMask != previous.instanceMask) {
         sceneUnchanged = false;
         break;
       }
@@ -382,7 +508,8 @@ bool HybridReflectionRenderer::PrepareScene(
   if (sceneUnchanged)
     return true;
 
-  if (m_tlasResult || m_instanceUpload || m_instanceColorUpload) {
+  if (m_tlasResult || m_instanceUpload || m_instanceMetadataUpload ||
+      m_triangleVertexNormalUpload || m_triangleVertexUvUpload) {
     dx.WaitForGpu();
     ResetScene();
   }
@@ -394,6 +521,81 @@ bool HybridReflectionRenderer::PrepareScene(
   for (const SceneInstance &instance : collectedInstances) {
     if (!BuildBlas(dx, instance.meshId, meshRenderer))
       return false;
+  }
+
+  std::unordered_map<uint32_t, uint32_t> attributeOffsets;
+  std::vector<DirectX::XMFLOAT4> triangleVertexNormals;
+  std::vector<DirectX::XMFLOAT4> triangleVertexUvs;
+  for (SceneInstance &instance : collectedInstances) {
+    const auto offsetIt = attributeOffsets.find(instance.meshId);
+    if (offsetIt != attributeOffsets.end()) {
+      instance.triangleVertexAttributeOffset = offsetIt->second;
+      continue;
+    }
+
+    MeshRenderer::RayTracingGeometryView geometryView{};
+    if (!meshRenderer.GetRayTracingGeometry(instance.meshId, geometryView) ||
+        !geometryView.triangleVertexNormals ||
+        !geometryView.triangleVertexUvs ||
+        geometryView.triangleVertexNormalCount == 0 ||
+        geometryView.triangleVertexNormalCount !=
+            geometryView.triangleVertexUvCount) {
+      m_status = "DXR hit attribute metadata の取得に失敗しました。SSR を使用します。";
+      return false;
+    }
+
+    const uint32_t attributeOffset =
+        static_cast<uint32_t>(triangleVertexNormals.size());
+    attributeOffsets.emplace(instance.meshId, attributeOffset);
+    instance.triangleVertexAttributeOffset = attributeOffset;
+    triangleVertexNormals.insert(
+        triangleVertexNormals.end(), geometryView.triangleVertexNormals,
+        geometryView.triangleVertexNormals +
+            geometryView.triangleVertexNormalCount);
+    triangleVertexUvs.insert(
+        triangleVertexUvs.end(), geometryView.triangleVertexUvs,
+        geometryView.triangleVertexUvs + geometryView.triangleVertexUvCount);
+  }
+
+  std::unordered_map<ID3D12Resource *, uint32_t> textureIndices;
+  const UINT textureDescriptorSize =
+      dx.Device()->GetDescriptorHandleIncrementSize(
+          D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  for (SceneInstance &instance : collectedInstances) {
+    if (!instance.baseColorTexture ||
+        instance.baseColorTextureFormat == DXGI_FORMAT_UNKNOWN) {
+      instance.baseColorTextureIndex = UINT32_MAX;
+      continue;
+    }
+
+    const auto textureIt = textureIndices.find(instance.baseColorTexture);
+    if (textureIt != textureIndices.end()) {
+      instance.baseColorTextureIndex = textureIt->second;
+      continue;
+    }
+
+    if (textureIndices.size() >= kMaxBaseColorTextures) {
+      instance.baseColorTextureIndex = UINT32_MAX;
+      continue;
+    }
+
+    const uint32_t textureIndex =
+        static_cast<uint32_t>(textureIndices.size());
+    textureIndices.emplace(instance.baseColorTexture, textureIndex);
+    instance.baseColorTextureIndex = textureIndex;
+    m_sceneTextureResources.push_back(instance.baseColorTexture);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE textureCpu = m_baseColorTextureTableCpu;
+    textureCpu.ptr +=
+        static_cast<SIZE_T>(textureIndex) * textureDescriptorSize;
+    D3D12_SHADER_RESOURCE_VIEW_DESC textureView{};
+    textureView.Shader4ComponentMapping =
+        D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    textureView.Format = instance.baseColorTextureFormat;
+    textureView.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    textureView.Texture2D.MipLevels = 1;
+    dx.Device()->CreateShaderResourceView(instance.baseColorTexture,
+                                          &textureView, textureCpu);
   }
 
   D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS tlasInputs{};
@@ -408,8 +610,12 @@ bool HybridReflectionRenderer::PrepareScene(
                                                              &tlasInfo);
   const uint64_t instanceBytes =
       sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * collectedInstances.size();
-  const uint64_t colorBytes =
-      sizeof(DirectX::XMFLOAT4) * collectedInstances.size();
+  const uint64_t metadataBytes =
+      sizeof(InstanceShadingData) * collectedInstances.size();
+  const uint64_t normalBytes =
+      sizeof(DirectX::XMFLOAT4) * triangleVertexNormals.size();
+  const uint64_t uvBytes =
+      sizeof(DirectX::XMFLOAT4) * triangleVertexUvs.size();
   if (tlasInfo.ResultDataMaxSizeInBytes == 0 ||
       !CreateBuffer(m_device5.Get(), tlasInfo.ScratchDataSizeInBytes,
                     D3D12_HEAP_TYPE_DEFAULT,
@@ -424,10 +630,18 @@ bool HybridReflectionRenderer::PrepareScene(
       !CreateBuffer(m_device5.Get(), instanceBytes, D3D12_HEAP_TYPE_UPLOAD,
                     D3D12_RESOURCE_FLAG_NONE,
                     D3D12_RESOURCE_STATE_GENERIC_READ, m_instanceUpload) ||
-      !CreateBuffer(m_device5.Get(), colorBytes, D3D12_HEAP_TYPE_UPLOAD,
+      !CreateBuffer(m_device5.Get(), metadataBytes, D3D12_HEAP_TYPE_UPLOAD,
                     D3D12_RESOURCE_FLAG_NONE,
                     D3D12_RESOURCE_STATE_GENERIC_READ,
-                    m_instanceColorUpload)) {
+                    m_instanceMetadataUpload) ||
+      !CreateBuffer(m_device5.Get(), normalBytes, D3D12_HEAP_TYPE_UPLOAD,
+                    D3D12_RESOURCE_FLAG_NONE,
+                    D3D12_RESOURCE_STATE_GENERIC_READ,
+                    m_triangleVertexNormalUpload) ||
+      !CreateBuffer(m_device5.Get(), uvBytes, D3D12_HEAP_TYPE_UPLOAD,
+                    D3D12_RESOURCE_FLAG_NONE,
+                    D3D12_RESOURCE_STATE_GENERIC_READ,
+                    m_triangleVertexUvUpload)) {
     m_status = "TLAS resource の作成に失敗しました。SSR を使用します。";
     ResetScene();
     return false;
@@ -436,21 +650,37 @@ bool HybridReflectionRenderer::PrepareScene(
   m_tlasScratch->SetName(L"HybridReflection.TLAS.Scratch");
   m_tlasResult->SetName(L"HybridReflection.TLAS.Result");
   m_instanceUpload->SetName(L"HybridReflection.TLAS.Instances");
-  m_instanceColorUpload->SetName(L"HybridReflection.InstanceColors");
+  m_instanceMetadataUpload->SetName(
+      L"HybridReflection.InstanceShadingMetadata");
+  m_triangleVertexNormalUpload->SetName(
+      L"HybridReflection.TriangleVertexNormals");
+  m_triangleVertexUvUpload->SetName(
+      L"HybridReflection.TriangleVertexUvs");
   dx.Transition(m_tlasScratch.Get(), D3D12_RESOURCE_STATE_COMMON,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
   void *mappedInstances = nullptr;
-  void *mappedColors = nullptr;
+  void *mappedMetadata = nullptr;
+  void *mappedNormals = nullptr;
+  void *mappedUvs = nullptr;
   const HRESULT instanceMapResult =
       m_instanceUpload->Map(0, nullptr, &mappedInstances);
-  const HRESULT colorMapResult =
-      m_instanceColorUpload->Map(0, nullptr, &mappedColors);
-  if (FAILED(instanceMapResult) || FAILED(colorMapResult)) {
+  const HRESULT metadataMapResult =
+      m_instanceMetadataUpload->Map(0, nullptr, &mappedMetadata);
+  const HRESULT normalMapResult =
+      m_triangleVertexNormalUpload->Map(0, nullptr, &mappedNormals);
+  const HRESULT uvMapResult =
+      m_triangleVertexUvUpload->Map(0, nullptr, &mappedUvs);
+  if (FAILED(instanceMapResult) || FAILED(metadataMapResult) ||
+      FAILED(normalMapResult) || FAILED(uvMapResult)) {
     if (SUCCEEDED(instanceMapResult))
       m_instanceUpload->Unmap(0, nullptr);
-    if (SUCCEEDED(colorMapResult))
-      m_instanceColorUpload->Unmap(0, nullptr);
+    if (SUCCEEDED(metadataMapResult))
+      m_instanceMetadataUpload->Unmap(0, nullptr);
+    if (SUCCEEDED(normalMapResult))
+      m_triangleVertexNormalUpload->Unmap(0, nullptr);
+    if (SUCCEEDED(uvMapResult))
+      m_triangleVertexUvUpload->Unmap(0, nullptr);
     m_status = "TLAS instance metadata upload に失敗しました。SSR を使用します。";
     ResetScene();
     return false;
@@ -458,7 +688,8 @@ bool HybridReflectionRenderer::PrepareScene(
 
   auto *instanceDescs =
       static_cast<D3D12_RAYTRACING_INSTANCE_DESC *>(mappedInstances);
-  auto *instanceColors = static_cast<DirectX::XMFLOAT4 *>(mappedColors);
+  auto *instanceMetadata =
+      static_cast<InstanceShadingData *>(mappedMetadata);
   for (uint32_t index = 0;
        index < static_cast<uint32_t>(collectedInstances.size()); ++index) {
     const SceneInstance &sceneInstance = collectedInstances[index];
@@ -474,15 +705,30 @@ bool HybridReflectionRenderer::PrepareScene(
         instanceDesc.Transform[row][column] = transform.m[row][column];
     }
     instanceDesc.InstanceID = index;
-    instanceDesc.InstanceMask = 0xff;
+    instanceDesc.InstanceMask = sceneInstance.instanceMask;
     instanceDesc.InstanceContributionToHitGroupIndex = 0;
     instanceDesc.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
     instanceDesc.AccelerationStructure =
         m_blasCache.at(sceneInstance.meshId).result->GetGPUVirtualAddress();
-    instanceColors[index] = sceneInstance.baseColor;
+    InstanceShadingData &shadingData = instanceMetadata[index];
+    shadingData = {};
+    shadingData.baseColor = sceneInstance.baseColor;
+    shadingData.materialParams = sceneInstance.materialParams;
+    shadingData.uvTilingOffset = sceneInstance.uvTilingOffset;
+    shadingData.world = transform;
+    shadingData.triangleVertexAttributeOffset =
+        sceneInstance.triangleVertexAttributeOffset;
+    shadingData.baseColorTextureIndex =
+        sceneInstance.baseColorTextureIndex;
   }
+  std::memcpy(mappedNormals, triangleVertexNormals.data(),
+              static_cast<size_t>(normalBytes));
+  std::memcpy(mappedUvs, triangleVertexUvs.data(),
+              static_cast<size_t>(uvBytes));
   m_instanceUpload->Unmap(0, nullptr);
-  m_instanceColorUpload->Unmap(0, nullptr);
+  m_instanceMetadataUpload->Unmap(0, nullptr);
+  m_triangleVertexNormalUpload->Unmap(0, nullptr);
+  m_triangleVertexUvUpload->Unmap(0, nullptr);
 
   tlasInputs.InstanceDescs = m_instanceUpload->GetGPUVirtualAddress();
   D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC tlasBuild{};
@@ -504,11 +750,15 @@ bool HybridReflectionRenderer::PrepareScene(
   return true;
 }
 
-bool HybridReflectionRenderer::Execute(DxContext &dx,
-                                       const FrameData &frame) {
+bool HybridReflectionRenderer::Execute(
+    DxContext &dx, const FrameData &frame,
+    ID3D12Resource *environmentTexture,
+    D3D12_GPU_DESCRIPTOR_HANDLE environmentSrvGpu) {
   if (!m_supported || !m_sceneReady || !m_tlasResult ||
-      !m_instanceColorUpload || !m_rootSignature || !m_computePso ||
-      !EnsureOutput(dx)) {
+      !m_instanceMetadataUpload || !m_triangleVertexNormalUpload ||
+      !m_triangleVertexUvUpload || !m_baseColorTextureDescriptorsAllocated ||
+      !environmentTexture || environmentSrvGpu.ptr == 0 || !m_rootSignature ||
+      !m_computePso || !EnsureOutput(dx)) {
     return false;
   }
 
@@ -517,6 +767,10 @@ bool HybridReflectionRenderer::Execute(DxContext &dx,
     DirectX::XMFLOAT4X4 viewProj;
     DirectX::XMFLOAT4 cameraAndMaxDistance;
     DirectX::XMFLOAT4 reflectionParams;
+    DirectX::XMFLOAT4 lightDirectionIntensity;
+    DirectX::XMFLOAT4 lightColorAmbient;
+    DirectX::XMFLOAT4 lightCounts;
+    DirectX::XMFLOAT4 environmentParams;
   };
 
   ProofConstants constants{};
@@ -534,11 +788,47 @@ bool HybridReflectionRenderer::Execute(DxContext &dx,
   constants.reflectionParams = {frame.ssrReflectionParams.x,
                                 frame.ssrReflectionParams.z,
                                 frame.ssrReflectionParams.w, 0.0f};
+  constants.lightDirectionIntensity = {
+      frame.lighting.lightDir.x, frame.lighting.lightDir.y,
+      frame.lighting.lightDir.z, frame.lighting.lightIntensity};
+  constants.lightColorAmbient = {
+      frame.lighting.lightColor.x, frame.lighting.lightColor.y,
+      frame.lighting.lightColor.z, frame.lighting.iblIntensity};
+
+  const uint32_t pointLightCount = static_cast<uint32_t>(
+      std::min(frame.pointLights.size(),
+               static_cast<size_t>(kMaxPointLights)));
+  const uint32_t spotLightCount = static_cast<uint32_t>(
+      std::min(frame.spotLights.size(),
+               static_cast<size_t>(kMaxSpotLights)));
+  constants.lightCounts = {static_cast<float>(pointLightCount),
+                           static_cast<float>(spotLightCount), 0.0f, 0.0f};
+  constants.environmentParams = {frame.skyExposure, 0.0f, 0.0f, 0.0f};
 
   void *constantCpu = nullptr;
   const D3D12_GPU_VIRTUAL_ADDRESS constantGpu =
       dx.AllocFrameConstants(sizeof(constants), &constantCpu);
   std::memcpy(constantCpu, &constants, sizeof(constants));
+
+  const uint32_t pointLightBytes =
+      std::max(pointLightCount, 1u) * sizeof(GPUPointLight);
+  void *pointLightCpu = nullptr;
+  const D3D12_GPU_VIRTUAL_ADDRESS pointLightGpu =
+      dx.AllocFrameConstants(pointLightBytes, &pointLightCpu);
+  if (pointLightCount > 0) {
+    std::memcpy(pointLightCpu, frame.pointLights.data(),
+                pointLightCount * sizeof(GPUPointLight));
+  }
+
+  const uint32_t spotLightBytes =
+      std::max(spotLightCount, 1u) * sizeof(GPUSpotLight);
+  void *spotLightCpu = nullptr;
+  const D3D12_GPU_VIRTUAL_ADDRESS spotLightGpu =
+      dx.AllocFrameConstants(spotLightBytes, &spotLightCpu);
+  if (spotLightCount > 0) {
+    std::memcpy(spotLightCpu, frame.spotLights.data(),
+                spotLightCount * sizeof(GPUSpotLight));
+  }
 
   // Compute shader から scene color / G-buffer / depth を読み取れる状態にする。
   dx.Transition(dx.HdrTarget(), D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -550,6 +840,13 @@ bool HybridReflectionRenderer::Execute(DxContext &dx,
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
   dx.Transition(dx.DepthBuffer(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+  for (ID3D12Resource *texture : m_sceneTextureResources) {
+    dx.Transition(texture, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                  D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+  }
+  dx.Transition(environmentTexture,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
   ID3D12DescriptorHeap *descriptorHeaps[] = {dx.MainSrvHeap()};
@@ -567,7 +864,16 @@ bool HybridReflectionRenderer::Execute(DxContext &dx,
                                                 dx.GBufferMaterialSrvGpu());
   m_commandList4->SetComputeRootDescriptorTable(6, dx.DepthSrvGpu());
   m_commandList4->SetComputeRootShaderResourceView(
-      7, m_instanceColorUpload->GetGPUVirtualAddress());
+      7, m_instanceMetadataUpload->GetGPUVirtualAddress());
+  m_commandList4->SetComputeRootShaderResourceView(
+      8, m_triangleVertexNormalUpload->GetGPUVirtualAddress());
+  m_commandList4->SetComputeRootShaderResourceView(
+      9, m_triangleVertexUvUpload->GetGPUVirtualAddress());
+  m_commandList4->SetComputeRootShaderResourceView(10, pointLightGpu);
+  m_commandList4->SetComputeRootShaderResourceView(11, spotLightGpu);
+  m_commandList4->SetComputeRootDescriptorTable(
+      12, m_baseColorTextureTableGpu);
+  m_commandList4->SetComputeRootDescriptorTable(13, environmentSrvGpu);
   m_commandList4->Dispatch((m_outputWidth + 7u) / 8u,
                            (m_outputHeight + 7u) / 8u, 1);
 
@@ -596,17 +902,28 @@ bool HybridReflectionRenderer::Execute(DxContext &dx,
   dx.Transition(dx.DepthBuffer(),
                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_DEPTH_WRITE);
+  for (ID3D12Resource *texture : m_sceneTextureResources) {
+    dx.Transition(texture,
+                  D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                  D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+  }
+  dx.Transition(environmentTexture,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
   m_status = "DXR reflection を reflection receiver へ合成しました。";
   return true;
 }
 
 void HybridReflectionRenderer::ResetScene() {
-  m_instanceColorUpload.Reset();
+  m_triangleVertexUvUpload.Reset();
+  m_triangleVertexNormalUpload.Reset();
+  m_instanceMetadataUpload.Reset();
   m_instanceUpload.Reset();
   m_tlasResult.Reset();
   m_tlasScratch.Reset();
   m_sceneInstances.clear();
+  m_sceneTextureResources.clear();
   m_sceneReady = false;
 }
 
@@ -624,9 +941,12 @@ void HybridReflectionRenderer::Reset() {
   m_outputSrvCpu = {};
   m_outputUavGpu = {};
   m_outputSrvGpu = {};
+  m_baseColorTextureTableCpu = {};
+  m_baseColorTextureTableGpu = {};
   m_outputWidth = 0;
   m_outputHeight = 0;
   m_outputDescriptorsAllocated = false;
+  m_baseColorTextureDescriptorsAllocated = false;
   m_raytracingTier = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
   m_status = "DXR は未初期化です。";
 }

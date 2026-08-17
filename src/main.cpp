@@ -520,7 +520,9 @@ static void PopulateEditorWelcomeScene(Scene &scene, DxContext &dx) {
   ground.mesh->material.proceduralTypeId = 7.0f;
   ground.mesh->material.reflectionReceiver = ReflectionReceiver::Water;
   ground.mesh->material.reflectionStrength = 1.0f;
-  ground.mesh->material.rayTracingVisible = false;
+  // Mirror ray は textured ground を hit できる。Water ray は TLAS の
+  // instance mask で receiver を除外し、self-reflection を防止する。
+  ground.mesh->material.rayTracingVisible = true;
   ground.mesh->texturePaths[0] =
       "Assets/textures/Floor_png/Ground037_2K-PNG_Color.png";
   ground.mesh->texturePaths[1] =
@@ -2151,7 +2153,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
           TraceAppEvent(dxrSceneStatus.c_str());
           dxrProofSceneLogged = true;
         }
-        if (dxrProofSceneReady && hybridReflection.Execute(dx, frame)) {
+        if (dxrProofSceneReady &&
+            hybridReflection.Execute(dx, frame, skyRenderer.HdriTexture(),
+                                     skyRenderer.HdriSrvGpu())) {
           if (!dxrProofDispatchLogged) {
             const std::string dxrDispatchStatus =
                 "DXR dispatch proof: " + hybridReflection.Status();

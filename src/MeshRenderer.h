@@ -32,6 +32,15 @@ public:
     uint32_t indexCount = 0;
     DXGI_FORMAT indexFormat = DXGI_FORMAT_UNKNOWN;
     DirectX::XMFLOAT4 baseColor = {1.0f, 1.0f, 1.0f, 1.0f};
+    DirectX::XMFLOAT4 materialParams = {0.0f, 0.8f, 0.0f, 0.0f};
+    const DirectX::XMFLOAT4 *triangleVertexNormals = nullptr;
+    uint32_t triangleVertexNormalCount = 0;
+    const DirectX::XMFLOAT4 *triangleVertexUvs = nullptr;
+    uint32_t triangleVertexUvCount = 0;
+    DirectX::XMFLOAT4 uvTilingOffset = {1.0f, 1.0f, 0.0f, 0.0f};
+    ID3D12Resource *baseColorTexture = nullptr;
+    DXGI_FORMAT baseColorTextureFormat = DXGI_FORMAT_UNKNOWN;
+    ReflectionReceiver reflectionReceiver = ReflectionReceiver::None;
     bool hasSkeleton = false;
     bool hasVertexDeformation = false;
     bool rayTracingVisible = true;
@@ -182,6 +191,8 @@ private:
     D3D12_INDEX_BUFFER_VIEW ibView{};
     uint32_t indexCount = 0;
     bool hasSkeleton = false;
+    std::vector<DirectX::XMFLOAT4> rayTracingTriangleVertexNormals;
+    std::vector<DirectX::XMFLOAT4> rayTracingTriangleVertexUvs;
 
     // Material textures (6 slots: baseColor, normal, metalRough, AO, emissive, height).
     Microsoft::WRL::ComPtr<ID3D12Resource> matTex[6];

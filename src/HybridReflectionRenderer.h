@@ -23,7 +23,9 @@ public:
   bool Initialize(DxContext &dx);
   bool PrepareScene(DxContext &dx, const FrameData &frame,
                     const MeshRenderer &meshRenderer);
-  bool Execute(DxContext &dx, const FrameData &frame);
+  bool Execute(DxContext &dx, const FrameData &frame,
+               ID3D12Resource *environmentTexture,
+               D3D12_GPU_DESCRIPTOR_HANDLE environmentSrvGpu);
   void Reset();
 
   bool IsSupported() const { return m_supported; }
@@ -51,6 +53,13 @@ private:
     uint32_t meshId = UINT32_MAX;
     DirectX::XMFLOAT4X4 world{};
     DirectX::XMFLOAT4 baseColor = {1.0f, 1.0f, 1.0f, 1.0f};
+    DirectX::XMFLOAT4 materialParams = {0.0f, 0.8f, 0.0f, 0.0f};
+    DirectX::XMFLOAT4 uvTilingOffset = {1.0f, 1.0f, 0.0f, 0.0f};
+    ID3D12Resource *baseColorTexture = nullptr;
+    DXGI_FORMAT baseColorTextureFormat = DXGI_FORMAT_UNKNOWN;
+    uint32_t triangleVertexAttributeOffset = 0;
+    uint32_t baseColorTextureIndex = UINT32_MAX;
+    uint8_t instanceMask = 0x01;
   };
 
   bool CreateProofPipeline(DxContext &dx);
@@ -78,10 +87,17 @@ private:
   uint32_t m_outputWidth = 0;
   uint32_t m_outputHeight = 0;
   bool m_outputDescriptorsAllocated = false;
+  static constexpr uint32_t kMaxBaseColorTextures = 64;
+  D3D12_CPU_DESCRIPTOR_HANDLE m_baseColorTextureTableCpu{};
+  D3D12_GPU_DESCRIPTOR_HANDLE m_baseColorTextureTableGpu{};
+  bool m_baseColorTextureDescriptorsAllocated = false;
   std::unordered_map<uint32_t, BlasResources> m_blasCache;
   std::vector<SceneInstance> m_sceneInstances;
+  std::vector<ID3D12Resource *> m_sceneTextureResources;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_tlasScratch;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_tlasResult;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_instanceUpload;
-  Microsoft::WRL::ComPtr<ID3D12Resource> m_instanceColorUpload;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_instanceMetadataUpload;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_triangleVertexNormalUpload;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_triangleVertexUvUpload;
 };

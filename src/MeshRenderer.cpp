@@ -1005,6 +1005,69 @@ uint32_t MeshRenderer::CreateMeshResources(DxContext &dx, const LoadedMesh &mesh
   MeshGpuResources gpu{};
   gpu.indexCount = static_cast<uint32_t>(mesh.indices.size());
   gpu.hasSkeleton = mesh.hasSkeleton;
+  gpu.rayTracingTriangleVertexNormals.reserve(mesh.indices.size());
+  gpu.rayTracingTriangleVertexUvs.reserve(mesh.indices.size());
+  for (size_t triangle = 0; triangle + 2 < mesh.indices.size();
+       triangle += 3) {
+    const uint32_t indices[3] = {mesh.indices[triangle],
+                                 mesh.indices[triangle + 1],
+                                 mesh.indices[triangle + 2]};
+    if (indices[0] >= mesh.vertices.size() ||
+        indices[1] >= mesh.vertices.size() ||
+        indices[2] >= mesh.vertices.size()) {
+      gpu.rayTracingTriangleVertexNormals.insert(
+          gpu.rayTracingTriangleVertexNormals.end(), 3,
+          DirectX::XMFLOAT4(0.0f, 1.0f, 0.0f, 0.0f));
+      gpu.rayTracingTriangleVertexUvs.insert(
+          gpu.rayTracingTriangleVertexUvs.end(), 3,
+          DirectX::XMFLOAT4(0.0f, 0.0f, 0.0f, 0.0f));
+      continue;
+    }
+
+    DirectX::XMVECTOR vertexNormals[3]{};
+    for (uint32_t vertex = 0; vertex < 3; ++vertex) {
+      const MeshVertex &source = mesh.vertices[indices[vertex]];
+      vertexNormals[vertex] = DirectX::XMVectorSet(
+          source.normal[0], source.normal[1], source.normal[2], 0.0f);
+      gpu.rayTracingTriangleVertexUvs.emplace_back(
+          source.uv[0], source.uv[1], 0.0f, 0.0f);
+    }
+
+    DirectX::XMVECTOR fallbackNormal = DirectX::XMVector3Cross(
+        DirectX::XMVectorSubtract(
+            DirectX::XMVectorSet(mesh.vertices[indices[1]].pos[0],
+                                 mesh.vertices[indices[1]].pos[1],
+                                 mesh.vertices[indices[1]].pos[2], 1.0f),
+            DirectX::XMVectorSet(mesh.vertices[indices[0]].pos[0],
+                                 mesh.vertices[indices[0]].pos[1],
+                                 mesh.vertices[indices[0]].pos[2], 1.0f)),
+        DirectX::XMVectorSubtract(
+            DirectX::XMVectorSet(mesh.vertices[indices[2]].pos[0],
+                                 mesh.vertices[indices[2]].pos[1],
+                                 mesh.vertices[indices[2]].pos[2], 1.0f),
+            DirectX::XMVectorSet(mesh.vertices[indices[0]].pos[0],
+                                 mesh.vertices[indices[0]].pos[1],
+                                 mesh.vertices[indices[0]].pos[2], 1.0f)));
+    if (DirectX::XMVectorGetX(
+            DirectX::XMVector3LengthSq(fallbackNormal)) < 1e-6f) {
+      fallbackNormal = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    } else {
+      fallbackNormal = DirectX::XMVector3Normalize(fallbackNormal);
+    }
+
+    for (DirectX::XMVECTOR normal : vertexNormals) {
+      if (DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(normal)) <
+          1e-6f) {
+        normal = fallbackNormal;
+      } else {
+        normal = DirectX::XMVector3Normalize(normal);
+      }
+      DirectX::XMFLOAT4 packedNormal{};
+      DirectX::XMStoreFloat4(&packedNormal, normal);
+      packedNormal.w = 0.0f;
+      gpu.rayTracingTriangleVertexNormals.push_back(packedNormal);
+    }
+  }
 
   // Upload heaps for simplicity.
   const UINT vbSize =
@@ -1140,6 +1203,24 @@ bool MeshRenderer::GetRayTracingGeometry(
   outView.indexCount = mesh.indexCount;
   outView.indexFormat = mesh.ibView.Format;
   outView.baseColor = mesh.material.baseColorFactor;
+  outView.materialParams = {mesh.material.metallicFactor,
+                            mesh.material.roughnessFactor, 0.0f, 0.0f};
+  outView.triangleVertexNormals =
+      mesh.rayTracingTriangleVertexNormals.data();
+  outView.triangleVertexNormalCount = static_cast<uint32_t>(
+      mesh.rayTracingTriangleVertexNormals.size());
+  outView.triangleVertexUvs = mesh.rayTracingTriangleVertexUvs.data();
+  outView.triangleVertexUvCount = static_cast<uint32_t>(
+      mesh.rayTracingTriangleVertexUvs.size());
+  outView.uvTilingOffset = {mesh.material.uvTiling.x,
+                            mesh.material.uvTiling.y,
+                            mesh.material.uvOffset.x,
+                            mesh.material.uvOffset.y};
+  outView.baseColorTexture = mesh.matTex[0].Get();
+  outView.baseColorTextureFormat = mesh.matTex[0]
+                                       ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+                                       : DXGI_FORMAT_UNKNOWN;
+  outView.reflectionReceiver = mesh.material.reflectionReceiver;
   outView.hasSkeleton = mesh.hasSkeleton;
   outView.hasVertexDeformation =
       mesh.material.vertexDeformTypeId != 0.0f;
