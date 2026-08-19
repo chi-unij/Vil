@@ -17,6 +17,7 @@ public:
   static constexpr float kCastleWallHalfExtentMeters = 25.5f; // castle wall range
   static constexpr float kCastleGateHalfWidthMeters = 4.0f; // Castle gate range
   static constexpr float kBossWarpRadiusMeters = 1.45f;
+  static constexpr float kTavernInteractionRadiusMeters = 2.35f;
 
   struct BackgroundForestDebugSettings {
     bool enabled = true;
@@ -41,6 +42,10 @@ public:
   DirectX::XMFLOAT3 PlayerSpawnPosition() const;
   DirectX::XMFLOAT3 BossWarpPosition() const;
   bool IsPlayerInsideBossWarp(const DirectX::XMFLOAT3 &playerPosition) const;
+  DirectX::XMFLOAT3 TavernEntrancePosition() const;
+  DirectX::XMFLOAT3 TavernReturnPosition() const;
+  bool IsPlayerNearTavernEntrance(
+      const DirectX::XMFLOAT3 &playerPosition) const;
   void SetWaterTransparency(DxContext &dx, float transparency);
   bool ReloadPlacements(DxContext &dx);
   std::vector<CollisionShapeConfig> BuildDefaultCollisionShapes() const;
@@ -102,6 +107,7 @@ private:
   void BuildBackgroundForest(DxContext &dx);
   void AppendWorldPolishProps(FrameData &frame) const;
   void AppendReflectionMonolith(FrameData &frame) const;
+  void AppendTavernPlaceholder(FrameData &frame) const;
   void AppendBackgroundForestCluster(float x, float z, float scale,
                                      float yawDegrees, int densityTier);
 
@@ -118,6 +124,10 @@ private:
   uint32_t m_waystoneMeshId = UINT32_MAX;
   uint32_t m_reflectionMonolithMirrorMeshId = UINT32_MAX;
   uint32_t m_reflectionMonolithFrameMeshId = UINT32_MAX;
+  uint32_t m_tavernWallMeshId = UINT32_MAX;
+  uint32_t m_tavernRoofMeshId = UINT32_MAX;
+  uint32_t m_tavernDoorMeshId = UINT32_MAX;
+  uint32_t m_tavernGlowMeshId = UINT32_MAX;
   std::vector<uint32_t> m_shrineLanternMeshIds;
   std::vector<uint32_t> m_backgroundForestMeshIds;
   std::vector<BackgroundForestCluster> m_backgroundForestClusters;

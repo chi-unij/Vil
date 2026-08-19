@@ -27,6 +27,7 @@
 #include "game/BossArenaScene.h"
 #include "game/OverworldScene.h"
 #include "game/PlayerAnimationPreview.h"
+#include "game/TavernScene.h"
 #include "game/TitleScreen.h"
 #include "game/WorldRainParticles.h"
 
@@ -372,6 +373,24 @@ static ImU32 UiColor(float r, float g, float b, float a) {
   return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
 }
 
+static void DrawTavernEntrancePrompt(int viewportWidth, int viewportHeight) {
+  ImDrawList *draw = ImGui::GetForegroundDrawList();
+  const char *prompt = "E / A  水鏡亭に入る";
+  const ImVec2 textSize = ImGui::CalcTextSize(prompt);
+  const ImVec2 panelSize(textSize.x + 54.0f, textSize.y + 30.0f);
+  const ImVec2 panelMin(
+      (static_cast<float>(viewportWidth) - panelSize.x) * 0.5f,
+      static_cast<float>(viewportHeight) - panelSize.y - 48.0f);
+  const ImVec2 panelMax(panelMin.x + panelSize.x, panelMin.y + panelSize.y);
+
+  draw->AddRectFilled(panelMin, panelMax, UiColor(0.025f, 0.018f, 0.012f, 0.90f),
+                      9.0f);
+  draw->AddRect(panelMin, panelMax, UiColor(0.96f, 0.57f, 0.22f, 0.82f),
+                9.0f, 0, 1.5f);
+  draw->AddText(ImVec2(panelMin.x + 27.0f, panelMin.y + 15.0f),
+                UiColor(1.0f, 0.88f, 0.68f, 0.98f), prompt);
+}
+
 static bool DrawSettingsChoice(ImDrawList *draw, const char *id,
                                const char *title, const char *note,
                                const ImVec2 &min, const ImVec2 &max,
@@ -604,6 +623,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     const bool dxrOverworldRequested =
         HasCommandLineSwitch(commandLine, L"--dxr-overworld") ||
         dxrOverworldSmokeRequested;
+    const bool tavernSmokeRequested =
+        HasCommandLineSwitch(commandLine, L"--tavern-smoke");
+    const bool tavernGameplaySmokeRequested =
+        HasCommandLineSwitch(commandLine, L"--tavern-gameplay-smoke");
+    const bool tavernRequested =
+        HasCommandLineSwitch(commandLine, L"--tavern") ||
+        tavernSmokeRequested || tavernGameplaySmokeRequested;
     const bool dxrSmokeMode = dxrSmokeRequested || dxrOverworldSmokeRequested;
     const bool dxrProofRequested =
         HasCommandLineSwitch(commandLine, L"--dxr-proof") ||
@@ -648,6 +674,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     bool dxrProofAuditLogged = false;
     bool dxrProofDispatchLogged = false;
     int dxrSmokeFramesRemaining = dxrSmokeMode ? 4 : -1;
+    int tavernSmokeTavernFramesRemaining = tavernSmokeRequested ? 2 : -1;
+    int tavernSmokeOverworldFramesRemaining = tavernSmokeRequested ? 2 : -1;
+    bool tavernSmokeReturnIssued = false;
+    bool tavernGameplaySmokeLogged = false;
     ReflectionMode reflectionMode =
         (dxrProofRequested || dxrOverworldRequested) &&
                 hybridReflection.IsSupported()
@@ -702,6 +732,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     OverworldScene overworldScene;
     overworldScene.Initialize(dx);
     TraceAppEvent("startup: overworld ready");
+    TavernScene tavernScene;
+    tavernScene.Initialize(dx);
+    tavernScene.Reset();
+    TraceAppEvent("startup: tavern greybox ready");
     std::vector<OverworldScene::CollisionShapeConfig> overworldCollisionShapes =
         overworldScene.BuildDefaultCollisionShapes();
     std::vector<CollisionSystem::Collider> overworldCollisionColliders =
@@ -807,11 +841,50 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     bool gameFreeCameraEnabled = false;
 
     // ---- Editor/Game mode toggle (Milestone 4 Phase 0) ----
-    enum class AppMode { Title, Game, BossArena, Editor };
-    AppMode appMode = dxrOverworldRequested
-                          ? AppMode::Game
-                          : (launchEditor ? AppMode::Editor : AppMode::Title);
+    enum class AppMode { Title, Game, Tavern, BossArena, Editor };
+    AppMode appMode = tavernRequested
+                          ? AppMode::Tavern
+                          : (dxrOverworldRequested
+                                 ? AppMode::Game
+                                 : (launchEditor ? AppMode::Editor
+                                                 : AppMode::Title));
     bool requestQuit = false;
+    const auto enterTavernMode = [&]() {
+      appMode = AppMode::Tavern;
+      showSettings = false;
+      gameFreeCameraEnabled = false;
+      gameRuntimeSeconds = 0.0f;
+      tavernScene.Reset();
+      playerPreview.SetPosition(tavernScene.PlayerSpawnPosition());
+      playerPreview.SetYaw(0.0f);
+      const DirectX::XMFLOAT3 cameraPosition = tavernScene.CameraPosition();
+      gameCameraPosition = cameraPosition;
+      cam.SetPosition(cameraPosition.x, cameraPosition.y, cameraPosition.z);
+      cam.SetYawPitch(tavernScene.CameraYaw(), tavernScene.CameraPitch());
+      cam.SetLens(DirectX::XM_PIDIV4,
+                  static_cast<float>(window.Width()) /
+                      static_cast<float>(window.Height()),
+                  0.1f, 1000.0f);
+      TraceAppEvent("tavern transition: enter");
+    };
+    const auto returnFromTavern = [&]() {
+      appMode = AppMode::Game;
+      showSettings = false;
+      playerPreview.SetPosition(overworldScene.TavernReturnPosition());
+      playerPreview.SetYaw(0.0f);
+      const DirectX::XMFLOAT3 playerPosition = playerPreview.Position();
+      gameCameraPosition = {playerPosition.x, 3.2f, playerPosition.z - 5.8f};
+      cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
+                      gameCameraPosition.z);
+      cam.SetYawPitch(0.0f, -0.28f);
+      cam.SetLens(DirectX::XM_PIDIV4,
+                  static_cast<float>(window.Width()) /
+                      static_cast<float>(window.Height()),
+                  0.1f, 1000.0f);
+      TraceAppEvent("tavern transition: return to overworld");
+    };
+    if (tavernRequested)
+      enterTavernMode();
     TitleScreen titleScreen;
     Scene editorScene;
     SceneEditor sceneEditor;
@@ -1069,6 +1142,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     sceneEditor.InitEditorMeshes(dx); // Phase 5B: create viewport tile meshes.
     bool prevF1 = false;
     bool prevF5 = false;
+    bool prevTavernInteractKey = false;
+    bool prevTavernRestartKey = false;
 #if defined(_DEBUG)
     bool prevF7 = false;
     bool prevF8 = false;
@@ -1133,7 +1208,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       const bool f1Now = input.IsKeyDown(VK_F1);
       if (launchEditor && f1Now && !prevF1 &&
           (appMode == AppMode::Title || appMode == AppMode::Game ||
-           appMode == AppMode::BossArena)) {
+           appMode == AppMode::Tavern || appMode == AppMode::BossArena)) {
         appMode = AppMode::Editor;
         showSettings = false;
         if (editorReturnCameraValid)
@@ -1270,6 +1345,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
 
       const bool uiWantsMouse = imgui.WantCaptureMouse();
       const bool uiWantsKeyboard = imgui.WantCaptureKeyboard();
+      const bool tavernInteractKeyNow = input.IsKeyDown('E');
+      const bool tavernInteractPressed =
+          (tavernInteractKeyNow && !prevTavernInteractKey) ||
+          input.GamepadButtonPressed(XINPUT_GAMEPAD_A);
+      prevTavernInteractKey = tavernInteractKeyNow;
+      const bool tavernRestartKeyNow = input.IsKeyDown('R');
+      const bool tavernRestartPressed =
+          tavernRestartKeyNow && !prevTavernRestartKey;
+      prevTavernRestartKey = tavernRestartKeyNow;
 
       bool cursorInEditorViewport = false;
       if (appMode == AppMode::Editor) {
@@ -1295,7 +1379,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
            sceneEditor.CameraNavigationEnabled());
 
       // Camera input routing — mode-dependent (Phase 6).
-      const bool isPlaying = appMode == AppMode::Game || appMode == AppMode::BossArena;
+      const bool isPlaying = appMode == AppMode::Game ||
+                             appMode == AppMode::Tavern ||
+                             appMode == AppMode::BossArena;
 
       // ゲーム中は通常カメラを固定し、設定で有効化した時だけデバッグ用フリーカメラを動かす。
       if (isPlaying && gameFreeCameraEnabled) {
@@ -1455,9 +1541,29 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         rainEmitter.Update(static_cast<double>(dt));
       }
 
-      if ((appMode == AppMode::Game || appMode == AppMode::BossArena) &&
+      if (appMode == AppMode::Tavern && !uiWantsKeyboard &&
+          !gameFreeCameraEnabled) {
+        if (tavernScene.PlayerMovementLocked()) {
+          playerPreview.Update(dt);
+        } else {
+          playerPreview.Update(dt, input, 12.0f,
+                               tavernScene.CollisionColliders(),
+                               emptyMeshTriangles);
+        }
+        const DirectX::XMFLOAT3 playerPos = playerPreview.Position();
+        const DirectX::XMFLOAT3 targetCameraPos = {
+            playerPos.x, playerPos.y + 3.0f, playerPos.z - 4.80f};
+        const float cameraFollowT = std::clamp(dt * 8.5f, 0.0f, 1.0f);
+        gameCameraPosition =
+            LerpFloat3(gameCameraPosition, targetCameraPos, cameraFollowT);
+        cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
+                        gameCameraPosition.z);
+        cam.SetYawPitch(tavernScene.CameraYaw(), tavernScene.CameraPitch());
+      } else if ((appMode == AppMode::Game ||
+                  appMode == AppMode::BossArena) &&
           !uiWantsKeyboard && !gameFreeCameraEnabled) {
         bool inBossArena = appMode == AppMode::BossArena;
+        bool enteredTavern = false;
         const bool bossPhoneActive =
             inBossArena && bossArenaScene.IsPhoneOverlayActive();
         if (bossPhoneActive) {
@@ -1477,9 +1583,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                                  ? overworldScene.StageCollisionTriangles()
                                  : emptyMeshTriangles),
               inBossArena && bossArenaScene.DebugNoClipEnabled());
-          if (!inBossArena &&
-              overworldScene.IsPlayerInsideBossWarp(
+          if (!inBossArena && tavernInteractPressed &&
+              overworldScene.IsPlayerNearTavernEntrance(
                   playerPreview.Position())) {
+            enterTavernMode();
+            enteredTavern = true;
+          } else if (!inBossArena &&
+                     overworldScene.IsPlayerInsideBossWarp(
+                         playerPreview.Position())) {
             TraceAppEvent("overworld warp: boss arena");
             appMode = AppMode::BossArena;
             inBossArena = true;
@@ -1487,33 +1598,35 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
             gameCameraPosition = {0.0f, 4.0f, -20.0f};
           }
         }
-        if (inBossArena)
-          bossArenaScene.Update(dt, input, playerPreview);
-        const DirectX::XMFLOAT3 playerPos = playerPreview.Position();
-        const DirectX::XMFLOAT3 targetCameraPos = {
-            playerPos.x,
-            (inBossArena && bossArenaScene.DebugNoClipEnabled())
-                ? playerPos.y + 3.2f
-                : 3.2f,
-            playerPos.z - 5.8f};
-        const float cameraFollowT = std::clamp(dt * 7.5f, 0.0f, 1.0f);
-        gameCameraPosition = LerpFloat3(gameCameraPosition, targetCameraPos,
-                                        cameraFollowT);
-        DirectX::XMFLOAT3 finalCameraPosition = gameCameraPosition;
-        if (inBossArena && !bossPhoneActive) {
-          const float shake = bossArenaScene.CameraImpulseAmount();
-          if (shake > 0.0001f) {
-            finalCameraPosition.x +=
-                std::sin(gameRuntimeSeconds * 78.0f) * shake;
-            finalCameraPosition.y +=
-                std::cos(gameRuntimeSeconds * 91.0f) * shake * 0.55f;
+        if (!enteredTavern) {
+          if (inBossArena)
+            bossArenaScene.Update(dt, input, playerPreview);
+          const DirectX::XMFLOAT3 playerPos = playerPreview.Position();
+          const DirectX::XMFLOAT3 targetCameraPos = {
+              playerPos.x,
+              (inBossArena && bossArenaScene.DebugNoClipEnabled())
+                  ? playerPos.y + 3.2f
+                  : 3.2f,
+              playerPos.z - 5.8f};
+          const float cameraFollowT = std::clamp(dt * 7.5f, 0.0f, 1.0f);
+          gameCameraPosition = LerpFloat3(gameCameraPosition, targetCameraPos,
+                                          cameraFollowT);
+          DirectX::XMFLOAT3 finalCameraPosition = gameCameraPosition;
+          if (inBossArena && !bossPhoneActive) {
+            const float shake = bossArenaScene.CameraImpulseAmount();
+            if (shake > 0.0001f) {
+              finalCameraPosition.x +=
+                  std::sin(gameRuntimeSeconds * 78.0f) * shake;
+              finalCameraPosition.y +=
+                  std::cos(gameRuntimeSeconds * 91.0f) * shake * 0.55f;
+            }
           }
+          cam.SetPosition(finalCameraPosition.x, finalCameraPosition.y,
+                          finalCameraPosition.z);
+          cam.SetYawPitch(0.0f, -0.28f);
         }
-        cam.SetPosition(finalCameraPosition.x, finalCameraPosition.y,
-                        finalCameraPosition.z);
-        cam.SetYawPitch(0.0f, -0.28f);
-      } else if (appMode == AppMode::Game || appMode == AppMode::BossArena ||
-                 appMode == AppMode::Editor) {
+      } else if (appMode == AppMode::Game || appMode == AppMode::Tavern ||
+                 appMode == AppMode::BossArena || appMode == AppMode::Editor) {
         playerPreview.Update(dt);
       }
 
@@ -1576,7 +1689,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         }
       }
 
-      if (appMode == AppMode::Game || appMode == AppMode::BossArena) {
+      if (appMode == AppMode::Game || appMode == AppMode::Tavern ||
+          appMode == AppMode::BossArena) {
         gameRuntimeSeconds += dt;
       }
 
@@ -1870,6 +1984,27 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         }
       }
 
+      if (appMode == AppMode::Game && !showSettings &&
+          overworldScene.IsPlayerNearTavernEntrance(
+              playerPreview.Position())) {
+        DrawTavernEntrancePrompt(static_cast<int>(window.Width()),
+                                 static_cast<int>(window.Height()));
+      }
+
+      if (appMode == AppMode::Tavern) {
+        const TavernScene::Action updateAction = tavernScene.Update(
+            dt * (tavernGameplaySmokeRequested ? 12.0f : 1.0f),
+            playerPreview.Position(), tavernInteractPressed, lbNow,
+            tavernRestartPressed,
+            tavernGameplaySmokeRequested);
+        const TavernScene::Action hudAction =
+            tavernScene.DrawHud(static_cast<int>(window.Width()),
+                                static_cast<int>(window.Height()));
+        if (updateAction == TavernScene::Action::ReturnToOverworld ||
+            hudAction == TavernScene::Action::ReturnToOverworld)
+          returnFromTavern();
+      }
+
       // SSAO, Post Processing, and Cascaded Shadows panels moved to SceneEditor (Phase 4).
       if (appMode == AppMode::Game) {
         overworldCollisionColliders =
@@ -1880,7 +2015,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       using namespace DirectX;
       const auto &shadowCfg = editorScene.ShadowSettings();
       const XMFLOAT3 activeSunDirection =
-          (appMode == AppMode::Game || appMode == AppMode::BossArena)
+          (appMode == AppMode::Game || appMode == AppMode::Tavern ||
+           appMode == AppMode::BossArena)
               ? gameLighting.sunDirection
               : editorScene.LightSettings().lightDir;
       const XMVECTOR raysDir =
@@ -1913,7 +2049,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       frame.view = cam.View();
       frame.proj = cam.Proj(); // includes jitter when TAA is enabled
       frame.cameraPos = camPosF;
-      frame.gameTime = (appMode == AppMode::Game || appMode == AppMode::BossArena) ? gameRuntimeSeconds : t;
+      frame.gameTime =
+          (appMode == AppMode::Game || appMode == AppMode::Tavern ||
+           appMode == AppMode::BossArena)
+              ? gameRuntimeSeconds
+              : t;
       frame.waterWaveParams = {waterWaveHeight, waterWaveSpeed,
                                waterWaveFrequency, 0.0f};
       frame.wetSurfaceParams = {wetSurfaceStrength, wetSurfaceDrySeconds,
@@ -1988,6 +2128,27 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         frame.exposure = gamePostExposure;
         frame.ssrEnabled = true;
         frame.ssrReflectionParams = {1.20f, 24.0f, 0.18f, 0.20f};
+      } else if (appMode == AppMode::Tavern) {
+        tavernScene.BuildFrame(frame);
+        // Tavern の procedural furniture は実寸寄りなので、モデル読込時の
+        // preview scale をこの mode だけ補正する。
+        playerPreview.BuildFrame(frame, 2.15f);
+        frame.gridEnabled = false;
+        frame.clearColor[0] = 0.035f;
+        frame.clearColor[1] = 0.020f;
+        frame.clearColor[2] = 0.012f;
+        frame.clearColor[3] = 1.0f;
+        frame.skyExposure = 0.025f;
+        frame.lighting.lightDir = gameLighting.sunDirection;
+        frame.lighting.lightColor = {1.0f, 0.76f, 0.52f};
+        frame.lighting.lightIntensity = 0.72f;
+        frame.lighting.iblIntensity = 0.28f;
+        frame.exposure = 1.05f;
+        frame.bloomEnabled = true;
+        frame.bloomThreshold = 0.72f;
+        frame.bloomIntensity = 0.58f;
+        frame.ssrEnabled = false;
+        frame.reflectionMode = ReflectionMode::Off;
       } else if (appMode == AppMode::BossArena) {
         frame.gridEnabled = false;
         frame.waterWaveParams = {0.0f, 1.0f, 1.0f, 0.0f};
@@ -2083,7 +2244,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       }
 
       if (launchEditor &&
-          (appMode == AppMode::Game || appMode == AppMode::BossArena)) {
+          (appMode == AppMode::Game || appMode == AppMode::Tavern ||
+           appMode == AppMode::BossArena)) {
         ImGui::SetNextWindowPos(
             ImVec2(static_cast<float>(window.Width()) - 18.0f, 18.0f),
             ImGuiCond_Always, ImVec2(1.0f, 0.0f));
@@ -2249,6 +2411,36 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
           requestQuit = true;
         }
       }
+      if (tavernSmokeRequested) {
+        if (!tavernSmokeReturnIssued && appMode == AppMode::Tavern &&
+            tavernSmokeTavernFramesRemaining > 0) {
+          --tavernSmokeTavernFramesRemaining;
+          if (tavernSmokeTavernFramesRemaining == 0) {
+            TraceAppEvent("Tavern smoke: tavern frames complete");
+            returnFromTavern();
+            tavernSmokeReturnIssued = true;
+          }
+        } else if (tavernSmokeReturnIssued && appMode == AppMode::Game &&
+                   tavernSmokeOverworldFramesRemaining > 0) {
+          --tavernSmokeOverworldFramesRemaining;
+          if (tavernSmokeOverworldFramesRemaining == 0) {
+            TraceAppEvent(
+                "Tavern smoke: enter and return route completed four frames");
+            requestQuit = true;
+          }
+        }
+      }
+      if (tavernGameplaySmokeRequested && !tavernGameplaySmokeLogged &&
+          tavernScene.GameplaySmokeComplete()) {
+        std::ostringstream message;
+        message << "Tavern gameplay smoke: completed Ale service and wash cycle; gold="
+                << tavernScene.Gold()
+                << " served=" << tavernScene.ServedCustomers()
+                << " walkouts=" << tavernScene.Walkouts();
+        TraceAppEvent(message.str().c_str());
+        tavernGameplaySmokeLogged = true;
+        requestQuit = true;
+      }
       if (traceGameFrame)
         TraceAppEvent("game frame: end");
 
@@ -2270,6 +2462,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     dx.WaitForGpu(); // Flush GPU before releasing any resources
     if (dxrSmokeMode) {
       std::ofstream debugLog("dxr_smoke_debug_log.txt",
+                             std::ios::out | std::ios::trunc);
+      if (debugLog)
+        dx.DumpDebugMessages(debugLog);
+    }
+    if (tavernSmokeRequested || tavernGameplaySmokeRequested) {
+      std::ofstream debugLog("tavern_smoke_debug_log.txt",
                              std::ios::out | std::ios::trunc);
       if (debugLog)
         dx.DumpDebugMessages(debugLog);

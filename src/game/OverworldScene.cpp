@@ -310,6 +310,38 @@ void OverworldScene::Initialize(DxContext &dx) {
   m_reflectionMonolithFrameMeshId = dx.CreateMeshResources(
       reflectionMonolithFrameMesh, {}, reflectionMonolithFrameMaterial);
 
+  // Tavern model が届くまで、同じ入口 contract を使える procedural 外観を置く。
+  const LoadedMesh tavernCubeMesh = ProceduralMesh::CreateCube(1.0f);
+  Material tavernWallMaterial{};
+  tavernWallMaterial.baseColorFactor = {0.36f, 0.25f, 0.15f, 1.0f};
+  tavernWallMaterial.metallicFactor = 0.0f;
+  tavernWallMaterial.roughnessFactor = 0.86f;
+  m_tavernWallMeshId =
+      dx.CreateMeshResources(tavernCubeMesh, {}, tavernWallMaterial);
+
+  Material tavernRoofMaterial{};
+  tavernRoofMaterial.baseColorFactor = {0.075f, 0.055f, 0.050f, 1.0f};
+  tavernRoofMaterial.metallicFactor = 0.0f;
+  tavernRoofMaterial.roughnessFactor = 0.72f;
+  m_tavernRoofMeshId =
+      dx.CreateMeshResources(tavernCubeMesh, {}, tavernRoofMaterial);
+
+  Material tavernDoorMaterial{};
+  tavernDoorMaterial.baseColorFactor = {0.17f, 0.075f, 0.028f, 1.0f};
+  tavernDoorMaterial.metallicFactor = 0.0f;
+  tavernDoorMaterial.roughnessFactor = 0.58f;
+  m_tavernDoorMeshId =
+      dx.CreateMeshResources(tavernCubeMesh, {}, tavernDoorMaterial);
+
+  Material tavernGlowMaterial{};
+  tavernGlowMaterial.baseColorFactor = {1.0f, 0.42f, 0.10f, 1.0f};
+  tavernGlowMaterial.metallicFactor = 0.0f;
+  tavernGlowMaterial.roughnessFactor = 0.16f;
+  tavernGlowMaterial.emissiveFactor = {3.4f, 0.62f, 0.08f};
+  tavernGlowMaterial.rayTracingVisible = false;
+  m_tavernGlowMeshId =
+      dx.CreateMeshResources(tavernCubeMesh, {}, tavernGlowMaterial);
+
   m_ready =
       (m_floorMeshId != UINT32_MAX && m_castleWallMeshId != UINT32_MAX &&
        m_waterMeshId != UINT32_MAX &&
@@ -322,7 +354,11 @@ void OverworldScene::Initialize(DxContext &dx) {
        m_lanternGlowMeshId != UINT32_MAX &&
        m_waystoneMeshId != UINT32_MAX &&
        m_reflectionMonolithMirrorMeshId != UINT32_MAX &&
-       m_reflectionMonolithFrameMeshId != UINT32_MAX);
+       m_reflectionMonolithFrameMeshId != UINT32_MAX &&
+       m_tavernWallMeshId != UINT32_MAX &&
+       m_tavernRoofMeshId != UINT32_MAX &&
+       m_tavernDoorMeshId != UINT32_MAX &&
+       m_tavernGlowMeshId != UINT32_MAX);
 
   if (m_ready) {
     OutputDebugStringA(
@@ -453,6 +489,7 @@ void OverworldScene::BuildFrame(FrameData &frame) const {
 
   AppendWorldPolishProps(frame);
   AppendReflectionMonolith(frame);
+  AppendTavernPlaceholder(frame);
 
   const auto &forestDebug = m_backgroundForestDebug;
   if (forestDebug.enabled && !m_backgroundForestMeshIds.empty()) {
@@ -644,6 +681,48 @@ void OverworldScene::AppendReflectionMonolith(FrameData &frame) const {
   pushFrame(m_reflectionMonolithFrameMeshId, mirrorWidth + 1.4f, 0.30f, 1.25f,
             centerX, 0.15f, centerZ, yawRadians);
 }
+
+void OverworldScene::AppendTavernPlaceholder(FrameData &frame) const {
+  if (m_tavernWallMeshId == UINT32_MAX ||
+      m_tavernRoofMeshId == UINT32_MAX ||
+      m_tavernDoorMeshId == UINT32_MAX ||
+      m_tavernGlowMeshId == UINT32_MAX) {
+    return;
+  }
+
+  constexpr float centerX = -15.0f;
+  constexpr float centerZ = -12.0f;
+  const auto pushBox = [&frame](uint32_t meshId, float sx, float sy,
+                                float sz, float x, float y, float z) {
+    frame.opaqueItems.push_back(
+        {meshId, XMMatrixScaling(sx, sy, sz) * XMMatrixTranslation(x, y, z)});
+  };
+
+  pushBox(m_tavernWallMeshId, 7.0f, 4.2f, 5.4f, centerX, 2.1f,
+          centerZ);
+  pushBox(m_tavernRoofMeshId, 8.0f, 0.58f, 6.3f, centerX, 4.46f,
+          centerZ);
+  pushBox(m_tavernRoofMeshId, 6.7f, 0.52f, 5.1f, centerX, 4.98f,
+          centerZ);
+  pushBox(m_tavernDoorMeshId, 1.65f, 2.75f, 0.18f, centerX, 1.38f,
+          centerZ - 2.79f);
+  pushBox(m_tavernDoorMeshId, 3.1f, 0.82f, 0.20f, centerX, 3.62f,
+          centerZ - 2.82f);
+  pushBox(m_tavernGlowMeshId, 2.45f, 0.13f, 0.12f, centerX, 3.62f,
+          centerZ - 2.94f);
+  pushBox(m_tavernGlowMeshId, 0.24f, 0.42f, 0.24f, centerX - 1.55f,
+          1.78f, centerZ - 3.00f);
+  pushBox(m_tavernGlowMeshId, 0.24f, 0.42f, 0.24f, centerX + 1.55f,
+          1.78f, centerZ - 3.00f);
+
+  GPUPointLight entranceLight{};
+  entranceLight.position = {centerX, 2.2f, centerZ - 3.5f};
+  entranceLight.range = 7.5f;
+  entranceLight.color = {1.0f, 0.48f, 0.16f};
+  entranceLight.intensity = 5.8f;
+  frame.pointLights.push_back(entranceLight);
+}
+
 XMFLOAT3 OverworldScene::PlayerSpawnPosition() const {
   return {0.0f, 0.0f, -18.0f};
 }
@@ -659,6 +738,23 @@ bool OverworldScene::IsPlayerInsideBossWarp(
   const float dz = playerPosition.z - warpPos.z;
   return dx * dx + dz * dz <=
          kBossWarpRadiusMeters * kBossWarpRadiusMeters;
+}
+
+XMFLOAT3 OverworldScene::TavernEntrancePosition() const {
+  return {-15.0f, 0.0f, -15.55f};
+}
+
+XMFLOAT3 OverworldScene::TavernReturnPosition() const {
+  return {-15.0f, 0.0f, -18.35f};
+}
+
+bool OverworldScene::IsPlayerNearTavernEntrance(
+    const XMFLOAT3 &playerPosition) const {
+  const XMFLOAT3 entrance = TavernEntrancePosition();
+  const float dx = playerPosition.x - entrance.x;
+  const float dz = playerPosition.z - entrance.z;
+  return dx * dx + dz * dz <=
+         kTavernInteractionRadiusMeters * kTavernInteractionRadiusMeters;
 }
 
 void OverworldScene::SetWaterTransparency(DxContext &dx, float transparency) {
@@ -701,7 +797,7 @@ OverworldScene::BuildDefaultCollisionShapes() const {
   };
 
   std::vector<CollisionShapeConfig> boxes;
-  boxes.reserve(16);
+  boxes.reserve(18);
   boxes.push_back(makeBox("South Wall", wallLength, wallHeight, wallThickness,
                           0.0f, wallHeight * 0.5f,
                           -kCastleWallHalfExtentMeters));
@@ -747,6 +843,8 @@ OverworldScene::BuildDefaultCollisionShapes() const {
   boxes.push_back(
       makeBox("反写の大鏡", 9.0f, 6.3f, 0.70f, -18.0f, 3.15f, 16.0f));
   boxes.back().yawRadians = -24.0f * XM_PI / 180.0f;
+  boxes.push_back(makeBox("水鏡亭 Tavern Placeholder", 7.0f, 4.2f, 5.4f,
+                          -15.0f, 2.1f, -12.0f));
   return boxes;
 }
 

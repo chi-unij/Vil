@@ -37,6 +37,27 @@ void ImGuiLayer::Initialize(Win32Window& window, DxContext& dx)
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
+    // Reviewer-facing Japanese UI needs glyphs that the built-in font does
+    // not provide. Keep the existing default metrics and merge a Windows
+    // Japanese font when available; packaging can replace this with a
+    // redistributable bundled font for portable builds.
+    io.Fonts->AddFontDefault();
+    ImFontConfig japaneseFontConfig{};
+    japaneseFontConfig.MergeMode = true;
+    japaneseFontConfig.PixelSnapH = true;
+    const char* japaneseFontCandidates[] = {
+        "C:/Windows/Fonts/YuGothM.ttc",
+        "C:/Windows/Fonts/meiryo.ttc",
+        "C:/Windows/Fonts/msgothic.ttc",
+    };
+    for (const char* fontPath : japaneseFontCandidates) {
+        if (io.Fonts->AddFontFromFileTTF(
+                fontPath, 13.0f, &japaneseFontConfig,
+                io.Fonts->GetGlyphRangesJapanese())) {
+            break;
+        }
+    }
+
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowPadding = ImVec2(8.0f, 8.0f);

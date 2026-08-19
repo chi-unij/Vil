@@ -30,7 +30,7 @@ public:
               const std::vector<CollisionSystem::MeshTriangle>
                   &meshTriangles,
               bool debugFly = false);
-  void BuildFrame(FrameData &frame) const;
+  void BuildFrame(FrameData &frame, float scaleMultiplier = 1.0f) const;
   void DrawDebugUi();
   void DrawDebugControls();
 

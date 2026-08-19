@@ -188,12 +188,14 @@ void PlayerAnimationPreview::SetPosition(const XMFLOAT3 &position) {
 void PlayerAnimationPreview::SetYaw(float yawRadians) {
   m_previewYaw = yawRadians;
 }
-void PlayerAnimationPreview::BuildFrame(FrameData &frame) const {
+void PlayerAnimationPreview::BuildFrame(FrameData &frame,
+                                        float scaleMultiplier) const {
   if (!m_ready)
     return;
 
+  const float renderScale = m_previewScale * std::max(0.01f, scaleMultiplier);
   const XMMATRIX world =
-      XMMatrixScaling(m_previewScale, m_previewScale, m_previewScale) *
+      XMMatrixScaling(renderScale, renderScale, renderScale) *
       XMMatrixRotationY(m_previewYaw) *
       XMMatrixTranslation(m_previewPosition.x, m_previewPosition.y + 0.01f,
                           m_previewPosition.z);
