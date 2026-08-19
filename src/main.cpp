@@ -2433,8 +2433,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       if (tavernGameplaySmokeRequested && !tavernGameplaySmokeLogged &&
           tavernScene.GameplaySmokeComplete()) {
         std::ostringstream message;
-        message << "Tavern gameplay smoke: completed Ale service and wash cycle; gold="
-                << tavernScene.Gold()
+        message << "Tavern gameplay smoke: completed both table Ale service "
+                   "and wash cycles; cycles="
+                << tavernScene.CompletedCycles()
+                << " gold=" << tavernScene.Gold()
                 << " served=" << tavernScene.ServedCustomers()
                 << " walkouts=" << tavernScene.Walkouts();
         TraceAppEvent(message.str().c_str());

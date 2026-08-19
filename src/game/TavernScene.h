@@ -26,7 +26,9 @@ public:
   Action DrawHud(int viewportWidth, int viewportHeight);
 
   bool IsReady() const { return m_ready; }
-  bool GameplaySmokeComplete() const { return m_completedCycles >= 1; }
+  bool GameplaySmokeComplete() const {
+    return m_tableCompletedCycles[0] >= 1 && m_tableCompletedCycles[1] >= 1;
+  }
   bool PlayerMovementLocked() const { return m_workState != WorkState::None; }
   int CompletedCycles() const { return m_completedCycles; }
   int Gold() const { return m_gold; }
@@ -53,6 +55,16 @@ private:
   };
   enum class HeldItem { None, EmptyMug, FilledMug, DirtyMug };
   enum class WorkState { None, PouringAle, WashingMug };
+  enum class TutorialStep {
+    TakeOrder,
+    GetMug,
+    StartPour,
+    PourAle,
+    ServeAle,
+    CollectMug,
+    WashMug,
+    Complete,
+  };
 
   struct TableSlot {
     TableState state = TableState::Empty;
@@ -67,6 +79,7 @@ private:
   void SpawnCustomer(int tableIndex);
   void TakeOrder(int tableIndex);
   void PickUpEmptyMug();
+  void ReturnEmptyMug();
   void BeginPouring();
   void FinishPouring();
   void ServeAle(int tableIndex);
@@ -76,6 +89,9 @@ private:
   void TriggerWalkout(int tableIndex);
   void RunAutomation();
   void UpdateNearbyPrompt();
+  int NearestEnabledTable(float maximumDistance) const;
+  int FindTableInState(TableState state) const;
+  int FindMostUrgentWaitingAleTable() const;
 
   uint32_t m_floorMeshId = UINT32_MAX;
   uint32_t m_wallMeshId = UINT32_MAX;
@@ -86,28 +102,40 @@ private:
   uint32_t m_customerHeadMeshId = UINT32_MAX;
   uint32_t m_mugMeshId = UINT32_MAX;
   uint32_t m_aleMeshId = UINT32_MAX;
+  uint32_t m_foamMeshId = UINT32_MAX;
   uint32_t m_metalMeshId = UINT32_MAX;
 
   ShiftState m_shiftState = ShiftState::Running;
   std::array<TableSlot, 3> m_tables{};
   HeldItem m_heldItem = HeldItem::None;
   WorkState m_workState = WorkState::None;
+  TutorialStep m_tutorialStep = TutorialStep::TakeOrder;
   DirectX::XMFLOAT3 m_playerPosition = {0.0f, 0.0f, -0.35f};
   std::vector<CollisionSystem::Collider> m_collisionColliders;
   std::string m_nearbyPrompt;
+  std::string m_feedbackText;
   float m_shiftRemainingSeconds = 90.0f;
-  float m_spawnTimer = 0.0f;
+  std::array<float, 3> m_spawnTimers{};
+  std::array<int, 3> m_tableCompletedCycles{};
   float m_aleFill = 0.0f;
   float m_aleFoam = 0.0f;
   float m_aleOverflow = 0.0f;
   float m_pourQuality = 1.0f;
   float m_washProgress = 0.0f;
   float m_interactionCooldown = 0.0f;
+  float m_feedbackTimer = 0.0f;
+  float m_pourVisualTime = 0.0f;
   int m_gold = 0;
   int m_servedCustomers = 0;
   int m_walkouts = 0;
   int m_completedCycles = 0;
+  int m_cleanMugs = 2;
+  int m_perfectPours = 0;
+  int m_heldMugTableIndex = -1;
+  int m_tutorialTableIndex = 0;
   bool m_workActionStarted = false;
   bool m_cycleAwaitingWash = false;
+  bool m_primaryActionActive = false;
+  bool m_lastPourPerfect = false;
   bool m_ready = false;
 };
