@@ -19,16 +19,19 @@ constexpr std::array<XMFLOAT3, 3> kTableInteractions = {
 constexpr XMFLOAT3 kMugRackInteraction = {-2.7f, 0.0f, 6.90f};
 constexpr XMFLOAT3 kAleTapInteraction = {0.0f, 0.0f, 6.90f};
 constexpr XMFLOAT3 kWashBasinInteraction = {2.7f, 0.0f, 6.90f};
+constexpr std::array<XMFLOAT3, 2> kCounterMugInteractions = {
+    XMFLOAT3{-1.55f, 0.0f, 6.90f}, XMFLOAT3{-0.85f, 0.0f, 6.90f}};
+constexpr std::array<XMFLOAT3, 2> kCounterMugPositions = {
+    XMFLOAT3{-1.55f, 1.65f, 7.65f}, XMFLOAT3{-0.85f, 1.65f, 7.65f}};
 constexpr XMFLOAT3 kExitInteraction = {0.0f, 0.0f, -1.05f};
 constexpr float kStationInteractionRange = 1.55f;
+constexpr float kCounterMugInteractionRange = 0.58f;
 constexpr float kTableInteractionRange = 2.05f;
 constexpr float kPerfectPourMinimum = 0.82f;
 constexpr float kPerfectPourMaximum = 0.96f;
 constexpr int kActiveTableCount = 2;
 constexpr int kTotalMugs = 2;
 constexpr float kBusinessOpenHour = 5.0f;
-constexpr float kBusinessCloseHour = 24.0f;
-constexpr float kBusinessHoursPerSecond = 0.20f;
 constexpr float kMugScaleXZ = 0.345f;
 constexpr float kMugScaleY = 0.465f;
 constexpr float kAleSurfaceScaleXZ = 0.255f;
@@ -148,6 +151,27 @@ void TavernScene::Initialize(DxContext &dx) {
   mugMaterial.roughnessFactor = 0.36f;
   m_mugMeshId = dx.CreateMeshResources(cylinderMesh, {}, mugMaterial);
 
+  Material filledMugMaterial = mugMaterial;
+  filledMugMaterial.baseColorFactor = {0.27f, 0.38f, 0.50f, 1.0f};
+  filledMugMaterial.metallicFactor = 0.34f;
+  filledMugMaterial.roughnessFactor = 0.42f;
+  m_filledMugMeshId =
+      dx.CreateMeshResources(cylinderMesh, {}, filledMugMaterial);
+
+  Material dirtyMugMaterial = mugMaterial;
+  dirtyMugMaterial.baseColorFactor = {0.20f, 0.46f, 0.16f, 1.0f};
+  dirtyMugMaterial.metallicFactor = 0.10f;
+  dirtyMugMaterial.roughnessFactor = 0.78f;
+  m_dirtyMugMeshId =
+      dx.CreateMeshResources(cylinderMesh, {}, dirtyMugMaterial);
+
+  Material dirtySpotMaterial{};
+  dirtySpotMaterial.baseColorFactor = {0.012f, 0.016f, 0.010f, 1.0f};
+  dirtySpotMaterial.metallicFactor = 0.0f;
+  dirtySpotMaterial.roughnessFactor = 0.94f;
+  m_dirtySpotMeshId =
+      dx.CreateMeshResources(headMesh, {}, dirtySpotMaterial);
+
   Material aleMaterial{};
   aleMaterial.baseColorFactor = {0.90f, 0.42f, 0.055f, 1.0f};
   aleMaterial.metallicFactor = 0.0f;
@@ -217,21 +241,30 @@ void TavernScene::Initialize(DxContext &dx) {
             m_woodMeshId != UINT32_MAX && m_darkWoodMeshId != UINT32_MAX &&
             m_glowMeshId != UINT32_MAX && m_customerBodyMeshId != UINT32_MAX &&
             m_customerHeadMeshId != UINT32_MAX && m_mugMeshId != UINT32_MAX &&
+            m_filledMugMeshId != UINT32_MAX &&
+            m_dirtyMugMeshId != UINT32_MAX &&
+            m_dirtySpotMeshId != UINT32_MAX &&
             m_aleMeshId != UINT32_MAX && m_foamMeshId != UINT32_MAX &&
             m_metalMeshId != UINT32_MAX;
   Reset();
 }
 
-void TavernScene::Reset() {
+void TavernScene::SetBusinessHour(float hour) {
+  m_businessHour = std::fmod(std::max(0.0f, hour), 24.0f);
+}
+
+void TavernScene::Reset(float startingHour) {
   m_shiftState = ShiftState::Running;
-  m_businessHour = kBusinessOpenHour;
+  SetBusinessHour(startingHour);
   m_spawnTimers = {2.0f, 0.0f, 0.0f};
   m_gold = 0;
   m_servedCustomers = 0;
   m_walkouts = 0;
   m_completedCycles = 0;
+  m_completedDays = 0;
   m_tableCompletedCycles = {};
   m_tables = {};
+  m_counterMugs = {};
   m_tables[0].enabled = true;
   m_tables[1].enabled = false;
   m_heldItem = HeldItem::None;
@@ -256,6 +289,31 @@ void TavernScene::Reset() {
   m_cycleAwaitingWash = false;
   m_primaryActionActive = false;
   m_lastPourPerfect = false;
+}
+
+void TavernScene::BeginNextDay(float startingHour) {
+  const int gold = m_gold;
+  const int servedCustomers = m_servedCustomers;
+  const int completedCycles = m_completedCycles;
+  const int perfectPours = m_perfectPours;
+  const int completedDays = m_completedDays + 1;
+  const std::array<int, 3> tableCompletedCycles = m_tableCompletedCycles;
+  const TutorialStep tutorialStep = m_tutorialStep;
+
+  Reset(startingHour);
+  m_gold = gold;
+  m_servedCustomers = servedCustomers;
+  m_completedCycles = completedCycles;
+  m_perfectPours = perfectPours;
+  m_completedDays = completedDays;
+  m_tableCompletedCycles = tableCompletedCycles;
+  m_tutorialStep = tutorialStep;
+  if (m_tutorialStep == TutorialStep::Complete) {
+    m_tables[1].enabled = true;
+    m_spawnTimers[1] = 4.0f;
+  }
+  m_feedbackText = "翌朝 5:00　新しい一日が始まった";
+  m_feedbackTimer = 2.4f;
 }
 
 void TavernScene::SpawnCustomer(int tableIndex) {
@@ -302,6 +360,53 @@ void TavernScene::ReturnEmptyMug() {
     return;
   m_heldItem = HeldItem::None;
   m_cleanMugs = std::min(kTotalMugs, m_cleanMugs + 1);
+}
+
+void TavernScene::PlaceHeldMug(int slotIndex) {
+  if (slotIndex < 0 ||
+      slotIndex >= static_cast<int>(m_counterMugs.size()) ||
+      m_heldItem == HeldItem::None ||
+      m_counterMugs[slotIndex].item != HeldItem::None)
+    return;
+
+  MugState &mug = m_counterMugs[slotIndex];
+  mug.item = m_heldItem;
+  mug.aleFill = m_aleFill;
+  mug.aleFoam = m_aleFoam;
+  mug.pourQuality = m_pourQuality;
+  mug.sourceTableIndex = m_heldMugTableIndex;
+  mug.cycleAwaitingWash = m_cycleAwaitingWash;
+  mug.lastPourPerfect = m_lastPourPerfect;
+
+  m_heldItem = HeldItem::None;
+  m_aleFill = 0.0f;
+  m_aleFoam = 0.0f;
+  m_pourQuality = 1.0f;
+  m_heldMugTableIndex = -1;
+  m_cycleAwaitingWash = false;
+  m_lastPourPerfect = false;
+  m_feedbackText = "ジョッキをカウンターに置いた";
+  m_feedbackTimer = 1.2f;
+}
+
+void TavernScene::PickUpPlacedMug(int slotIndex) {
+  if (slotIndex < 0 ||
+      slotIndex >= static_cast<int>(m_counterMugs.size()) ||
+      m_heldItem != HeldItem::None ||
+      m_counterMugs[slotIndex].item == HeldItem::None)
+    return;
+
+  MugState &mug = m_counterMugs[slotIndex];
+  m_heldItem = mug.item;
+  m_aleFill = mug.aleFill;
+  m_aleFoam = mug.aleFoam;
+  m_pourQuality = mug.pourQuality;
+  m_heldMugTableIndex = mug.sourceTableIndex;
+  m_cycleAwaitingWash = mug.cycleAwaitingWash;
+  m_lastPourPerfect = mug.lastPourPerfect;
+  mug = {};
+  m_feedbackText = "カウンターのジョッキを取った";
+  m_feedbackTimer = 1.2f;
 }
 
 void TavernScene::BeginPouring() {
@@ -438,8 +543,6 @@ void TavernScene::TriggerWalkout(int tableIndex) {
   table.speech = "もう待てない！";
   table.speechTimer = 1.4f;
   ++m_walkouts;
-  if (m_walkouts >= 3)
-    m_shiftState = ShiftState::Failed;
 }
 
 int TavernScene::NearestEnabledTable(float maximumDistance) const {
@@ -480,6 +583,22 @@ int TavernScene::FindMostUrgentWaitingAleTable() const {
   return urgentTable;
 }
 
+int TavernScene::NearestCounterMugSlot(float maximumDistance) const {
+  int nearestSlot = -1;
+  float nearestDistance = maximumDistance;
+  for (int slotIndex = 0;
+       slotIndex < static_cast<int>(kCounterMugInteractions.size());
+       ++slotIndex) {
+    const float distance =
+        DistanceXZ(m_playerPosition, kCounterMugInteractions[slotIndex]);
+    if (distance <= nearestDistance) {
+      nearestDistance = distance;
+      nearestSlot = slotIndex;
+    }
+  }
+  return nearestSlot;
+}
+
 bool TavernScene::HasActiveCustomers() const {
   for (int tableIndex = 0; tableIndex < kActiveTableCount; ++tableIndex) {
     const TableSlot &table = m_tables[tableIndex];
@@ -491,37 +610,31 @@ bool TavernScene::HasActiveCustomers() const {
   return false;
 }
 
+bool TavernScene::IsAfterMidnight() const {
+  return m_businessHour < kBusinessOpenHour;
+}
+
 float TavernScene::CustomerSpawnDelay(int tableIndex) const {
-  float delay = 8.5f;
-  if (m_businessHour < 8.0f)
-    delay = 8.5f;
-  else if (m_businessHour < 11.0f)
-    delay = 6.0f;
-  else if (m_businessHour < 14.0f)
-    delay = 3.8f;
-  else if (m_businessHour < 17.0f)
-    delay = 5.2f;
-  else if (m_businessHour < 22.0f)
-    delay = 2.8f;
-  else
-    delay = 7.0f;
+  float delay = 7.0f;
+  if (m_businessHour >= 5.0f && m_businessHour < 12.0f)
+    delay = 3.5f;
+  else if (m_businessHour >= 12.0f && m_businessHour < 18.0f)
+    delay = 5.0f;
+  else if (m_businessHour >= 18.0f)
+    delay = 2.5f;
   return delay + static_cast<float>(tableIndex) * 1.15f;
 }
 
 const char *TavernScene::CustomerTrafficName() const {
   if (m_shiftState == ShiftState::Closing)
-    return "閉店準備";
-  if (m_businessHour < 8.0f)
-    return "静かな早朝";
-  if (m_businessHour < 11.0f)
+    return "就寝準備";
+  if (m_businessHour < 5.0f)
+    return "静かな深夜";
+  if (m_businessHour < 12.0f)
     return "朝の客足";
-  if (m_businessHour < 14.0f)
-    return "昼の賑わい";
-  if (m_businessHour < 17.0f)
+  if (m_businessHour < 18.0f)
     return "穏やかな午後";
-  if (m_businessHour < 22.0f)
-    return "夜のピーク";
-  return "閉店前";
+  return "夜のピーク";
 }
 
 bool TavernScene::CanServeCustomers() const {
@@ -529,12 +642,25 @@ bool TavernScene::CanServeCustomers() const {
          m_shiftState == ShiftState::Closing;
 }
 
+uint32_t TavernScene::MugMeshForState(HeldItem item) const {
+  switch (item) {
+  case HeldItem::FilledMug:
+    return m_filledMugMeshId;
+  case HeldItem::DirtyMug:
+    return m_dirtyMugMeshId;
+  case HeldItem::None:
+  case HeldItem::EmptyMug:
+    return m_mugMeshId;
+  }
+  return m_mugMeshId;
+}
+
 void TavernScene::RunAutomation() {
   if (!CanServeCustomers() || m_workState != WorkState::None)
     return;
 
   const int orderTable = FindTableInState(TableState::WaitingOrder);
-  if (orderTable >= 0 && m_heldItem == HeldItem::None) {
+  if (orderTable >= 0) {
     TakeOrder(orderTable);
     return;
   }
@@ -591,7 +717,7 @@ void TavernScene::UpdateNearbyPrompt() {
   } else if (nearbyTable >= 0) {
     const TableSlot &table = m_tables[nearbyTable];
     const std::string tableName = "TABLE " + std::to_string(nearbyTable + 1);
-    if (table.state == TableState::WaitingOrder && m_heldItem == HeldItem::None)
+    if (table.state == TableState::WaitingOrder)
       m_nearbyPrompt = "E：" + tableName + " の注文を聞く";
     else if (table.state == TableState::WaitingAle &&
              m_heldItem == HeldItem::FilledMug)
@@ -603,6 +729,18 @@ void TavernScene::UpdateNearbyPrompt() {
     else
       m_nearbyPrompt =
           tableName + "：" + std::string(GetTableStateName(table.state));
+  } else if (const int counterSlot =
+                 NearestCounterMugSlot(kCounterMugInteractionRange);
+             counterSlot >= 0) {
+    const MugState &mug = m_counterMugs[counterSlot];
+    if (m_heldItem == HeldItem::None && mug.item != HeldItem::None)
+      m_nearbyPrompt = "E：置いたジョッキを取る";
+    else if (m_heldItem != HeldItem::None && mug.item == HeldItem::None)
+      m_nearbyPrompt = "E：持っているジョッキを置く";
+    else if (m_heldItem == HeldItem::None)
+      m_nearbyPrompt = "カウンター：ジョッキを一時置きできる";
+    else
+      m_nearbyPrompt = "この場所にはジョッキが置かれている";
   } else if (DistanceXZ(m_playerPosition, kMugRackInteraction) <=
              kStationInteractionRange) {
     if (m_heldItem == HeldItem::None && m_cleanMugs > 0)
@@ -655,7 +793,9 @@ void TavernScene::UpdateNearbyPrompt() {
     m_nearbyPrompt = "TABLE " + std::to_string(dirtyTable + 1) +
                      " の使用済みジョッキを回収する";
   } else if (m_shiftState == ShiftState::Closing) {
-    m_nearbyPrompt = "0:00 閉店　店内の客を見送ろう";
+    m_nearbyPrompt = "就寝準備中　店内の客を見送ろう";
+  } else if (IsAfterMidnight()) {
+    m_nearbyPrompt = "深夜営業中　R：受付を止めて眠る";
   } else {
     m_nearbyPrompt = "WASD：移動　E：調べる";
   }
@@ -674,8 +814,29 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
   m_pourVisualTime += dt;
   m_primaryActionActive = false;
 
-  if (restartPressed && m_shiftState != ShiftState::Running)
-    Reset();
+  if (restartPressed) {
+    if (m_shiftState == ShiftState::Failed ||
+        m_shiftState == ShiftState::Complete) {
+      return Action::SleepUntilMorning;
+    }
+    if (m_shiftState == ShiftState::Running) {
+      if (IsAfterMidnight()) {
+        m_shiftState = ShiftState::Closing;
+        m_feedbackText = "受付終了　店内の客を見送ってから眠る";
+        m_feedbackTimer = 2.4f;
+      } else {
+        m_feedbackText = "眠れるのは 0:00 以降";
+        m_feedbackTimer = 1.8f;
+      }
+    }
+  }
+
+  if (automateGameplay && m_shiftState == ShiftState::Running &&
+      IsAfterMidnight() && m_businessHour >= 0.25f) {
+    m_shiftState = ShiftState::Closing;
+    m_feedbackText = "受付終了　店内の客を見送ってから眠る";
+    m_feedbackTimer = 2.4f;
+  }
 
   if (automateGameplay)
     RunAutomation();
@@ -709,16 +870,6 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
     table.speechTimer = std::max(0.0f, table.speechTimer - dt);
     if (table.speechTimer <= 0.0f)
       table.speech.clear();
-  }
-
-  if (m_shiftState == ShiftState::Running) {
-    m_businessHour = std::min(kBusinessCloseHour,
-                              m_businessHour + dt * kBusinessHoursPerSecond);
-    if (m_businessHour >= kBusinessCloseHour) {
-      m_shiftState = ShiftState::Closing;
-      m_feedbackText = "0:00　閉店時間";
-      m_feedbackTimer = 2.4f;
-    }
   }
 
   if (CanServeCustomers()) {
@@ -790,7 +941,7 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
   }
 
   if (m_shiftState == ShiftState::Closing && !HasActiveCustomers())
-    m_shiftState = ShiftState::Complete;
+    return Action::SleepUntilMorning;
 
   if (!automateGameplay && interactPressed && m_interactionCooldown <= 0.0f) {
     if (m_workState != WorkState::None) {
@@ -806,14 +957,20 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
                NearestEnabledTable(kTableInteractionRange) >= 0) {
       const int tableIndex = NearestEnabledTable(kTableInteractionRange);
       TableSlot &table = m_tables[tableIndex];
-      if (table.state == TableState::WaitingOrder &&
-          m_heldItem == HeldItem::None)
+      if (table.state == TableState::WaitingOrder)
         TakeOrder(tableIndex);
       else if (table.state == TableState::WaitingAle &&
                m_heldItem == HeldItem::FilledMug)
         ServeAle(tableIndex);
       else if (table.state == TableState::Dirty && m_heldItem == HeldItem::None)
         CollectDirtyMug(tableIndex);
+    } else if (const int counterSlot =
+                   NearestCounterMugSlot(kCounterMugInteractionRange);
+               counterSlot >= 0) {
+      if (m_heldItem == HeldItem::None)
+        PickUpPlacedMug(counterSlot);
+      else
+        PlaceHeldMug(counterSlot);
     } else if (DistanceXZ(m_playerPosition, kMugRackInteraction) <=
                kStationInteractionRange) {
       if (m_heldItem == HeldItem::None)
@@ -851,6 +1008,34 @@ void TavernScene::BuildFrame(FrameData &frame) const {
     frame.opaqueItems.push_back(
         {meshId, XMMatrixScaling(sx, sy, sz) * XMMatrixTranslation(x, y, z)});
   };
+  const auto pushDirtySpots = [&](const XMFLOAT3 &position) {
+    pushMesh(m_dirtySpotMeshId, 0.055f, 0.045f, 0.028f, position.x - 0.11f,
+             position.y + 0.08f, position.z - 0.18f);
+    pushMesh(m_dirtySpotMeshId, 0.038f, 0.032f, 0.022f, position.x + 0.12f,
+             position.y - 0.04f, position.z - 0.18f);
+    pushMesh(m_dirtySpotMeshId, 0.030f, 0.026f, 0.020f, position.x + 0.02f,
+             position.y + 0.17f, position.z - 0.18f);
+  };
+  const auto pushStateMug = [&](HeldItem item, const XMFLOAT3 &position,
+                                float aleFill, float aleFoam) {
+    if (item == HeldItem::None)
+      return;
+    pushMesh(MugMeshForState(item), kMugScaleXZ, kMugScaleY, kMugScaleXZ,
+             position.x, position.y, position.z);
+    if (item == HeldItem::DirtyMug)
+      pushDirtySpots(position);
+    if (item == HeldItem::FilledMug) {
+      const float visibleFill = std::max(0.12f, aleFill);
+      pushMesh(m_aleMeshId, kAleSurfaceScaleXZ, 0.06f, kAleSurfaceScaleXZ,
+               position.x, position.y - 0.19f + visibleFill * 0.34f,
+               position.z);
+      if (aleFoam > 0.002f) {
+        const float foamScale = 0.045f + aleFoam * 0.16f;
+        pushMesh(m_foamMeshId, 0.265f, foamScale, 0.265f, position.x,
+                 position.y - 0.15f + visibleFill * 0.34f, position.z);
+      }
+    }
+  };
 
   pushMesh(m_floorMeshId, 14.0f, 1.0f, 12.0f, 0.0f, 0.0f, 4.2f);
   pushMesh(m_wallMeshId, 14.0f, 4.8f, 0.34f, 0.0f, 2.4f, 10.1f);
@@ -883,6 +1068,19 @@ void TavernScene::BuildFrame(FrameData &frame) const {
              -2.92f + static_cast<float>(mugIndex) * 0.42f, 1.98f, 7.72f);
   }
 
+  pushMesh(m_darkWoodMeshId, 1.20f, 0.07f, 0.58f, -1.20f, 1.43f, 7.65f);
+  for (int slotIndex = 0;
+       slotIndex < static_cast<int>(m_counterMugs.size()); ++slotIndex) {
+    const MugState &mug = m_counterMugs[slotIndex];
+    if (mug.item == HeldItem::None) {
+      const XMFLOAT3 &slotPosition = kCounterMugPositions[slotIndex];
+      pushMesh(m_glowMeshId, 0.22f, 0.018f, 0.22f, slotPosition.x, 1.48f,
+               slotPosition.z);
+    }
+    pushStateMug(mug.item, kCounterMugPositions[slotIndex], mug.aleFill,
+                 mug.aleFoam);
+  }
+
   pushMesh(m_woodMeshId, 1.15f, 1.55f, 0.95f, 0.0f, 2.12f, 9.40f);
   pushMesh(m_metalMeshId, 0.20f, 0.82f, 0.20f, 0.0f, 2.12f, 8.55f);
   pushMesh(m_metalMeshId, 0.58f, 0.16f, 0.20f, 0.0f, 2.42f, 8.25f);
@@ -907,11 +1105,11 @@ void TavernScene::BuildFrame(FrameData &frame) const {
     }
 
     if (tableState == TableState::Eating || tableState == TableState::Dirty) {
-      pushMesh(m_mugMeshId, kMugScaleXZ, kMugScaleY, kMugScaleXZ,
-               tableX[tableIndex], 1.27f, 4.32f);
+      const XMFLOAT3 tableMugPosition = {tableX[tableIndex], 1.27f, 4.32f};
       if (tableState == TableState::Eating)
-        pushMesh(m_aleMeshId, kAleSurfaceScaleXZ, 0.06f, kAleSurfaceScaleXZ,
-                 tableX[tableIndex], 1.48f, 4.32f);
+        pushStateMug(HeldItem::FilledMug, tableMugPosition, 0.90f, 0.04f);
+      else
+        pushStateMug(HeldItem::DirtyMug, tableMugPosition, 0.0f, 0.0f);
     }
   }
 
@@ -923,10 +1121,10 @@ void TavernScene::BuildFrame(FrameData &frame) const {
     carriedMugPosition = {2.7f, 1.86f, 7.65f};
 
   if (m_heldItem != HeldItem::None) {
-    pushMesh(m_mugMeshId, kMugScaleXZ, kMugScaleY, kMugScaleXZ,
-             carriedMugPosition.x, carriedMugPosition.y, carriedMugPosition.z);
-    if (m_heldItem == HeldItem::FilledMug ||
-        m_workState == WorkState::PouringAle) {
+    if (m_workState == WorkState::PouringAle) {
+      pushMesh(m_mugMeshId, kMugScaleXZ, kMugScaleY, kMugScaleXZ,
+               carriedMugPosition.x, carriedMugPosition.y,
+               carriedMugPosition.z);
       const float visibleFill = m_heldItem == HeldItem::FilledMug
                                     ? std::max(0.12f, m_aleFill)
                                     : m_aleFill;
@@ -943,6 +1141,8 @@ void TavernScene::BuildFrame(FrameData &frame) const {
                    carriedMugPosition.z);
         }
       }
+    } else {
+      pushStateMug(m_heldItem, carriedMugPosition, m_aleFill, m_aleFoam);
     }
   }
 
@@ -1036,7 +1236,9 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
 
   ImDrawList *draw = ImGui::GetWindowDrawList();
   const ImVec2 statusMin(28.0f, 28.0f);
-  const ImVec2 statusMax(348.0f, 142.0f);
+  const bool showSleepStatus = IsAfterMidnight() ||
+                               m_shiftState == ShiftState::Closing;
+  const ImVec2 statusMax(348.0f, showSleepStatus ? 174.0f : 142.0f);
   DrawPanel(draw, statusMin, statusMax, goldBorder);
   draw->AddText(ImVec2(50.0f, 45.0f), TavernUiColor(1.0f, 0.84f, 0.62f, 1.0f),
                 "水鏡亭");
@@ -1051,6 +1253,13 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
                 CustomerTrafficName(), m_servedCustomers, m_walkouts);
   draw->AddText(ImVec2(50.0f, 106.0f), TavernUiColor(0.82f, 0.76f, 0.68f, 1.0f),
                 line);
+  if (showSleepStatus) {
+    draw->AddText(
+        ImVec2(50.0f, 136.0f),
+        TavernUiColor(0.68f, 0.82f, 1.0f, 1.0f),
+        m_shiftState == ShiftState::Closing ? "店内の客を見送って就寝"
+                                             : "R：受付を止めて就寝");
+  }
 
   const float orderWidth = std::clamp(viewportSize.x - 760.0f, 520.0f, 680.0f);
   const ImVec2 orderMin((viewportSize.x - orderWidth) * 0.5f, 28.0f);
@@ -1320,4 +1529,76 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
   ImGui::PopStyleColor();
   ImGui::PopStyleVar();
   return Action::None;
+}
+
+void TavernScene::DrawDebugPanel(float &timeOfDayHours, bool &automaticTime) {
+  ImGui::SetNextWindowPos(ImVec2(20.0f, 190.0f), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(330.0f, 0.0f), ImGuiCond_FirstUseEver);
+  if (!ImGui::Begin("酒場 Debug")) {
+    ImGui::End();
+    return;
+  }
+
+  ImGui::TextDisabled("F4：表示／非表示");
+  ImGui::Text("通常速度：1 秒 = 1 分");
+  ImGui::Checkbox("時間を進める", &automaticTime);
+
+  const float normalizedHour =
+      std::fmod(std::max(0.0f, timeOfDayHours), 24.0f);
+  const int timeMinutes =
+      static_cast<int>(std::lround(normalizedHour * 60.0f)) % (24 * 60);
+  int debugHour = timeMinutes / 60;
+  int debugMinute = timeMinutes % 60;
+  bool timeChanged = ImGui::SliderInt("Hour（時）", &debugHour, 0, 23);
+  if (ImGui::SliderInt("Minute（分）", &debugMinute, 0, 59))
+    timeChanged = true;
+  if (timeChanged)
+    timeOfDayHours = static_cast<float>(debugHour) +
+                     static_cast<float>(debugMinute) / 60.0f;
+  ImGui::Text("現在時刻：%02d:%02d", debugHour, debugMinute);
+
+  const auto setTime = [&](int hour, int minute) {
+    timeOfDayHours =
+        static_cast<float>(hour) + static_cast<float>(minute) / 60.0f;
+  };
+  if (ImGui::Button("05:00"))
+    setTime(5, 0);
+  ImGui::SameLine();
+  if (ImGui::Button("12:00"))
+    setTime(12, 0);
+  ImGui::SameLine();
+  if (ImGui::Button("18:00"))
+    setTime(18, 0);
+  ImGui::SameLine();
+  if (ImGui::Button("23:50"))
+    setTime(23, 50);
+  ImGui::SameLine();
+  if (ImGui::Button("00:30"))
+    setTime(0, 30);
+
+  ImGui::Separator();
+  int debugGold = m_gold;
+  if (ImGui::InputInt("Gold (G)", &debugGold, 1, 10))
+    m_gold = std::clamp(debugGold, 0, 999999);
+  if (ImGui::Button("Gold 0"))
+    m_gold = 0;
+  ImGui::SameLine();
+  if (ImGui::Button("Gold +10"))
+    m_gold = std::min(999999, m_gold + 10);
+  ImGui::SameLine();
+  if (ImGui::Button("Gold +100"))
+    m_gold = std::min(999999, m_gold + 100);
+
+  const int placedMugs = static_cast<int>(std::count_if(
+      m_counterMugs.begin(), m_counterMugs.end(),
+      [](const MugState &mug) { return mug.item != HeldItem::None; }));
+  ImGui::Separator();
+  ImGui::Text("客流：%s", CustomerTrafficName());
+  ImGui::Text("提供：%d  退店：%d  PERFECT：%d", m_servedCustomers,
+              m_walkouts, m_perfectPours);
+  ImGui::Text("手持：%s", GetHeldItemName(m_heldItem));
+  ImGui::Text("棚のジョッキ：%d / %d  一時置き：%d / %zu", m_cleanMugs,
+              kTotalMugs, placedMugs, m_counterMugs.size());
+
+  ImGui::End();
 }

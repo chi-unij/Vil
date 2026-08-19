@@ -369,6 +369,15 @@ static GameTimeLightingProfile BuildGameTimeLighting(float hour) {
   return profile;
 }
 
+static GameTimeLightingProfile BuildTavernLighting() {
+  GameTimeLightingProfile profile{};
+  // 室内では時刻に連動する太陽を使わず、天井からの固定暖色光として扱う。
+  profile.sunDirection = {-0.24f, -0.94f, 0.24f};
+  profile.sunColor = {1.0f, 0.76f, 0.52f};
+  profile.sunIntensity = 0.72f;
+  return profile;
+}
+
 static ImU32 UiColor(float r, float g, float b, float a) {
   return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
 }
@@ -808,7 +817,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     float skyExposure = 0.3f;
     float gameTimeOfDayHours = 12.0f;
     bool gameTimeAuto = true;
-    float gameHoursPerSecond = 0.25f;
+    // 通常プレイは 1 real second = 1 game minute（24 分で一日）。
+    float gameHoursPerSecond = 1.0f / 60.0f;
     float gameRuntimeSeconds = 0.0f;
     DirectX::XMFLOAT3 gameCameraPosition = {0.0f, 4.0f, -20.0f};
     float waterWaveHeight = 1.0f;
@@ -855,8 +865,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       showSettings = false;
       gameFreeCameraEnabled = false;
       gameRuntimeSeconds = 0.0f;
-      tavernScene.Reset();
-      gameTimeOfDayHours = tavernScene.BusinessHour();
+      tavernScene.Reset(gameTimeOfDayHours);
       playerPreview.SetPosition(tavernScene.PlayerSpawnPosition());
       playerPreview.SetYaw(0.0f);
       const DirectX::XMFLOAT3 cameraPosition = tavernScene.CameraPosition();
@@ -1147,8 +1156,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     bool prevTavernInteractKey = false;
     bool prevTavernRestartKey = false;
 #if defined(_DEBUG)
+    bool prevF4 = false;
     bool prevF7 = false;
     bool prevF8 = false;
+    bool showTavernDebug = false;
 #endif
     bool prevLButton = false; // for edge-detection of left-click (mouse pick)
 
@@ -1189,9 +1200,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       float r = 0.1f + 0.1f * (0.5f + 0.5f * sinf(t));
       float g = 0.1f + 0.1f * (0.5f + 0.5f * sinf(t * 1.7f));
       float b = 0.2f + 0.2f * (0.5f + 0.5f * sinf(t * 0.9f));
-      if (appMode == AppMode::Game && gameTimeAuto) {
+      const float tavernClockScale =
+          tavernDaySmokeRequested
+              ? 60.0f
+              : (tavernGameplaySmokeRequested ? 12.0f : 1.0f);
+      const float worldClockDelta =
+          dt * (appMode == AppMode::Tavern ? tavernClockScale : 1.0f);
+      if ((appMode == AppMode::Game || appMode == AppMode::Tavern) &&
+          gameTimeAuto) {
         gameTimeOfDayHours =
-            std::fmod(gameTimeOfDayHours + dt * gameHoursPerSecond, 24.0f);
+            std::fmod(gameTimeOfDayHours +
+                          worldClockDelta * gameHoursPerSecond,
+                      24.0f);
       }
       const float gameDaylightT = DaylightTFromHour(gameTimeOfDayHours);
       const float gameSkyExposure =
@@ -1200,6 +1220,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
           LerpFloat(0.1f, 1.0f, gameDaylightT); // Post exposure linear from 0.1 to 1.0
       const GameTimeLightingProfile gameLighting =
           BuildGameTimeLighting(gameTimeOfDayHours);
+      const GameTimeLightingProfile tavernLighting = BuildTavernLighting();
       constexpr float kGameIblIntensity = 0.7f;
 
       auto &input = window.GetInput();
@@ -1217,6 +1238,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
           cam.ApplyPreset(editorReturnCamera);
       }
       prevF1 = f1Now;
+
+      // ---- F4: 酒場 gameplay debug panel（Debug のみ） ----
+#if defined(_DEBUG)
+      {
+        const bool f4Now = input.IsKeyDown(VK_F4);
+        if (f4Now && !prevF4 && appMode == AppMode::Tavern)
+          showTavernDebug = !showTavernDebug;
+        prevF4 = f4Now;
+      }
+#endif
 
       // ---- F5: シーンプレイモードのトグル（ゲームロジック未実装のためエディタ⇔シーンプレイのみ） ----
       {
@@ -1955,6 +1986,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                     overworldScene.BackgroundForestMeshPartCount());
         ImGui::End();
       }
+      if (appMode == AppMode::Tavern && showTavernDebug)
+        tavernScene.DrawDebugPanel(gameTimeOfDayHours, gameTimeAuto);
 #endif
 
       // ---- ImGui debug windows ----
@@ -1995,16 +2028,23 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       if (appMode == AppMode::Tavern) {
         const bool automateTavern =
             tavernGameplaySmokeRequested || tavernDaySmokeRequested;
+        tavernScene.SetBusinessHour(gameTimeOfDayHours);
         const TavernScene::Action updateAction = tavernScene.Update(
             dt * (automateTavern ? 12.0f : 1.0f), playerPreview.Position(),
             tavernInteractPressed, lbNow, tavernRestartPressed, automateTavern);
-        gameTimeOfDayHours = tavernScene.BusinessHour();
         const TavernScene::Action hudAction =
             tavernScene.DrawHud(static_cast<int>(window.Width()),
                                 static_cast<int>(window.Height()));
-        if (updateAction == TavernScene::Action::ReturnToOverworld ||
-            hudAction == TavernScene::Action::ReturnToOverworld)
+        if (updateAction == TavernScene::Action::SleepUntilMorning ||
+            hudAction == TavernScene::Action::SleepUntilMorning) {
+          gameTimeOfDayHours = 5.0f;
+          tavernScene.BeginNextDay(gameTimeOfDayHours);
+          playerPreview.SetPosition(tavernScene.PlayerSpawnPosition());
+          playerPreview.SetYaw(0.0f);
+        } else if (updateAction == TavernScene::Action::ReturnToOverworld ||
+                   hudAction == TavernScene::Action::ReturnToOverworld) {
           returnFromTavern();
+        }
       }
 
       // SSAO, Post Processing, and Cascaded Shadows panels moved to SceneEditor
@@ -2018,10 +2058,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       using namespace DirectX;
       const auto &shadowCfg = editorScene.ShadowSettings();
       const XMFLOAT3 activeSunDirection =
-          (appMode == AppMode::Game || appMode == AppMode::Tavern ||
-           appMode == AppMode::BossArena)
-              ? gameLighting.sunDirection
-              : editorScene.LightSettings().lightDir;
+          appMode == AppMode::Tavern
+              ? tavernLighting.sunDirection
+              : ((appMode == AppMode::Game || appMode == AppMode::BossArena)
+                     ? gameLighting.sunDirection
+                     : editorScene.LightSettings().lightDir);
       const XMVECTOR raysDir =
           XMVector3Normalize(XMLoadFloat3(&activeSunDirection));
       const XMFLOAT3 camPosF = cam.GetPosition();
@@ -2142,9 +2183,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         frame.clearColor[2] = 0.012f;
         frame.clearColor[3] = 1.0f;
         frame.skyExposure = 0.025f;
-        frame.lighting.lightDir = gameLighting.sunDirection;
-        frame.lighting.lightColor = {1.0f, 0.76f, 0.52f};
-        frame.lighting.lightIntensity = 0.72f;
+        frame.lighting.lightDir = tavernLighting.sunDirection;
+        frame.lighting.lightColor = tavernLighting.sunColor;
+        frame.lighting.lightIntensity = tavernLighting.sunIntensity;
         frame.lighting.iblIntensity = 0.28f;
         frame.exposure = 1.05f;
         frame.bloomEnabled = true;
@@ -2449,7 +2490,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       if (tavernDaySmokeRequested && !tavernDaySmokeLogged &&
           tavernScene.DayCycleSmokeComplete()) {
         std::ostringstream message;
-        message << "Tavern day smoke: 05:00-24:00 business day completed; hour="
+        message << "Tavern day smoke: crossed midnight and slept until 05:00; "
+                   "hour="
                 << tavernScene.BusinessHour()
                 << " cycles=" << tavernScene.CompletedCycles()
                 << " gold=" << tavernScene.Gold()

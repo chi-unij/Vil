@@ -15,22 +15,26 @@ public:
   enum class Action {
     None,
     ReturnToOverworld,
+    SleepUntilMorning,
   };
 
   void Initialize(DxContext &dx);
-  void Reset();
+  void Reset(float startingHour = 5.0f);
+  void BeginNextDay(float startingHour = 5.0f);
+  void SetBusinessHour(float hour);
   Action Update(float deltaSeconds, const DirectX::XMFLOAT3 &playerPosition,
                 bool interactPressed, bool primaryActionDown,
                 bool restartPressed, bool automateGameplay = false);
   void BuildFrame(FrameData &frame) const;
   Action DrawHud(int viewportWidth, int viewportHeight);
+  void DrawDebugPanel(float &timeOfDayHours, bool &automaticTime);
 
   bool IsReady() const { return m_ready; }
   bool GameplaySmokeComplete() const {
     return m_tableCompletedCycles[0] >= 1 && m_tableCompletedCycles[1] >= 1;
   }
   bool DayCycleSmokeComplete() const {
-    return m_shiftState == ShiftState::Complete && GameplaySmokeComplete();
+    return m_completedDays >= 1 && GameplaySmokeComplete();
   }
   bool PlayerMovementLocked() const { return m_workState != WorkState::None; }
   int CompletedCycles() const { return m_completedCycles; }
@@ -81,12 +85,24 @@ private:
     float speechTimer = 0.0f;
   };
 
+  struct MugState {
+    HeldItem item = HeldItem::None;
+    float aleFill = 0.0f;
+    float aleFoam = 0.0f;
+    float pourQuality = 1.0f;
+    int sourceTableIndex = -1;
+    bool cycleAwaitingWash = false;
+    bool lastPourPerfect = false;
+  };
+
   static const char *GetTableStateName(TableState state);
   static const char *GetHeldItemName(HeldItem item);
   void SpawnCustomer(int tableIndex);
   void TakeOrder(int tableIndex);
   void PickUpEmptyMug();
   void ReturnEmptyMug();
+  void PlaceHeldMug(int slotIndex);
+  void PickUpPlacedMug(int slotIndex);
   void BeginPouring();
   void FinishPouring();
   void ServeAle(int tableIndex);
@@ -99,10 +115,13 @@ private:
   int NearestEnabledTable(float maximumDistance) const;
   int FindTableInState(TableState state) const;
   int FindMostUrgentWaitingAleTable() const;
+  int NearestCounterMugSlot(float maximumDistance) const;
   bool HasActiveCustomers() const;
+  bool IsAfterMidnight() const;
   float CustomerSpawnDelay(int tableIndex) const;
   const char *CustomerTrafficName() const;
   bool CanServeCustomers() const;
+  uint32_t MugMeshForState(HeldItem item) const;
 
   uint32_t m_floorMeshId = UINT32_MAX;
   uint32_t m_wallMeshId = UINT32_MAX;
@@ -112,12 +131,16 @@ private:
   uint32_t m_customerBodyMeshId = UINT32_MAX;
   uint32_t m_customerHeadMeshId = UINT32_MAX;
   uint32_t m_mugMeshId = UINT32_MAX;
+  uint32_t m_filledMugMeshId = UINT32_MAX;
+  uint32_t m_dirtyMugMeshId = UINT32_MAX;
+  uint32_t m_dirtySpotMeshId = UINT32_MAX;
   uint32_t m_aleMeshId = UINT32_MAX;
   uint32_t m_foamMeshId = UINT32_MAX;
   uint32_t m_metalMeshId = UINT32_MAX;
 
   ShiftState m_shiftState = ShiftState::Running;
   std::array<TableSlot, 3> m_tables{};
+  std::array<MugState, 2> m_counterMugs{};
   HeldItem m_heldItem = HeldItem::None;
   WorkState m_workState = WorkState::None;
   TutorialStep m_tutorialStep = TutorialStep::TakeOrder;
@@ -140,6 +163,7 @@ private:
   int m_servedCustomers = 0;
   int m_walkouts = 0;
   int m_completedCycles = 0;
+  int m_completedDays = 0;
   int m_cleanMugs = 2;
   int m_perfectPours = 0;
   int m_heldMugTableIndex = -1;
