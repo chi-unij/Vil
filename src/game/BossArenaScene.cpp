@@ -679,6 +679,7 @@ void BossArenaScene::Reset(PlayerAnimationPreview &player) {
   }
   m_mirrorChargeActive = {false, false, false};
   SpawnMirrorCharges();
+  player.CancelAction();
   player.SetPosition({0.0f, 0.0f, -12.0f});
   player.SetYaw(0.0f);
 }
@@ -3189,7 +3190,18 @@ void BossArenaScene::SpawnMirrorCharges() {
   }
 }
 
-void BossArenaScene::UpdateMirrorCharges(const PlayerAnimationPreview &player) {
+bool BossArenaScene::TryGetActiveMirrorChargePosition(
+    XMFLOAT3 &position) const {
+  for (int i = 0; i < kMirrorChargeMax; ++i) {
+    if (!m_mirrorChargeActive[i])
+      continue;
+    position = m_mirrorChargePositions[i];
+    return true;
+  }
+  return false;
+}
+
+void BossArenaScene::UpdateMirrorCharges(PlayerAnimationPreview &player) {
   if (m_mirrorCharge >= kMirrorChargeMax)
     return;
 
@@ -3205,6 +3217,7 @@ void BossArenaScene::UpdateMirrorCharges(const PlayerAnimationPreview &player) {
 
     m_mirrorChargeActive[i] = false;
     m_mirrorCharge = std::min(kMirrorChargeMax, m_mirrorCharge + 1);
+    player.PlayTakingItem();
     m_mirrorMessageTimer = 0.72f;
     m_mirrorPickupToastTimer = 0.72f;
     m_mirrorPickupVfxTimer = 0.72f;

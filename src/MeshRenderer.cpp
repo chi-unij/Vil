@@ -983,6 +983,8 @@ void MeshRenderer::CreateTextureResource(DxContext &dx,
   ID3D12CommandList *lists[] = {dx.m_cmdList.Get()};
   dx.m_queue->ExecuteCommandLists(1, lists);
   dx.WaitForGpu();
+  // 同期コピー完了後は不要なため、マテリアルごとのUpload Heapを解放する。
+  outUpload.Reset();
 
   // 5. Create SRV
   D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};

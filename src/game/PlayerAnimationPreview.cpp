@@ -13,6 +13,20 @@
 
 using namespace DirectX;
 
+namespace {
+
+bool IsMovingLocomotion(PlayerAnimationPreview::ClipSlot slot) {
+  return slot == PlayerAnimationPreview::ClipSlot::Walk ||
+         slot == PlayerAnimationPreview::ClipSlot::Run;
+}
+
+float SmoothStep01(float value) {
+  const float t = std::clamp(value, 0.0f, 1.0f);
+  return t * t * (3.0f - 2.0f * t);
+}
+
+} // namespace
+
 void PlayerAnimationPreview::Initialize(DxContext &dx) {
   m_dx = &dx;
 
@@ -82,6 +96,8 @@ void PlayerAnimationPreview::Initialize(DxContext &dx) {
     LoadClip("Idle", "Assets/models/animations/Idle.glb", "", m_clips[0]);
     LoadClip("Walk", "Assets/models/animations/Walk.glb", "", m_clips[1]);
     LoadClip("Run", "Assets/models/animations/Run.glb", "", m_clips[2]);
+    LoadClip("Taking Item", "Assets/models/animations/TakingItem.glb", "",
+             m_takingItemClip);
 
     // Walk clip がない場合も Push action は流用せず、Run を低速再生して
     // locomotion の意味を維持する。Walk asset 追加後は自動的に置き換わる。
@@ -156,7 +172,110 @@ float PlayerAnimationPreview::ClipPlaybackRate(ClipSlot clipSlot) const {
 
 void PlayerAnimationPreview::SelectLocomotionClip(ClipSlot slot) {
   m_manualPreview = true;
+  CancelAction();
   TransitionToClip(slot);
+}
+
+bool PlayerAnimationPreview::PlayTakingItem() {
+  if (!m_ready || !m_hasSkeleton || !m_takingItemClip.loaded ||
+      m_takingItemClip.clipIndex < 0 ||
+      m_takingItemClip.clipIndex >= static_cast<int>(m_animations.size())) {
+    return false;
+  }
+
+  const AnimationClip &actionClip = m_animations[m_takingItemClip.clipIndex];
+  if (!std::isfinite(actionClip.duration) || actionClip.duration <= 0.0001f ||
+      !std::isfinite(m_takingItemPlaybackRate) ||
+      m_takingItemPlaybackRate <= 0.0f ||
+      !std::isfinite(m_takingItemStartTime)) {
+    return false;
+  }
+
+  ++m_actionTriggerSerial;
+  if (m_actionActive) {
+    // 連続取得では現在 pose から clip 先頭へ crossfade し、各取得を再生する。
+    m_actionBaseUsesAction = true;
+    m_actionBaseTime = m_actionTime;
+    m_actionTime = m_takingItemStartTime;
+    m_actionElapsed = 0.0f;
+    m_actionBlendOutStarted = false;
+    SetActionReturnClip(m_actionDesiredReturnSlot);
+    return true;
+  }
+
+  m_actionActive = true;
+  m_actionTime = m_takingItemStartTime;
+  m_actionElapsed = 0.0f;
+  const bool previousPoseDominant =
+      m_transitioning && m_transitionElapsed < m_transitionDuration * 0.5f &&
+      ClipIndex(m_previousSlot) >= 0;
+  m_actionBaseSlot = previousPoseDominant ? m_previousSlot : m_activeSlot;
+  m_actionBaseTime = previousPoseDominant ? m_previousAnimTime : m_animTime;
+  m_actionBaseUsesAction = false;
+  m_actionReturnSlot = m_activeSlot;
+  m_actionReturnTime = m_animTime;
+  m_actionDesiredReturnSlot = m_activeSlot;
+  m_actionBlendOutStarted = false;
+
+  // Locomotion crossfade の行き先を action の基準 pose として確定する。
+  m_transitioning = false;
+  m_hasQueuedTransition = false;
+  return true;
+}
+
+void PlayerAnimationPreview::CancelAction() {
+  if (!m_actionActive)
+    return;
+
+  m_actionActive = false;
+  m_activeSlot = m_actionReturnSlot;
+  m_previousSlot = m_activeSlot;
+  m_animTime = m_actionReturnTime;
+  m_previousAnimTime = m_animTime;
+  m_transitionElapsed = 0.0f;
+  m_transitioning = false;
+  m_hasQueuedTransition = false;
+  m_actionBaseUsesAction = false;
+  m_actionBlendOutStarted = false;
+
+  BonePalette returnPalette;
+  const int returnClipIndex = ActiveClipIndex();
+  if (returnClipIndex >= 0 &&
+      returnClipIndex < static_cast<int>(m_animations.size())) {
+    EvaluateAnimation(m_skeleton, m_animations[returnClipIndex], m_animTime,
+                      returnPalette);
+  } else {
+    ComputeProceduralIdle(m_skeleton, m_animTime, returnPalette);
+  }
+  UploadBonePalette(returnPalette);
+}
+
+void PlayerAnimationPreview::SetActionReturnClip(ClipSlot slot) {
+  if (slot == m_actionReturnSlot)
+    return;
+
+  float normalizedPhase = 0.0f;
+  const float previousDuration = ClipDuration(m_actionReturnSlot);
+  const float nextDuration = ClipDuration(slot);
+  if (IsMovingLocomotion(m_actionReturnSlot) && IsMovingLocomotion(slot) &&
+      previousDuration > 0.0001f) {
+    normalizedPhase =
+        std::fmod(m_actionReturnTime, previousDuration) / previousDuration;
+  }
+  m_actionReturnSlot = slot;
+  m_actionReturnTime =
+      nextDuration > 0.0001f ? normalizedPhase * nextDuration : 0.0f;
+}
+
+void PlayerAnimationPreview::RequestLocomotionClip(ClipSlot slot) {
+  if (!m_actionActive) {
+    TransitionToClip(slot);
+    return;
+  }
+
+  m_actionDesiredReturnSlot = slot;
+  if (!m_actionBlendOutStarted)
+    SetActionReturnClip(slot);
 }
 
 void PlayerAnimationPreview::TransitionToClip(ClipSlot slot) {
@@ -188,7 +307,7 @@ void PlayerAnimationPreview::TransitionToClip(ClipSlot slot) {
   float normalizedPhase = 0.0f;
   // Walk / Run 間だけ歩容 phase を同期する。Idle からは clip の先頭で開始する。
   const bool synchronizeLocomotionPhase =
-      m_activeSlot != ClipSlot::Idle && slot != ClipSlot::Idle;
+      IsMovingLocomotion(m_activeSlot) && IsMovingLocomotion(slot);
   if (synchronizeLocomotionPhase && previousDuration > 0.0001f)
     normalizedPhase = std::fmod(m_animTime, previousDuration) / previousDuration;
 
@@ -230,7 +349,78 @@ void PlayerAnimationPreview::UpdateAnimationPose(float dt) {
   if (!m_ready || !m_hasSkeleton)
     return;
 
-  const float safeDt = std::max(0.0f, dt);
+  const float safeDt = std::isfinite(dt) ? std::max(0.0f, dt) : 0.0f;
+  if (m_actionActive) {
+    const int actionClipIndex = m_takingItemClip.clipIndex;
+    const bool actionClipValid =
+        actionClipIndex >= 0 &&
+        actionClipIndex < static_cast<int>(m_animations.size()) &&
+        std::isfinite(m_animations[actionClipIndex].duration) &&
+        m_animations[actionClipIndex].duration > 0.0001f;
+    if (actionClipValid) {
+      const AnimationClip &actionClip = m_animations[actionClipIndex];
+      const float playbackRate = std::max(0.01f, m_takingItemPlaybackRate);
+      const float actionEndTime = std::max(0.0f, actionClip.duration - 0.0001f);
+      const float actionStartTime =
+          std::clamp(m_takingItemStartTime, 0.0f, actionEndTime);
+      const float wallDuration = std::max(
+          0.0001f, (actionClip.duration - actionStartTime) / playbackRate);
+      m_actionElapsed += safeDt;
+      m_actionTime = std::min(actionStartTime + m_actionElapsed * playbackRate,
+                              actionEndTime);
+      if (m_actionBaseUsesAction) {
+        m_actionBaseTime =
+            std::min(m_actionBaseTime + safeDt * playbackRate, actionEndTime);
+      } else {
+        m_actionBaseTime += safeDt * ClipPlaybackRate(m_actionBaseSlot);
+      }
+      m_actionReturnTime += safeDt * ClipPlaybackRate(m_actionReturnSlot);
+
+      const float blendDuration =
+          std::min(m_transitionDuration, wallDuration * 0.25f);
+      if (m_actionElapsed >= wallDuration - blendDuration)
+        m_actionBlendOutStarted = true;
+
+      if (m_actionElapsed >= wallDuration) {
+        const ClipSlot desiredReturnSlot = m_actionDesiredReturnSlot;
+        CancelAction();
+        if (desiredReturnSlot != m_activeSlot)
+          TransitionToClip(desiredReturnSlot);
+        return;
+      }
+
+      BonePalette actionPalette;
+      const int baseClipIndex = m_actionBaseUsesAction
+                                    ? actionClipIndex
+                                    : ClipIndex(m_actionBaseSlot);
+      const int returnClipIndex = ClipIndex(m_actionReturnSlot);
+      if (blendDuration > 0.0001f && m_actionElapsed < blendDuration &&
+          baseClipIndex >= 0 &&
+          baseClipIndex < static_cast<int>(m_animations.size())) {
+        EvaluateAnimationBlend(m_skeleton, m_animations[baseClipIndex],
+                               m_actionBaseTime, actionClip, m_actionTime,
+                               SmoothStep01(m_actionElapsed / blendDuration),
+                               actionPalette);
+      } else if (blendDuration > 0.0001f &&
+                 m_actionElapsed > wallDuration - blendDuration &&
+                 returnClipIndex >= 0 &&
+                 returnClipIndex < static_cast<int>(m_animations.size())) {
+        const float blendOut =
+            (m_actionElapsed - (wallDuration - blendDuration)) / blendDuration;
+        EvaluateAnimationBlend(
+            m_skeleton, actionClip, m_actionTime, m_animations[returnClipIndex],
+            m_actionReturnTime, SmoothStep01(blendOut), actionPalette);
+      } else {
+        EvaluateAnimation(m_skeleton, actionClip, m_actionTime, actionPalette);
+      }
+
+      UploadBonePalette(actionPalette);
+      return;
+    }
+
+    CancelAction();
+  }
+
   m_animTime += safeDt * ClipPlaybackRate(m_activeSlot);
 
   BonePalette palette;
@@ -276,10 +466,10 @@ void PlayerAnimationPreview::Update(float dt) {
     if (m_cycleTimer >= 3.0f) {
       m_cycleTimer = 0.0f;
       const int next = (static_cast<int>(m_activeSlot) + 1) % 3;
-      TransitionToClip(static_cast<ClipSlot>(next));
+      RequestLocomotionClip(static_cast<ClipSlot>(next));
     }
   } else if (!m_manualPreview) {
-    TransitionToClip(ClipSlot::Idle);
+    RequestLocomotionClip(ClipSlot::Idle);
   }
 
   UpdateAnimationPose(dt);
@@ -296,23 +486,31 @@ void PlayerAnimationPreview::UpdateFacing(float targetYaw, float dt) {
 }
 
 PlayerAnimationPreview::ClipDiagnostics
-PlayerAnimationPreview::GetClipDiagnostics(ClipSlot slot) const {
+PlayerAnimationPreview::BuildClipDiagnostics(const PreviewClip &clip) const {
   ClipDiagnostics diagnostics{};
-  const int slotIndex = static_cast<int>(slot);
-  if (slotIndex < 0 || slotIndex >= static_cast<int>(m_clips.size()))
-    return diagnostics;
-
-  const PreviewClip &previewClip = m_clips[slotIndex];
-  diagnostics.label = previewClip.label;
-  diagnostics.sourcePath = previewClip.loadedPath;
-  diagnostics.loaded = previewClip.loaded;
-  diagnostics.fallback = previewClip.fallback;
-  const int clipIndex = previewClip.clipIndex;
+  diagnostics.label = clip.label;
+  diagnostics.sourcePath = clip.loadedPath;
+  diagnostics.loaded = clip.loaded;
+  diagnostics.fallback = clip.fallback;
+  const int clipIndex = clip.clipIndex;
   if (clipIndex >= 0 && clipIndex < static_cast<int>(m_animations.size())) {
     diagnostics.duration = m_animations[clipIndex].duration;
     diagnostics.trackCount = m_animations[clipIndex].tracks.size();
   }
   return diagnostics;
+}
+
+PlayerAnimationPreview::ClipDiagnostics
+PlayerAnimationPreview::GetClipDiagnostics(ClipSlot slot) const {
+  const int slotIndex = static_cast<int>(slot);
+  if (slotIndex < 0 || slotIndex >= static_cast<int>(m_clips.size()))
+    return {};
+  return BuildClipDiagnostics(m_clips[slotIndex]);
+}
+
+PlayerAnimationPreview::ClipDiagnostics
+PlayerAnimationPreview::GetTakingItemDiagnostics() const {
+  return BuildClipDiagnostics(m_takingItemClip);
 }
 
 float PlayerAnimationPreview::WorldModelHeight() const {
@@ -395,14 +593,14 @@ void PlayerAnimationPreview::Update(float dt, const Input &input,
     if (moveX * moveX + moveZ * moveZ > 0.0001f)
       UpdateFacing(std::atan2(moveX, moveZ), dt);
     if (!m_autoCycle && !m_manualPreview) {
-      TransitionToClip(m_lastMovementSpeed > 0.05f
-                           ? (running ? ClipSlot::Run : ClipSlot::Walk)
-                           : ClipSlot::Idle);
+      RequestLocomotionClip(m_lastMovementSpeed > 0.05f
+                                ? (running ? ClipSlot::Run : ClipSlot::Walk)
+                                : ClipSlot::Idle);
     }
   } else {
     m_lastMovementSpeed = 0.0f;
     if (!m_autoCycle && !m_manualPreview)
-      TransitionToClip(ClipSlot::Idle);
+      RequestLocomotionClip(ClipSlot::Idle);
   }
 
   if (m_autoCycle) {
@@ -410,7 +608,7 @@ void PlayerAnimationPreview::Update(float dt, const Input &input,
     if (m_cycleTimer >= 3.0f) {
       m_cycleTimer = 0.0f;
       const int next = (static_cast<int>(m_activeSlot) + 1) % 3;
-      TransitionToClip(static_cast<ClipSlot>(next));
+      RequestLocomotionClip(static_cast<ClipSlot>(next));
     }
   }
   UpdateAnimationPose(dt);
@@ -494,6 +692,23 @@ void PlayerAnimationPreview::DrawDebugControls() {
     } else {
       ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "未読込");
     }
+  }
+
+  const ClipDiagnostics takingItem = GetTakingItemDiagnostics();
+  ImGui::Separator();
+  ImGui::Text("取得アクション: %s", takingItem.loaded ? "OK" : "未読込");
+  if (takingItem.loaded) {
+    ImGui::SameLine();
+    const float playbackDuration =
+        (takingItem.duration - m_takingItemStartTime) /
+        m_takingItemPlaybackRate;
+    ImGui::Text("%.2f s（開始 %.2f s）/ %.2fx = %.2f s", takingItem.duration,
+                m_takingItemStartTime, m_takingItemPlaybackRate,
+                playbackDuration);
+    if (ImGui::Button("取得アクションを再生"))
+      PlayTakingItem();
+    ImGui::SameLine();
+    ImGui::Text("状態: %s", m_actionActive ? "再生中" : "待機");
   }
 
   ImGui::Checkbox("手動プレビュー", &m_manualPreview);

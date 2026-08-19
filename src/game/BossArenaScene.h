@@ -44,6 +44,8 @@ public:
   bool DebugNoClipEnabled() const { return m_debugNoClip; }
   bool DebugPanelVisible() const { return m_showDebugPanel; }
   void SetDebugPanelVisible(bool visible) { m_showDebugPanel = visible; }
+  int MirrorChargeCount() const { return m_mirrorCharge; }
+  bool TryGetActiveMirrorChargePosition(DirectX::XMFLOAT3 &position) const;
   bool PhaseTwoActive() const { return m_bossHp <= 2 && !m_cleared; }
   bool TechShowcaseTAAEnabled() const {
     return m_techShowcaseOverride && m_showcaseTAA;
@@ -152,7 +154,7 @@ private:
   void CompleteMirrorPuzzle();
   void FailMirrorPuzzle();
   void SpawnMirrorCharges();
-  void UpdateMirrorCharges(const PlayerAnimationPreview &player);
+  void UpdateMirrorCharges(PlayerAnimationPreview &player);
   void AppendMirrorCharges(FrameData &frame) const;
   float PuzzleScheduleRandom01(uint32_t salt) const;
   float MirrorRandom01(uint32_t salt) const;

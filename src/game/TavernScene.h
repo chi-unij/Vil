@@ -6,6 +6,7 @@
 
 #include <DirectXMath.h>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -30,6 +31,7 @@ public:
   void DrawDebugPanel(float &timeOfDayHours, bool &automaticTime);
 
   bool IsReady() const { return m_ready; }
+  bool ImportedArtReady() const { return m_importedArtReady; }
   bool GameplaySmokeComplete() const {
     return m_tableCompletedCycles[0] >= 1 && m_tableCompletedCycles[1] >= 1;
   }
@@ -63,6 +65,22 @@ private:
   };
   enum class HeldItem { None, EmptyMug, FilledMug, DirtyMug };
   enum class WorkState { None, PouringAle, WashingMug };
+  enum class TavernAsset : std::size_t {
+    Barrel,
+    Crate,
+    Stool,
+    Chest,
+    RoundTable,
+    LongTable,
+    Bench,
+    Mug,
+    Plate,
+    Sword,
+    Halberd,
+    Mace,
+    Candle,
+    Count,
+  };
   enum class TutorialStep {
     TakeOrder,
     GetMug,
@@ -130,6 +148,7 @@ private:
   uint32_t m_glowMeshId = UINT32_MAX;
   uint32_t m_customerBodyMeshId = UINT32_MAX;
   uint32_t m_customerHeadMeshId = UINT32_MAX;
+  uint32_t m_customerHairMeshId = UINT32_MAX;
   uint32_t m_mugMeshId = UINT32_MAX;
   uint32_t m_filledMugMeshId = UINT32_MAX;
   uint32_t m_dirtyMugMeshId = UINT32_MAX;
@@ -137,6 +156,10 @@ private:
   uint32_t m_aleMeshId = UINT32_MAX;
   uint32_t m_foamMeshId = UINT32_MAX;
   uint32_t m_metalMeshId = UINT32_MAX;
+  uint32_t m_waterMeshId = UINT32_MAX;
+  std::array<std::vector<uint32_t>,
+             static_cast<std::size_t>(TavernAsset::Count)>
+      m_tavernAssetMeshIds{};
 
   ShiftState m_shiftState = ShiftState::Running;
   std::array<TableSlot, 3> m_tables{};
@@ -172,5 +195,6 @@ private:
   bool m_cycleAwaitingWash = false;
   bool m_primaryActionActive = false;
   bool m_lastPourPerfect = false;
+  bool m_importedArtReady = false;
   bool m_ready = false;
 };

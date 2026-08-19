@@ -57,8 +57,11 @@ public:
     return m_doubleSidedMaterialPartCount;
   }
   ClipDiagnostics GetClipDiagnostics(ClipSlot slot) const;
+  ClipDiagnostics GetTakingItemDiagnostics() const;
   ClipSlot ActiveClip() const { return m_activeSlot; }
   bool IsTransitioning() const { return m_transitioning; }
+  bool IsActionPlaying() const { return m_actionActive; }
+  uint64_t ActionTriggerSerial() const { return m_actionTriggerSerial; }
   bool BonePaletteFinite() const { return m_bonePaletteFinite; }
   float NativeModelHeight() const { return m_nativeModelHeight; }
   float WorldModelHeight() const;
@@ -66,6 +69,8 @@ public:
   void SetPosition(const DirectX::XMFLOAT3 &position);
   void SetYaw(float yawRadians);
   void SelectLocomotionClip(ClipSlot slot);
+  bool PlayTakingItem();
+  void CancelAction();
 
 private:
   struct PreviewClip {
@@ -82,6 +87,9 @@ private:
   int ClipIndex(ClipSlot slot) const;
   float ClipDuration(ClipSlot slot) const;
   float ClipPlaybackRate(ClipSlot slot) const;
+  ClipDiagnostics BuildClipDiagnostics(const PreviewClip &clip) const;
+  void SetActionReturnClip(ClipSlot slot);
+  void RequestLocomotionClip(ClipSlot slot);
   void TransitionToClip(ClipSlot slot);
   void UpdateAnimationPose(float dt);
   void UploadBonePalette(const BonePalette &palette);
@@ -100,6 +108,9 @@ private:
   std::vector<AnimationClip> m_animations;
   std::array<PreviewClip, 3> m_clips = {};
   std::array<float, 3> m_clipPlaybackRates = {1.0f, 1.0f, 1.0f};
+  PreviewClip m_takingItemClip;
+  float m_takingItemPlaybackRate = 2.65f;
+  float m_takingItemStartTime = 0.35f;
 
   ClipSlot m_activeSlot = ClipSlot::Idle;
   ClipSlot m_previousSlot = ClipSlot::Idle;
@@ -110,6 +121,17 @@ private:
   bool m_transitioning = false;
   ClipSlot m_queuedSlot = ClipSlot::Idle;
   bool m_hasQueuedTransition = false;
+  bool m_actionActive = false;
+  float m_actionTime = 0.0f;
+  float m_actionElapsed = 0.0f;
+  ClipSlot m_actionBaseSlot = ClipSlot::Idle;
+  float m_actionBaseTime = 0.0f;
+  bool m_actionBaseUsesAction = false;
+  ClipSlot m_actionReturnSlot = ClipSlot::Idle;
+  float m_actionReturnTime = 0.0f;
+  ClipSlot m_actionDesiredReturnSlot = ClipSlot::Idle;
+  bool m_actionBlendOutStarted = false;
+  uint64_t m_actionTriggerSerial = 0;
   float m_lastMovementSpeed = 0.0f;
   float m_previewYaw = 0.0f;
   float m_previewScale = 1.0f;

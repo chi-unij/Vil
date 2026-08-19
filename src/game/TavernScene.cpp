@@ -1,5 +1,6 @@
 #include "game/TavernScene.h"
 
+#include "GltfLoader.h"
 #include "MeshRenderer.h"
 #include "ProceduralMesh.h"
 
@@ -7,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <imgui.h>
 
 using namespace DirectX;
@@ -35,6 +37,8 @@ constexpr float kBusinessOpenHour = 5.0f;
 constexpr float kMugScaleXZ = 0.345f;
 constexpr float kMugScaleY = 0.465f;
 constexpr float kAleSurfaceScaleXZ = 0.255f;
+constexpr float kImportedMugScale = 1.55f;
+constexpr float kImportedMugHalfHeight = 0.239042f * kImportedMugScale * 0.5f;
 constexpr const char *kAleName = "水鏡エール";
 
 float DistanceXZ(const XMFLOAT3 &a, const XMFLOAT3 &b) {
@@ -52,6 +56,61 @@ void DrawPanel(ImDrawList *draw, const ImVec2 &minimum, const ImVec2 &maximum,
   draw->AddRectFilled(minimum, maximum,
                       TavernUiColor(0.035f, 0.022f, 0.015f, 0.92f), rounding);
   draw->AddRect(minimum, maximum, borderColor, rounding, 0, 1.5f);
+}
+
+constexpr std::array<const char *, 13> kTavernAssetPaths = {
+    "Assets/models/models_2/optimized/barrel.glb",
+    "Assets/models/models_2/optimized/crate.glb",
+    "Assets/models/models_2/optimized/stool.glb",
+    "Assets/models/models_2/optimized/chest.glb",
+    "Assets/models/models_2/optimized/round_table.glb",
+    "Assets/models/models_2/optimized/long_table.glb",
+    "Assets/models/models_2/optimized/bench.glb",
+    "Assets/models/models_2/optimized/mug.glb",
+    "Assets/models/models_2/optimized/plate.glb",
+    "Assets/models/models_2/optimized/sword.glb",
+    "Assets/models/models_2/optimized/halberd.glb",
+    "Assets/models/models_2/optimized/mace.glb",
+    "Assets/models/models_2/optimized/candle.glb",
+};
+
+std::string ResolveTavernAssetPath(const std::string &path) {
+  namespace fs = std::filesystem;
+
+  const fs::path direct(path);
+  const fs::path sourceFromBuild = fs::path("..") / ".." / ".." / path;
+  if (fs::exists(sourceFromBuild))
+    return sourceFromBuild.generic_string();
+  if (fs::exists(direct))
+    return direct.generic_string();
+  return path;
+}
+
+bool LoadTavernModelMeshIds(DxContext &dx, const std::string &path,
+                            std::vector<uint32_t> &outMeshIds) {
+  const std::string resolvedPath = ResolveTavernAssetPath(path);
+  std::vector<LoadedMeshPart> parts;
+  if (!LoadStaticModelParts(resolvedPath, parts)) {
+    OutputDebugStringA("[TavernScene] WARNING: model load failed: ");
+    OutputDebugStringA(resolvedPath.c_str());
+    OutputDebugStringA("\n");
+    return false;
+  }
+
+  for (const LoadedMeshPart &part : parts) {
+    const uint32_t meshId = dx.CreateMeshResources(
+        part.mesh, part.GetMaterialImages(), part.material);
+    if (meshId != UINT32_MAX)
+      outMeshIds.push_back(meshId);
+  }
+
+  if (outMeshIds.empty()) {
+    OutputDebugStringA("[TavernScene] WARNING: no mesh uploaded for model: ");
+    OutputDebugStringA(resolvedPath.c_str());
+    OutputDebugStringA("\n");
+    return false;
+  }
+  return true;
 }
 
 } // namespace
@@ -145,6 +204,13 @@ void TavernScene::Initialize(DxContext &dx) {
   m_customerHeadMeshId =
       dx.CreateMeshResources(headMesh, {}, customerHeadMaterial);
 
+  Material customerHairMaterial{};
+  customerHairMaterial.baseColorFactor = {0.075f, 0.032f, 0.016f, 1.0f};
+  customerHairMaterial.metallicFactor = 0.0f;
+  customerHairMaterial.roughnessFactor = 0.88f;
+  m_customerHairMeshId =
+      dx.CreateMeshResources(headMesh, {}, customerHairMaterial);
+
   Material mugMaterial{};
   mugMaterial.baseColorFactor = {0.48f, 0.50f, 0.47f, 1.0f};
   mugMaterial.metallicFactor = 0.42f;
@@ -162,21 +228,19 @@ void TavernScene::Initialize(DxContext &dx) {
   dirtyMugMaterial.baseColorFactor = {0.20f, 0.46f, 0.16f, 1.0f};
   dirtyMugMaterial.metallicFactor = 0.10f;
   dirtyMugMaterial.roughnessFactor = 0.78f;
-  m_dirtyMugMeshId =
-      dx.CreateMeshResources(cylinderMesh, {}, dirtyMugMaterial);
+  m_dirtyMugMeshId = dx.CreateMeshResources(cylinderMesh, {}, dirtyMugMaterial);
 
   Material dirtySpotMaterial{};
-  dirtySpotMaterial.baseColorFactor = {0.012f, 0.016f, 0.010f, 1.0f};
+  dirtySpotMaterial.baseColorFactor = {0.025f, 0.075f, 0.018f, 1.0f};
   dirtySpotMaterial.metallicFactor = 0.0f;
   dirtySpotMaterial.roughnessFactor = 0.94f;
-  m_dirtySpotMeshId =
-      dx.CreateMeshResources(headMesh, {}, dirtySpotMaterial);
+  m_dirtySpotMeshId = dx.CreateMeshResources(headMesh, {}, dirtySpotMaterial);
 
   Material aleMaterial{};
-  aleMaterial.baseColorFactor = {0.90f, 0.42f, 0.055f, 1.0f};
+  aleMaterial.baseColorFactor = {0.96f, 0.59f, 0.055f, 1.0f};
   aleMaterial.metallicFactor = 0.0f;
   aleMaterial.roughnessFactor = 0.20f;
-  aleMaterial.emissiveFactor = {0.55f, 0.14f, 0.015f};
+  aleMaterial.emissiveFactor = {0.62f, 0.23f, 0.015f};
   aleMaterial.rayTracingVisible = false;
   m_aleMeshId = dx.CreateMeshResources(cylinderMesh, {}, aleMaterial);
 
@@ -193,6 +257,37 @@ void TavernScene::Initialize(DxContext &dx) {
   metalMaterial.metallicFactor = 0.75f;
   metalMaterial.roughnessFactor = 0.30f;
   m_metalMeshId = dx.CreateMeshResources(cubeMesh, {}, metalMaterial);
+
+  Material waterMaterial{};
+  waterMaterial.baseColorFactor = {0.10f, 0.46f, 0.58f, 1.0f};
+  waterMaterial.metallicFactor = 0.0f;
+  waterMaterial.roughnessFactor = 0.16f;
+  waterMaterial.emissiveFactor = {0.025f, 0.16f, 0.22f};
+  waterMaterial.rayTracingVisible = false;
+  m_waterMeshId = dx.CreateMeshResources(cubeMesh, {}, waterMaterial);
+
+  static_assert(kTavernAssetPaths.size() ==
+                static_cast<std::size_t>(TavernAsset::Count));
+  for (std::vector<uint32_t> &meshIds : m_tavernAssetMeshIds)
+    meshIds.clear();
+  for (std::size_t assetIndex = 0; assetIndex < kTavernAssetPaths.size();
+       ++assetIndex) {
+    LoadTavernModelMeshIds(dx, kTavernAssetPaths[assetIndex],
+                           m_tavernAssetMeshIds[assetIndex]);
+  }
+
+  const auto hasAsset = [this](TavernAsset asset) {
+    return !m_tavernAssetMeshIds[static_cast<std::size_t>(asset)].empty();
+  };
+  m_importedArtReady =
+      hasAsset(TavernAsset::Barrel) && hasAsset(TavernAsset::Crate) &&
+      hasAsset(TavernAsset::Stool) && hasAsset(TavernAsset::Chest) &&
+      hasAsset(TavernAsset::RoundTable) && hasAsset(TavernAsset::Mug) &&
+      hasAsset(TavernAsset::Candle);
+  OutputDebugStringA(m_importedArtReady
+                         ? "[TavernScene] optimized tavern art set ready\n"
+                         : "[TavernScene] optimized art incomplete; procedural "
+                           "fallback remains active\n");
 
   m_collisionColliders = {
       {CollisionSystem::ShapeType::Box,
@@ -240,12 +335,12 @@ void TavernScene::Initialize(DxContext &dx) {
   m_ready = m_floorMeshId != UINT32_MAX && m_wallMeshId != UINT32_MAX &&
             m_woodMeshId != UINT32_MAX && m_darkWoodMeshId != UINT32_MAX &&
             m_glowMeshId != UINT32_MAX && m_customerBodyMeshId != UINT32_MAX &&
-            m_customerHeadMeshId != UINT32_MAX && m_mugMeshId != UINT32_MAX &&
-            m_filledMugMeshId != UINT32_MAX &&
-            m_dirtyMugMeshId != UINT32_MAX &&
-            m_dirtySpotMeshId != UINT32_MAX &&
-            m_aleMeshId != UINT32_MAX && m_foamMeshId != UINT32_MAX &&
-            m_metalMeshId != UINT32_MAX;
+            m_customerHeadMeshId != UINT32_MAX &&
+            m_customerHairMeshId != UINT32_MAX && m_mugMeshId != UINT32_MAX &&
+            m_filledMugMeshId != UINT32_MAX && m_dirtyMugMeshId != UINT32_MAX &&
+            m_dirtySpotMeshId != UINT32_MAX && m_aleMeshId != UINT32_MAX &&
+            m_foamMeshId != UINT32_MAX && m_metalMeshId != UINT32_MAX &&
+            m_waterMeshId != UINT32_MAX;
   Reset();
 }
 
@@ -643,6 +738,11 @@ bool TavernScene::CanServeCustomers() const {
 }
 
 uint32_t TavernScene::MugMeshForState(HeldItem item) const {
+  const std::vector<uint32_t> &importedMug =
+      m_tavernAssetMeshIds[static_cast<std::size_t>(TavernAsset::Mug)];
+  if (!importedMug.empty())
+    return importedMug.front();
+
   switch (item) {
   case HeldItem::FilledMug:
     return m_filledMugMeshId;
@@ -1003,10 +1103,41 @@ void TavernScene::BuildFrame(FrameData &frame) const {
   if (!m_ready)
     return;
 
-  const auto pushMesh = [&frame](uint32_t meshId, float sx, float sy, float sz,
-                                 float x, float y, float z) {
+  const auto pushTransform = [&frame](uint32_t meshId, const XMFLOAT3 &scale,
+                                      const XMFLOAT3 &rotation,
+                                      const XMFLOAT3 &position) {
+    if (meshId == UINT32_MAX)
+      return;
     frame.opaqueItems.push_back(
-        {meshId, XMMatrixScaling(sx, sy, sz) * XMMatrixTranslation(x, y, z)});
+        {meshId,
+         XMMatrixScaling(scale.x, scale.y, scale.z) *
+             XMMatrixRotationRollPitchYaw(rotation.x, rotation.y, rotation.z) *
+             XMMatrixTranslation(position.x, position.y, position.z)});
+  };
+  const auto pushMesh = [&](uint32_t meshId, float sx, float sy, float sz,
+                            float x, float y, float z) {
+    pushTransform(meshId, {sx, sy, sz}, {0.0f, 0.0f, 0.0f}, {x, y, z});
+  };
+  const auto pushAsset = [&](TavernAsset asset, const XMFLOAT3 &scale,
+                             const XMFLOAT3 &rotation,
+                             const XMFLOAT3 &position) {
+    const std::vector<uint32_t> &meshIds =
+        m_tavernAssetMeshIds[static_cast<std::size_t>(asset)];
+    for (const uint32_t meshId : meshIds)
+      pushTransform(meshId, scale, rotation, position);
+  };
+  const bool hasImportedMug =
+      !m_tavernAssetMeshIds[static_cast<std::size_t>(TavernAsset::Mug)].empty();
+  const auto pushMugBase = [&](HeldItem item, const XMFLOAT3 &position) {
+    if (hasImportedMug) {
+      pushAsset(TavernAsset::Mug,
+                {kImportedMugScale, kImportedMugScale, kImportedMugScale},
+                {0.0f, 0.0f, 0.0f},
+                {position.x, position.y - kImportedMugHalfHeight, position.z});
+    } else {
+      pushMesh(MugMeshForState(item), kMugScaleXZ, kMugScaleY, kMugScaleXZ,
+               position.x, position.y, position.z);
+    }
   };
   const auto pushDirtySpots = [&](const XMFLOAT3 &position) {
     pushMesh(m_dirtySpotMeshId, 0.055f, 0.045f, 0.028f, position.x - 0.11f,
@@ -1020,8 +1151,7 @@ void TavernScene::BuildFrame(FrameData &frame) const {
                                 float aleFill, float aleFoam) {
     if (item == HeldItem::None)
       return;
-    pushMesh(MugMeshForState(item), kMugScaleXZ, kMugScaleY, kMugScaleXZ,
-             position.x, position.y, position.z);
+    pushMugBase(item, position);
     if (item == HeldItem::DirtyMug)
       pushDirtySpots(position);
     if (item == HeldItem::FilledMug) {
@@ -1042,35 +1172,142 @@ void TavernScene::BuildFrame(FrameData &frame) const {
   pushMesh(m_wallMeshId, 0.34f, 4.8f, 12.0f, -7.0f, 2.4f, 4.2f);
   pushMesh(m_wallMeshId, 0.34f, 4.8f, 12.0f, 7.0f, 2.4f, 4.2f);
 
+  // 梁、柱、床板で正面開放型の酒場を額縁のように見せる。
+  constexpr float floorSeamZ[] = {-1.0f, 0.8f, 2.6f, 4.4f, 6.2f, 8.0f, 9.8f};
+  for (const float z : floorSeamZ)
+    pushMesh(m_darkWoodMeshId, 13.6f, 0.018f, 0.025f, 0.0f, 0.012f, z);
+  constexpr float backPostX[] = {-6.45f, -3.25f, 0.0f, 3.25f, 6.45f};
+  for (const float x : backPostX)
+    pushMesh(m_darkWoodMeshId, 0.22f, 4.65f, 0.22f, x, 2.33f, 9.86f);
+  constexpr float sidePostZ[] = {0.0f, 3.4f, 6.8f};
+  for (const float z : sidePostZ) {
+    pushMesh(m_darkWoodMeshId, 0.22f, 4.65f, 0.22f, -6.82f, 2.33f, z);
+    pushMesh(m_darkWoodMeshId, 0.22f, 4.65f, 0.22f, 6.82f, 2.33f, z);
+  }
+  constexpr float rafterZ[] = {0.4f, 3.7f, 7.0f, 9.72f};
+  for (const float z : rafterZ)
+    pushMesh(m_darkWoodMeshId, 13.55f, 0.20f, 0.20f, 0.0f, 4.55f, z);
+  // 既存の操作位置を守りながら、カウンター正面を木枠で仕上げる。
   pushMesh(m_darkWoodMeshId, 8.6f, 1.25f, 1.05f, 0.0f, 0.625f, 8.0f);
   pushMesh(m_woodMeshId, 8.9f, 0.16f, 1.25f, 0.0f, 1.32f, 8.0f);
+  for (const float x : {-4.0f, -2.0f, 0.0f, 2.0f, 4.0f})
+    pushMesh(m_woodMeshId, 0.12f, 1.08f, 0.08f, x, 0.62f, 7.45f);
+  pushMesh(m_woodMeshId, 8.30f, 0.10f, 0.08f, 0.0f, 0.13f, 7.45f);
+  pushMesh(m_woodMeshId, 8.30f, 0.10f, 0.08f, 0.0f, 1.10f, 7.45f);
   pushMesh(m_darkWoodMeshId, 5.8f, 0.18f, 0.65f, 0.0f, 2.25f, 9.55f);
   pushMesh(m_darkWoodMeshId, 5.8f, 0.18f, 0.65f, 0.0f, 3.35f, 9.55f);
 
   constexpr float tableX[3] = {-3.8f, 0.0f, 3.8f};
-  for (int tableIndex = 0; tableIndex < 3; ++tableIndex) {
-    const float x = tableX[tableIndex];
-    pushMesh(m_woodMeshId, 2.35f, 0.16f, 1.65f, x, 0.95f, 4.15f);
-    pushMesh(m_darkWoodMeshId, 0.18f, 0.90f, 0.18f, x - 0.82f, 0.45f, 3.62f);
-    pushMesh(m_darkWoodMeshId, 0.18f, 0.90f, 0.18f, x + 0.82f, 0.45f, 3.62f);
-    pushMesh(m_darkWoodMeshId, 0.18f, 0.90f, 0.18f, x - 0.82f, 0.45f, 4.68f);
-    pushMesh(m_darkWoodMeshId, 0.18f, 0.90f, 0.18f, x + 0.82f, 0.45f, 4.68f);
-    pushMesh(m_darkWoodMeshId, 1.05f, 0.52f, 0.58f, x, 0.26f, 2.95f);
-    pushMesh(m_darkWoodMeshId, 1.05f, 0.52f, 0.58f, x, 0.26f, 5.35f);
-    if (tableIndex < kActiveTableCount)
-      pushMesh(m_glowMeshId, 0.22f, 0.26f, 0.22f, x, 1.18f, 4.15f);
+  const bool hasRoundTable =
+      !m_tavernAssetMeshIds[static_cast<std::size_t>(TavernAsset::RoundTable)]
+           .empty();
+  const bool hasStool =
+      !m_tavernAssetMeshIds[static_cast<std::size_t>(TavernAsset::Stool)]
+           .empty();
+  const bool hasCommunalSet =
+      !m_tavernAssetMeshIds[static_cast<std::size_t>(TavernAsset::LongTable)]
+           .empty() &&
+      !m_tavernAssetMeshIds[static_cast<std::size_t>(TavernAsset::Bench)]
+           .empty();
+
+  if (hasRoundTable && hasStool) {
+    for (int tableIndex = 0; tableIndex < kActiveTableCount; ++tableIndex) {
+      const float x = tableX[tableIndex];
+      pushAsset(TavernAsset::RoundTable, {1.08f, 1.08f, 1.08f},
+                {0.0f, 0.18f * static_cast<float>(tableIndex), 0.0f},
+                {x, 0.0f, 4.15f});
+      pushAsset(TavernAsset::Stool, {0.88f, 0.88f, 0.88f}, {0.0f, 0.0f, 0.0f},
+                {x, 0.0f, 5.24f});
+      pushAsset(TavernAsset::Stool, {0.88f, 0.88f, 0.88f},
+                {0.0f, XM_PIDIV2, 0.0f}, {x - 0.96f, 0.0f, 4.08f});
+      pushAsset(TavernAsset::Stool, {0.88f, 0.88f, 0.88f},
+                {0.0f, -XM_PIDIV2, 0.0f}, {x + 0.96f, 0.0f, 4.08f});
+    }
+
+    if (hasCommunalSet) {
+      pushAsset(TavernAsset::LongTable, {0.72f, 1.40f, 0.74f},
+                {0.0f, XM_PIDIV2, 0.0f}, {tableX[2], 0.0f, 4.15f});
+      pushAsset(TavernAsset::Bench, {0.95f, 1.50f, 0.70f},
+                {0.0f, XM_PIDIV2, 0.0f}, {tableX[2], 0.0f, 3.43f});
+      pushAsset(TavernAsset::Bench, {0.95f, 1.50f, 0.70f},
+                {0.0f, XM_PIDIV2, 0.0f}, {tableX[2], 0.0f, 4.87f});
+    } else {
+      pushAsset(TavernAsset::RoundTable, {1.08f, 1.08f, 1.08f},
+                {0.0f, -0.16f, 0.0f}, {tableX[2], 0.0f, 4.15f});
+      pushAsset(TavernAsset::Stool, {0.88f, 0.88f, 0.88f}, {0.0f, 0.0f, 0.0f},
+                {tableX[2], 0.0f, 5.24f});
+      pushAsset(TavernAsset::Stool, {0.88f, 0.88f, 0.88f},
+                {0.0f, XM_PIDIV2, 0.0f}, {tableX[2] - 0.96f, 0.0f, 4.08f});
+      pushAsset(TavernAsset::Stool, {0.88f, 0.88f, 0.88f},
+                {0.0f, -XM_PIDIV2, 0.0f}, {tableX[2] + 0.96f, 0.0f, 4.08f});
+    }
+  } else {
+    // 生成済みGLBが見つからない場合もゲームプレイ可能な旧家具を残す。
+    for (const float x : tableX) {
+      pushMesh(m_woodMeshId, 2.35f, 0.16f, 1.65f, x, 0.95f, 4.15f);
+      pushMesh(m_darkWoodMeshId, 0.18f, 0.90f, 0.18f, x - 0.82f, 0.45f, 3.62f);
+      pushMesh(m_darkWoodMeshId, 0.18f, 0.90f, 0.18f, x + 0.82f, 0.45f, 3.62f);
+      pushMesh(m_darkWoodMeshId, 0.18f, 0.90f, 0.18f, x - 0.82f, 0.45f, 4.68f);
+      pushMesh(m_darkWoodMeshId, 0.18f, 0.90f, 0.18f, x + 0.82f, 0.45f, 4.68f);
+      pushMesh(m_darkWoodMeshId, 1.05f, 0.52f, 0.58f, x, 0.26f, 2.95f);
+      pushMesh(m_darkWoodMeshId, 1.05f, 0.52f, 0.58f, x, 0.26f, 5.35f);
+    }
   }
 
-  // 左からジョッキ棚、エール樽、洗い場。直接触る仕事場として色分けする。
+  // テーブル上の食器と灯り。三卓目は装飾用の共同席として整える。
+  for (int tableIndex = 0; tableIndex < 3; ++tableIndex) {
+    const float topY = tableIndex < kActiveTableCount ? 1.00f : 0.97f;
+    pushAsset(TavernAsset::Candle, {1.45f, 1.45f, 1.45f}, {0.0f, 0.0f, 0.0f},
+              {tableX[tableIndex] - 0.34f, topY, 4.02f});
+    pushMesh(m_glowMeshId, 0.045f, 0.075f, 0.045f, tableX[tableIndex] - 0.34f,
+             topY + 0.25f, 4.02f);
+    pushAsset(TavernAsset::Plate, {0.58f, 0.58f, 0.58f},
+              {0.0f, 0.18f * static_cast<float>(tableIndex), 0.0f},
+              {tableX[tableIndex] + 0.28f, topY + 0.012f, 4.10f});
+  }
+
+  // 後方の保管品は歩行経路を塞がない壁際へまとめる。
+  pushAsset(TavernAsset::Barrel, {1.05f, 1.05f, 1.05f}, {0.0f, 0.16f, 0.0f},
+            {-5.72f, 0.0f, 9.16f});
+  pushAsset(TavernAsset::Barrel, {0.96f, 0.96f, 0.96f}, {0.0f, -0.13f, 0.0f},
+            {5.72f, 0.0f, 9.18f});
+  pushAsset(TavernAsset::Crate, {1.0f, 1.0f, 1.0f}, {0.0f, -0.20f, 0.0f},
+            {4.82f, 0.0f, 9.22f});
+  pushAsset(TavernAsset::Crate, {0.88f, 0.88f, 0.88f}, {0.0f, 0.16f, 0.0f},
+            {5.05f, 0.61f, 9.24f});
+  pushAsset(TavernAsset::Chest, {1.05f, 1.05f, 1.05f}, {0.0f, XM_PIDIV2, 0.0f},
+            {-4.78f, 0.0f, 9.20f});
+
+  // 武器は奥行き方向を90度回して壁面から読めるシルエットにする。
+  pushAsset(TavernAsset::Sword, {1.34f, 1.34f, 1.34f},
+            {0.0f, XM_PIDIV2, -0.10f}, {-4.55f, 1.42f, 9.76f});
+  pushAsset(TavernAsset::Mace, {1.48f, 1.48f, 1.48f}, {0.0f, XM_PIDIV2, 0.11f},
+            {-3.75f, 1.48f, 9.74f});
+  pushAsset(TavernAsset::Halberd, {1.12f, 1.12f, 1.12f},
+            {0.0f, XM_PIDIV2, -0.075f}, {4.32f, 1.36f, 9.74f});
+  for (const float x : {-2.45f, 2.45f}) {
+    pushAsset(TavernAsset::Candle, {1.35f, 1.35f, 1.35f}, {0.0f, 0.0f, 0.0f},
+              {x, 2.35f, 9.40f});
+    pushMesh(m_glowMeshId, 0.042f, 0.07f, 0.042f, x, 2.58f, 9.40f);
+  }
+  pushAsset(TavernAsset::Plate, {0.62f, 0.62f, 0.62f}, {0.0f, 0.0f, 0.0f},
+            {-1.45f, 2.36f, 9.38f});
+  pushAsset(TavernAsset::Plate, {0.50f, 0.50f, 0.50f}, {0.0f, 0.0f, 0.0f},
+            {1.40f, 2.36f, 9.38f});
+  pushMugBase(HeldItem::EmptyMug, {0.72f, 2.53f, 9.38f});
+
+  // 左からジョッキ棚、仮置き、エール樽、洗い場の順に配置する。
   pushMesh(m_darkWoodMeshId, 1.55f, 0.16f, 0.58f, -2.7f, 1.65f, 7.72f);
   for (int mugIndex = 0; mugIndex < m_cleanMugs; ++mugIndex) {
-    pushMesh(m_mugMeshId, kMugScaleXZ, kMugScaleY, kMugScaleXZ,
-             -2.92f + static_cast<float>(mugIndex) * 0.42f, 1.98f, 7.72f);
+    pushStateMug(HeldItem::EmptyMug,
+                 {-2.92f + static_cast<float>(mugIndex) * 0.42f,
+                  hasImportedMug ? 1.915f : 1.98f, 7.72f},
+                 0.0f, 0.0f);
   }
 
   pushMesh(m_darkWoodMeshId, 1.20f, 0.07f, 0.58f, -1.20f, 1.43f, 7.65f);
-  for (int slotIndex = 0;
-       slotIndex < static_cast<int>(m_counterMugs.size()); ++slotIndex) {
+  for (int slotIndex = 0; slotIndex < static_cast<int>(m_counterMugs.size());
+       ++slotIndex) {
     const MugState &mug = m_counterMugs[slotIndex];
     if (mug.item == HeldItem::None) {
       const XMFLOAT3 &slotPosition = kCounterMugPositions[slotIndex];
@@ -1081,23 +1318,29 @@ void TavernScene::BuildFrame(FrameData &frame) const {
                  mug.aleFoam);
   }
 
-  pushMesh(m_woodMeshId, 1.15f, 1.55f, 0.95f, 0.0f, 2.12f, 9.40f);
+  pushAsset(TavernAsset::Barrel, {1.34f, 1.34f, 1.34f}, {0.0f, 0.0f, 0.0f},
+            {0.0f, 1.33f, 9.35f});
+  if (m_tavernAssetMeshIds[static_cast<std::size_t>(TavernAsset::Barrel)]
+          .empty())
+    pushMesh(m_woodMeshId, 1.15f, 1.55f, 0.95f, 0.0f, 2.12f, 9.40f);
   pushMesh(m_metalMeshId, 0.20f, 0.82f, 0.20f, 0.0f, 2.12f, 8.55f);
   pushMesh(m_metalMeshId, 0.58f, 0.16f, 0.20f, 0.0f, 2.42f, 8.25f);
   pushMesh(m_glowMeshId, 0.18f, 0.18f, 0.18f, 0.0f, 2.72f, 8.30f);
 
   pushMesh(m_metalMeshId, 1.55f, 0.24f, 0.88f, 2.7f, 1.50f, 7.78f);
-  pushMesh(m_glowMeshId, 1.18f, 0.05f, 0.58f, 2.7f, 1.65f, 7.78f);
+  pushMesh(m_waterMeshId, 1.18f, 0.05f, 0.58f, 2.7f, 1.65f, 7.78f);
 
   for (int tableIndex = 0; tableIndex < kActiveTableCount; ++tableIndex) {
     const TableState tableState = m_tables[tableIndex].state;
     const bool customerVisible =
         tableState != TableState::Empty && tableState != TableState::Dirty;
     if (customerVisible) {
-      pushMesh(m_customerBodyMeshId, 0.82f, 1.05f, 0.82f, tableX[tableIndex],
-               1.18f, 5.28f);
-      pushMesh(m_customerHeadMeshId, 0.92f, 0.92f, 0.92f, tableX[tableIndex],
-               1.96f, 5.22f);
+      pushMesh(m_customerBodyMeshId, 0.58f, 0.84f, 0.58f, tableX[tableIndex],
+               1.16f, 5.28f);
+      pushMesh(m_customerHeadMeshId, 0.46f, 0.46f, 0.46f, tableX[tableIndex],
+               1.79f, 5.22f);
+      pushMesh(m_customerHairMeshId, 0.48f, 0.23f, 0.48f, tableX[tableIndex],
+               1.97f, 5.22f);
       if (tableState == TableState::WaitingOrder ||
           tableState == TableState::WaitingAle)
         pushMesh(m_glowMeshId, 0.16f, 0.52f, 0.16f, tableX[tableIndex], 2.72f,
@@ -1105,7 +1348,8 @@ void TavernScene::BuildFrame(FrameData &frame) const {
     }
 
     if (tableState == TableState::Eating || tableState == TableState::Dirty) {
-      const XMFLOAT3 tableMugPosition = {tableX[tableIndex], 1.27f, 4.32f};
+      const XMFLOAT3 tableMugPosition = {tableX[tableIndex],
+                                         hasImportedMug ? 1.18f : 1.27f, 4.32f};
       if (tableState == TableState::Eating)
         pushStateMug(HeldItem::FilledMug, tableMugPosition, 0.90f, 0.04f);
       else
@@ -1122,9 +1366,7 @@ void TavernScene::BuildFrame(FrameData &frame) const {
 
   if (m_heldItem != HeldItem::None) {
     if (m_workState == WorkState::PouringAle) {
-      pushMesh(m_mugMeshId, kMugScaleXZ, kMugScaleY, kMugScaleXZ,
-               carriedMugPosition.x, carriedMugPosition.y,
-               carriedMugPosition.z);
+      pushMugBase(HeldItem::EmptyMug, carriedMugPosition);
       const float visibleFill = m_heldItem == HeldItem::FilledMug
                                     ? std::max(0.12f, m_aleFill)
                                     : m_aleFill;

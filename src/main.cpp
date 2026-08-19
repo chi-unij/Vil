@@ -630,6 +630,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         HasCommandLineSwitch(commandLine, L"--dxr-smoke");
     const bool playerAnimationSmokeRequested =
         HasCommandLineSwitch(commandLine, L"--player-animation-smoke");
+    const bool bossMirrorPickupSmokeRequested =
+        HasCommandLineSwitch(commandLine, L"--boss-mirror-pickup-smoke");
     const bool dxrOverworldSmokeRequested =
         HasCommandLineSwitch(commandLine, L"--dxr-overworld-smoke");
     const bool dxrOverworldRequested =
@@ -646,7 +648,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         tavernSmokeRequested || tavernGameplaySmokeRequested ||
         tavernDaySmokeRequested;
     const bool dxrSmokeMode =
-        !playerAnimationSmokeRequested &&
+        !playerAnimationSmokeRequested && !bossMirrorPickupSmokeRequested &&
         (dxrSmokeRequested || dxrOverworldSmokeRequested);
     const bool dxrProofRequested =
         HasCommandLineSwitch(commandLine, L"--dxr-proof") || dxrSmokeRequested;
@@ -757,9 +759,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     constexpr int kPlayerAnimationSmokeTotalFrames =
         kPlayerAnimationSmokeFramesPerState *
         static_cast<int>(kPlayerAnimationSmokeSequence.size());
+    constexpr int kPlayerAnimationSmokeActionMaxFrames = 180;
     int playerAnimationSmokeRenderedFrames = 0;
+    int playerAnimationSmokeActionRenderedFrames = 0;
+    int playerAnimationSmokeRenderedActionPoseFrames = 0;
     bool playerAnimationSmokeFailed = false;
     bool playerAnimationSmokeSequenceCompleted = false;
+    bool playerAnimationSmokeActionStarted = false;
+    bool playerAnimationSmokeActionCompleted = false;
+    bool playerAnimationSmokeActionPoseThisFrame = false;
+    uint64_t playerAnimationSmokeActionSerial = 0;
 
     const auto playerClipName = [](PlayerAnimationPreview::ClipSlot slot) {
       switch (slot) {
@@ -852,6 +861,27 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       validateClip(PlayerAnimationPreview::ClipSlot::Walk);
       validateClip(PlayerAnimationPreview::ClipSlot::Run);
 
+      const PlayerAnimationPreview::ClipDiagnostics takingItemDiagnostics =
+          playerPreview.GetTakingItemDiagnostics();
+      {
+        std::ostringstream status;
+        status << "Player animation smoke: clip TakingItem loaded="
+               << (takingItemDiagnostics.loaded ? 1 : 0)
+               << " duration=" << takingItemDiagnostics.duration
+               << " tracks=" << takingItemDiagnostics.trackCount
+               << " source=" << takingItemDiagnostics.sourcePath;
+        TraceAppEvent(status.str().c_str());
+      }
+      if (!takingItemDiagnostics.loaded ||
+          takingItemDiagnostics.duration <= 0.0f ||
+          !std::isfinite(takingItemDiagnostics.duration) ||
+          takingItemDiagnostics.trackCount == 0 ||
+          takingItemDiagnostics.sourcePath.find("TakingItem.glb") ==
+              std::string::npos) {
+        failPlayerAnimationSmoke(
+            "TakingItem clip must load from the dedicated GLB asset");
+      }
+
       if (!playerPreview.BonePaletteFinite())
         failPlayerAnimationSmoke("initial bone palette contains non-finite data");
       if (!playerAnimationSmokeFailed) {
@@ -877,7 +907,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     TavernScene tavernScene;
     tavernScene.Initialize(dx);
     tavernScene.Reset();
-    TraceAppEvent("startup: tavern greybox ready");
+    TraceAppEvent(tavernScene.ImportedArtReady()
+                      ? "startup: reconstructed tavern art ready"
+                      : "startup: tavern procedural fallback ready");
     std::vector<OverworldScene::CollisionShapeConfig> overworldCollisionShapes =
         overworldScene.BuildDefaultCollisionShapes();
     std::vector<CollisionSystem::Collider> overworldCollisionColliders =
@@ -986,14 +1018,63 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     // ---- Editor/Game mode toggle (Milestone 4 Phase 0) ----
     enum class AppMode { Title, Game, Tavern, BossArena, Editor };
     AppMode appMode =
-        playerAnimationSmokeRequested
-            ? AppMode::Game
-            : tavernRequested
+        bossMirrorPickupSmokeRequested  ? AppMode::BossArena
+        : playerAnimationSmokeRequested ? AppMode::Game
+        : tavernRequested
             ? AppMode::Tavern
             : (dxrOverworldRequested
                    ? AppMode::Game
                    : (launchEditor ? AppMode::Editor : AppMode::Title));
     bool requestQuit = false;
+    bool bossMirrorPickupSmokeFailed = false;
+    bool bossMirrorPickupObserved = false;
+    bool bossMirrorPickupSmokeCompleted = false;
+    int bossMirrorPickupSmokeFrames = 0;
+    int bossMirrorPickupCollectedCount = 0;
+    int bossMirrorPickupRenderedActionFrames = 0;
+    int bossMirrorPickupRenderedResponses = 0;
+    bool bossMirrorPickupActionPoseThisFrame = false;
+    bool bossMirrorPickupTriggeredThisFrame = false;
+    bool bossMirrorPickupAwaitingResponse = false;
+    bool bossMirrorPickupTeleportPending = false;
+    DirectX::XMFLOAT3 bossMirrorPickupPendingPosition{};
+    int bossMirrorPickupInitialCharge = 0;
+    uint64_t bossMirrorPickupInitialActionSerial = 0;
+    uint64_t bossMirrorPickupExpectedActionSerial = 0;
+    const auto failBossMirrorPickupSmoke = [&](const std::string &reason) {
+      if (!bossMirrorPickupSmokeRequested || bossMirrorPickupSmokeFailed)
+        return;
+      bossMirrorPickupSmokeFailed = true;
+      applicationExitCode = 2;
+      requestQuit = true;
+      const std::string message = "Boss mirror pickup smoke: FAIL; " + reason;
+      TraceAppEvent(message.c_str());
+    };
+    if (bossMirrorPickupSmokeRequested) {
+      const PlayerAnimationPreview::ClipDiagnostics diagnostics =
+          playerPreview.GetTakingItemDiagnostics();
+      if (!bossArenaScene.IsReady())
+        failBossMirrorPickupSmoke("BossArena is not ready");
+      if (!diagnostics.loaded || diagnostics.duration <= 0.0f ||
+          !std::isfinite(diagnostics.duration) || diagnostics.trackCount == 0)
+        failBossMirrorPickupSmoke("TakingItem animation is not ready");
+
+      DirectX::XMFLOAT3 chargePosition{};
+      if (!bossArenaScene.TryGetActiveMirrorChargePosition(chargePosition)) {
+        failBossMirrorPickupSmoke("no active mirror charge is available");
+      } else {
+        chargePosition.y = 0.0f;
+        playerPreview.SetPosition(chargePosition);
+        playerPreview.SetYaw(0.0f);
+        gameCameraPosition = {chargePosition.x, 3.2f, chargePosition.z - 5.8f};
+        cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
+                        gameCameraPosition.z);
+        cam.SetYawPitch(0.0f, -0.28f);
+      }
+      bossMirrorPickupInitialCharge = bossArenaScene.MirrorChargeCount();
+      bossMirrorPickupInitialActionSerial = playerPreview.ActionTriggerSerial();
+      TraceAppEvent("Boss mirror pickup smoke: route ready");
+    }
     const auto enterTavernMode = [&]() {
       appMode = AppMode::Tavern;
       showSettings = false;
@@ -1028,7 +1109,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                   0.1f, 1000.0f);
       TraceAppEvent("tavern transition: return to overworld");
     };
-    if (tavernRequested && !playerAnimationSmokeRequested)
+    if (tavernRequested && !playerAnimationSmokeRequested &&
+        !bossMirrorPickupSmokeRequested)
       enterTavernMode();
     TitleScreen titleScreen;
     Scene editorScene;
@@ -1313,6 +1395,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     SetStartupStage(70);
     TraceAppEvent("startup: entering main loop");
     while (window.PumpMessages()) {
+      bossMirrorPickupActionPoseThisFrame = false;
+      bossMirrorPickupTriggeredThisFrame = false;
       if (resizeCtx.pendingResize) {
         resizeCtx.pendingResize = false;
         const uint32_t resizeW = resizeCtx.width;
@@ -1739,6 +1823,22 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                   " produced a non-finite bone palette");
             }
           }
+        } else if (!playerAnimationSmokeFailed &&
+                   playerAnimationSmokeActionStarted &&
+                   !playerAnimationSmokeActionCompleted) {
+          const bool actionWasActive = playerPreview.IsActionPlaying();
+          playerPreview.Update(1.0f / 60.0f);
+          playerAnimationSmokeActionPoseThisFrame =
+              actionWasActive && playerPreview.IsActionPlaying();
+          if (!playerPreview.BonePaletteFinite()) {
+            failPlayerAnimationSmoke(
+                "TakingItem one-shot produced a non-finite bone palette");
+          }
+          if (playerPreview.ActionTriggerSerial() !=
+              playerAnimationSmokeActionSerial) {
+            failPlayerAnimationSmoke(
+                "TakingItem one-shot retriggered without a pickup event");
+          }
         }
       } else if (appMode == AppMode::Tavern && !uiWantsKeyboard &&
                  !gameFreeCameraEnabled) {
@@ -1760,16 +1860,23 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         cam.SetYawPitch(tavernScene.CameraYaw(), tavernScene.CameraPitch());
       } else if ((appMode == AppMode::Game ||
                   appMode == AppMode::BossArena) &&
-          !uiWantsKeyboard && !gameFreeCameraEnabled) {
+                 ((!uiWantsKeyboard && !gameFreeCameraEnabled) ||
+                  bossMirrorPickupSmokeRequested)) {
         bool inBossArena = appMode == AppMode::BossArena;
         bool enteredTavern = false;
+        const float activeGameplayDt =
+            bossMirrorPickupSmokeRequested ? 0.75f : dt;
+        const bool actionWasActiveBeforeUpdate =
+            bossMirrorPickupSmokeRequested && playerPreview.IsActionPlaying();
         const bool bossPhoneActive =
             inBossArena && bossArenaScene.IsPhoneOverlayActive();
-        if (bossPhoneActive) {
-          playerPreview.Update(dt);
+        if (bossMirrorPickupSmokeRequested) {
+          playerPreview.Update(activeGameplayDt);
+        } else if (bossPhoneActive) {
+          playerPreview.Update(activeGameplayDt);
         } else {
           playerPreview.Update(
-              dt, input,
+              activeGameplayDt, input,
               inBossArena
                   ? (bossArenaScene.DebugNoClipEnabled()
                          ? 1000.0f
@@ -1797,9 +1904,87 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
             gameCameraPosition = {0.0f, 4.0f, -20.0f};
           }
         }
+        bossMirrorPickupActionPoseThisFrame =
+            actionWasActiveBeforeUpdate && playerPreview.IsActionPlaying();
         if (!enteredTavern) {
           if (inBossArena)
-            bossArenaScene.Update(dt, input, playerPreview);
+            bossArenaScene.Update(activeGameplayDt, input, playerPreview);
+          if (inBossArena && bossMirrorPickupSmokeRequested &&
+              !bossMirrorPickupSmokeFailed && !bossMirrorPickupSmokeCompleted) {
+            ++bossMirrorPickupSmokeFrames;
+            const int chargeCount = bossArenaScene.MirrorChargeCount();
+            const int collectedCount =
+                chargeCount - bossMirrorPickupInitialCharge;
+            const uint64_t actionSerial = playerPreview.ActionTriggerSerial();
+
+            if (collectedCount == bossMirrorPickupCollectedCount + 1) {
+              bossMirrorPickupCollectedCount = collectedCount;
+              bossMirrorPickupObserved = true;
+              bossMirrorPickupTriggeredThisFrame = true;
+              bossMirrorPickupAwaitingResponse = true;
+              bossMirrorPickupExpectedActionSerial =
+                  bossMirrorPickupInitialActionSerial +
+                  static_cast<uint64_t>(collectedCount);
+              if (actionSerial != bossMirrorPickupExpectedActionSerial) {
+                failBossMirrorPickupSmoke(
+                    "pickup did not trigger exactly one action");
+              } else if (!playerPreview.IsActionPlaying()) {
+                failBossMirrorPickupSmoke(
+                    "TakingItem action was not active after pickup");
+              } else {
+                std::ostringstream pickupMessage;
+                pickupMessage << "Boss mirror pickup smoke: pickup "
+                              << collectedCount << " triggered one-shot";
+                TraceAppEvent(pickupMessage.str().c_str());
+              }
+
+              if (collectedCount < 3 && !bossMirrorPickupSmokeFailed) {
+                DirectX::XMFLOAT3 nextChargePosition{};
+                if (!bossArenaScene.TryGetActiveMirrorChargePosition(
+                        nextChargePosition)) {
+                  failBossMirrorPickupSmoke(
+                      "next active mirror charge is unavailable");
+                } else {
+                  nextChargePosition.y = 0.0f;
+                  bossMirrorPickupPendingPosition = nextChargePosition;
+                  bossMirrorPickupTeleportPending = true;
+                }
+              }
+            } else if (collectedCount != bossMirrorPickupCollectedCount) {
+              failBossMirrorPickupSmoke(
+                  "mirror charge count changed by more than one");
+            } else if (actionSerial != bossMirrorPickupExpectedActionSerial) {
+              failBossMirrorPickupSmoke(
+                  "TakingItem action retriggered without another pickup");
+            }
+
+            if (!playerPreview.BonePaletteFinite()) {
+              failBossMirrorPickupSmoke(
+                  "TakingItem action produced a non-finite bone palette");
+            } else if (bossMirrorPickupCollectedCount == 3 &&
+                       !playerPreview.IsActionPlaying()) {
+              if (playerPreview.ActiveClip() !=
+                  PlayerAnimationPreview::ClipSlot::Idle) {
+                failBossMirrorPickupSmoke(
+                    "TakingItem action did not return to Idle");
+              } else if (bossMirrorPickupRenderedActionFrames <= 0) {
+                failBossMirrorPickupSmoke(
+                    "TakingItem action completed without a rendered sample");
+              } else if (bossMirrorPickupRenderedResponses != 3) {
+                failBossMirrorPickupSmoke(
+                    "not every pickup produced a rendered action response");
+              } else {
+                bossMirrorPickupSmokeCompleted = true;
+                requestQuit = true;
+                TraceAppEvent(
+                    "Boss mirror pickup smoke: all pickups returned to Idle");
+              }
+            } else if (bossMirrorPickupSmokeFrames >= 10) {
+              failBossMirrorPickupSmoke(
+                  "TakingItem pickup sequence did not finish within 10 "
+                  "rendered frames");
+            }
+          }
           const DirectX::XMFLOAT3 playerPos = playerPreview.Position();
           const DirectX::XMFLOAT3 targetCameraPos = {
               playerPos.x,
@@ -2328,7 +2513,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         playerPreview.BuildFrame(frame);
         if (playerAnimationSmokeRequested &&
             !playerAnimationSmokeFailed &&
-            !playerAnimationSmokeSequenceCompleted) {
+            !playerAnimationSmokeActionCompleted) {
           const size_t appendedOpaquePlayerItems =
               frame.opaqueItems.size() - playerOpaqueItemBegin;
           const size_t appendedTransparentPlayerItems =
@@ -2387,8 +2572,23 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         const DirectX::XMFLOAT3 gameplayPlayerPos = playerPreview.Position();
         playerPreview.SetPosition(
             bossArenaScene.VisualPositionForGameplayPosition(gameplayPlayerPos));
+        const size_t playerOpaqueItemBegin = frame.opaqueItems.size();
+        const size_t playerTransparentItemBegin = frame.transparentItems.size();
         playerPreview.BuildFrame(frame);
         playerPreview.SetPosition(gameplayPlayerPos);
+        if (bossMirrorPickupSmokeRequested && !bossMirrorPickupSmokeFailed) {
+          const size_t appendedOpaquePlayerItems =
+              frame.opaqueItems.size() - playerOpaqueItemBegin;
+          const size_t appendedTransparentPlayerItems =
+              frame.transparentItems.size() - playerTransparentItemBegin;
+          if (appendedOpaquePlayerItems !=
+                  kPlayerAnimationSmokeExpectedOpaqueParts ||
+              appendedTransparentPlayerItems !=
+                  kPlayerAnimationSmokeExpectedTransparentParts) {
+            failBossMirrorPickupSmoke(
+                "Player BuildFrame did not submit the expected model parts");
+          }
+        }
         const bool bossPhaseTwo = bossArenaScene.PhaseTwoActive();
         frame.clearColor[0] = bossPhaseTwo ? 0.070f : 0.028f;
         frame.clearColor[1] = bossPhaseTwo ? 0.030f : 0.045f;
@@ -2630,42 +2830,96 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       if (traceGameFrame)
         TraceAppEvent("pass: EndFrame");
       dx.EndFrame();
-      if (playerAnimationSmokeRequested &&
-          !playerAnimationSmokeSequenceCompleted) {
-        if (playerAnimationSmokeFailed) {
-          requestQuit = true;
-        } else {
-          ++playerAnimationSmokeRenderedFrames;
-          if ((playerAnimationSmokeRenderedFrames %
-               kPlayerAnimationSmokeFramesPerState) == 0) {
-            const int completedSequenceIndex =
-                playerAnimationSmokeRenderedFrames /
-                    kPlayerAnimationSmokeFramesPerState -
-                1;
-            if (playerPreview.IsTransitioning()) {
-              failPlayerAnimationSmoke(
-                  std::string("crossfade did not settle for state ") +
-                  playerClipName(
-                      kPlayerAnimationSmokeSequence[completedSequenceIndex]));
-            } else {
-              const std::string stateMessage =
-                  std::string("Player animation smoke: settled state ") +
-                  playerClipName(
-                      kPlayerAnimationSmokeSequence[completedSequenceIndex]) +
-                  " after " +
-                  std::to_string(kPlayerAnimationSmokeFramesPerState) +
-                  " rendered frames";
-              TraceAppEvent(stateMessage.c_str());
-            }
+      if (bossMirrorPickupSmokeRequested &&
+          bossMirrorPickupActionPoseThisFrame && !bossMirrorPickupSmokeFailed) {
+        ++bossMirrorPickupRenderedActionFrames;
+        if (bossMirrorPickupAwaitingResponse &&
+            !bossMirrorPickupTriggeredThisFrame) {
+          ++bossMirrorPickupRenderedResponses;
+          bossMirrorPickupAwaitingResponse = false;
+          if (bossMirrorPickupTeleportPending) {
+            playerPreview.SetPosition(bossMirrorPickupPendingPosition);
+            bossMirrorPickupTeleportPending = false;
           }
-          if (!playerAnimationSmokeFailed &&
-              playerAnimationSmokeRenderedFrames ==
-              kPlayerAnimationSmokeTotalFrames) {
+        }
+      }
+      if (playerAnimationSmokeRequested && playerAnimationSmokeFailed) {
+        requestQuit = true;
+      } else if (playerAnimationSmokeRequested &&
+                 !playerAnimationSmokeSequenceCompleted) {
+        ++playerAnimationSmokeRenderedFrames;
+        if ((playerAnimationSmokeRenderedFrames %
+             kPlayerAnimationSmokeFramesPerState) == 0) {
+          const int completedSequenceIndex =
+              playerAnimationSmokeRenderedFrames /
+                  kPlayerAnimationSmokeFramesPerState -
+              1;
+          if (playerPreview.IsTransitioning()) {
+            failPlayerAnimationSmoke(
+                std::string("crossfade did not settle for state ") +
+                playerClipName(
+                    kPlayerAnimationSmokeSequence[completedSequenceIndex]));
+          } else {
+            const std::string stateMessage =
+                std::string("Player animation smoke: settled state ") +
+                playerClipName(
+                    kPlayerAnimationSmokeSequence[completedSequenceIndex]) +
+                " after " +
+                std::to_string(kPlayerAnimationSmokeFramesPerState) +
+                " rendered frames";
+            TraceAppEvent(stateMessage.c_str());
+          }
+        }
+        if (!playerAnimationSmokeFailed &&
+            playerAnimationSmokeRenderedFrames ==
+                kPlayerAnimationSmokeTotalFrames) {
+          TraceAppEvent("Player animation smoke: render sequence completed");
+          playerAnimationSmokeSequenceCompleted = true;
+          const uint64_t actionSerialBefore =
+              playerPreview.ActionTriggerSerial();
+          if (!playerPreview.PlayTakingItem()) {
+            failPlayerAnimationSmoke(
+                "TakingItem one-shot could not be started");
+          } else if (playerPreview.ActionTriggerSerial() !=
+                         actionSerialBefore + 1 ||
+                     !playerPreview.IsActionPlaying()) {
+            failPlayerAnimationSmoke(
+                "TakingItem one-shot did not activate exactly once");
+          } else {
+            playerAnimationSmokeActionStarted = true;
+            playerAnimationSmokeActionSerial = actionSerialBefore + 1;
             TraceAppEvent(
-                "Player animation smoke: render sequence completed");
-            playerAnimationSmokeSequenceCompleted = true;
+                "Player animation smoke: TakingItem one-shot started");
+          }
+        }
+      } else if (playerAnimationSmokeRequested &&
+                 playerAnimationSmokeActionStarted &&
+                 !playerAnimationSmokeActionCompleted) {
+        ++playerAnimationSmokeActionRenderedFrames;
+        if (playerAnimationSmokeActionPoseThisFrame)
+          ++playerAnimationSmokeRenderedActionPoseFrames;
+        if (!playerPreview.IsActionPlaying()) {
+          if (playerPreview.ActiveClip() !=
+              PlayerAnimationPreview::ClipSlot::Idle) {
+            failPlayerAnimationSmoke(
+                "TakingItem one-shot did not return to Idle");
+          } else if (playerPreview.IsTransitioning()) {
+            failPlayerAnimationSmoke(
+                "TakingItem one-shot left a locomotion crossfade active");
+          } else if (playerAnimationSmokeRenderedActionPoseFrames <= 0) {
+            failPlayerAnimationSmoke(
+                "TakingItem one-shot completed without a rendered pose");
+          } else {
+            playerAnimationSmokeActionCompleted = true;
+            TraceAppEvent(
+                "Player animation smoke: TakingItem one-shot completed "
+                "without looping");
             requestQuit = true;
           }
+        } else if (playerAnimationSmokeActionRenderedFrames >=
+                   kPlayerAnimationSmokeActionMaxFrames) {
+          failPlayerAnimationSmoke(
+              "TakingItem one-shot did not finish within 180 frames");
         }
       }
       if (dxrSmokeMode && dxrProofDispatchLogged &&
@@ -2743,12 +2997,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     }
 
     if (playerAnimationSmokeRequested &&
-        !playerAnimationSmokeSequenceCompleted &&
+        (!playerAnimationSmokeSequenceCompleted ||
+         !playerAnimationSmokeActionCompleted) &&
         !playerAnimationSmokeFailed) {
       failPlayerAnimationSmoke(
-          "application ended before all " +
-          std::to_string(kPlayerAnimationSmokeTotalFrames) +
-          " render frames completed");
+          "application ended before locomotion and TakingItem verification "
+          "completed");
+    }
+    if (bossMirrorPickupSmokeRequested && !bossMirrorPickupSmokeCompleted &&
+        !bossMirrorPickupSmokeFailed) {
+      failBossMirrorPickupSmoke(
+          "application ended before pickup verification completed");
     }
 
     // ---- Shutdown (reverse init order) ----
@@ -2780,6 +3039,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         failPlayerAnimationSmoke(
             "D3D12 debug layer reported an error/corruption message");
       } else if (playerAnimationSmokeSequenceCompleted &&
+                 playerAnimationSmokeActionCompleted &&
                  !playerAnimationSmokeFailed) {
         std::ostringstream passMessage;
         passMessage << "Player animation smoke: PASS; parts="
@@ -2792,7 +3052,37 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                     << " bones=" << playerPreview.SkeletonBoneCount()
                     << " transitions=Idle>Walk>Run>Idle renderedFrames="
                     << playerAnimationSmokeRenderedFrames
+                    << " takingItemOneShotFrames="
+                    << playerAnimationSmokeActionRenderedFrames
+                    << " takingItemPoseFrames="
+                    << playerAnimationSmokeRenderedActionPoseFrames
                     << " d3dErrors=0";
+        TraceAppEvent(passMessage.str().c_str());
+      }
+    }
+    if (bossMirrorPickupSmokeRequested) {
+      std::ostringstream debugReport;
+      dx.DumpDebugMessages(debugReport);
+      const std::string debugReportText = debugReport.str();
+      std::ofstream debugLog("boss_mirror_pickup_smoke_debug_log.txt",
+                             std::ios::out | std::ios::trunc);
+      if (debugLog)
+        debugLog << debugReportText;
+      if (debugReportText.find(
+              "D3D12 Error/Corruption messages:\n  (none)\n") ==
+          std::string::npos) {
+        failBossMirrorPickupSmoke(
+            "D3D12 debug layer reported an error/corruption message");
+      } else if (bossMirrorPickupSmokeCompleted &&
+                 !bossMirrorPickupSmokeFailed) {
+        std::ostringstream passMessage;
+        passMessage << "Boss mirror pickup smoke: PASS; chargeDelta=3 "
+                       "actionTriggers=3 renderedFrames="
+                    << bossMirrorPickupSmokeFrames << " renderedActionFrames="
+                    << bossMirrorPickupRenderedActionFrames
+                    << " renderedResponses="
+                    << bossMirrorPickupRenderedResponses
+                    << " return=Idle d3dErrors=0";
         TraceAppEvent(passMessage.str().c_str());
       }
     }
