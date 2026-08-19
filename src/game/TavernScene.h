@@ -29,11 +29,15 @@ public:
   bool GameplaySmokeComplete() const {
     return m_tableCompletedCycles[0] >= 1 && m_tableCompletedCycles[1] >= 1;
   }
+  bool DayCycleSmokeComplete() const {
+    return m_shiftState == ShiftState::Complete && GameplaySmokeComplete();
+  }
   bool PlayerMovementLocked() const { return m_workState != WorkState::None; }
   int CompletedCycles() const { return m_completedCycles; }
   int Gold() const { return m_gold; }
   int ServedCustomers() const { return m_servedCustomers; }
   int Walkouts() const { return m_walkouts; }
+  float BusinessHour() const { return m_businessHour; }
   DirectX::XMFLOAT3 PlayerSpawnPosition() const { return {0.0f, 0.0f, -0.35f}; }
   DirectX::XMFLOAT3 CameraPosition() const { return {0.0f, 3.0f, -5.15f}; }
   float CameraYaw() const { return 0.0f; }
@@ -43,7 +47,7 @@ public:
   }
 
 private:
-  enum class ShiftState { Running, Complete, Failed };
+  enum class ShiftState { Running, Closing, Complete, Failed };
   enum class TableState {
     Empty,
     Arriving,
@@ -72,6 +76,9 @@ private:
     float satisfaction = 100.0f;
     bool enabled = false;
     bool servedCustomer = false;
+    bool complaintPlayed = false;
+    std::string speech;
+    float speechTimer = 0.0f;
   };
 
   static const char *GetTableStateName(TableState state);
@@ -92,6 +99,10 @@ private:
   int NearestEnabledTable(float maximumDistance) const;
   int FindTableInState(TableState state) const;
   int FindMostUrgentWaitingAleTable() const;
+  bool HasActiveCustomers() const;
+  float CustomerSpawnDelay(int tableIndex) const;
+  const char *CustomerTrafficName() const;
+  bool CanServeCustomers() const;
 
   uint32_t m_floorMeshId = UINT32_MAX;
   uint32_t m_wallMeshId = UINT32_MAX;
@@ -114,7 +125,7 @@ private:
   std::vector<CollisionSystem::Collider> m_collisionColliders;
   std::string m_nearbyPrompt;
   std::string m_feedbackText;
-  float m_shiftRemainingSeconds = 90.0f;
+  float m_businessHour = 5.0f;
   std::array<float, 3> m_spawnTimers{};
   std::array<int, 3> m_tableCompletedCycles{};
   float m_aleFill = 0.0f;

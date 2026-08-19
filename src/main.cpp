@@ -627,19 +627,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         HasCommandLineSwitch(commandLine, L"--tavern-smoke");
     const bool tavernGameplaySmokeRequested =
         HasCommandLineSwitch(commandLine, L"--tavern-gameplay-smoke");
+    const bool tavernDaySmokeRequested =
+        HasCommandLineSwitch(commandLine, L"--tavern-day-smoke");
     const bool tavernRequested =
         HasCommandLineSwitch(commandLine, L"--tavern") ||
-        tavernSmokeRequested || tavernGameplaySmokeRequested;
+        tavernSmokeRequested || tavernGameplaySmokeRequested ||
+        tavernDaySmokeRequested;
     const bool dxrSmokeMode = dxrSmokeRequested || dxrOverworldSmokeRequested;
     const bool dxrProofRequested =
-        HasCommandLineSwitch(commandLine, L"--dxr-proof") ||
-        dxrSmokeRequested;
-    const bool launchEditor =
-        kDedicatedEditorBuild ||
-        HasCommandLineSwitch(commandLine, L"--editor") ||
-        dxrProofRequested;
-    const wchar_t *windowTitle =
-        launchEditor ? L"VILLIEN Editor" : L"VILLIEN";
+        HasCommandLineSwitch(commandLine, L"--dxr-proof") || dxrSmokeRequested;
+    const bool launchEditor = kDedicatedEditorBuild ||
+                              HasCommandLineSwitch(commandLine, L"--editor") ||
+                              dxrProofRequested;
+    const wchar_t *windowTitle = launchEditor ? L"VILLIEN Editor" : L"VILLIEN";
     const bool contentRootFound = SetWorkingDirectoryToContentRoot();
 
     {
@@ -678,6 +678,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     int tavernSmokeOverworldFramesRemaining = tavernSmokeRequested ? 2 : -1;
     bool tavernSmokeReturnIssued = false;
     bool tavernGameplaySmokeLogged = false;
+    bool tavernDaySmokeLogged = false;
     ReflectionMode reflectionMode =
         (dxrProofRequested || dxrOverworldRequested) &&
                 hybridReflection.IsSupported()
@@ -842,12 +843,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
 
     // ---- Editor/Game mode toggle (Milestone 4 Phase 0) ----
     enum class AppMode { Title, Game, Tavern, BossArena, Editor };
-    AppMode appMode = tavernRequested
-                          ? AppMode::Tavern
-                          : (dxrOverworldRequested
-                                 ? AppMode::Game
-                                 : (launchEditor ? AppMode::Editor
-                                                 : AppMode::Title));
+    AppMode appMode =
+        tavernRequested
+            ? AppMode::Tavern
+            : (dxrOverworldRequested
+                   ? AppMode::Game
+                   : (launchEditor ? AppMode::Editor : AppMode::Title));
     bool requestQuit = false;
     const auto enterTavernMode = [&]() {
       appMode = AppMode::Tavern;
@@ -855,6 +856,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       gameFreeCameraEnabled = false;
       gameRuntimeSeconds = 0.0f;
       tavernScene.Reset();
+      gameTimeOfDayHours = tavernScene.BusinessHour();
       playerPreview.SetPosition(tavernScene.PlayerSpawnPosition());
       playerPreview.SetYaw(0.0f);
       const DirectX::XMFLOAT3 cameraPosition = tavernScene.CameraPosition();
@@ -1985,18 +1987,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       }
 
       if (appMode == AppMode::Game && !showSettings &&
-          overworldScene.IsPlayerNearTavernEntrance(
-              playerPreview.Position())) {
+          overworldScene.IsPlayerNearTavernEntrance(playerPreview.Position())) {
         DrawTavernEntrancePrompt(static_cast<int>(window.Width()),
                                  static_cast<int>(window.Height()));
       }
 
       if (appMode == AppMode::Tavern) {
+        const bool automateTavern =
+            tavernGameplaySmokeRequested || tavernDaySmokeRequested;
         const TavernScene::Action updateAction = tavernScene.Update(
-            dt * (tavernGameplaySmokeRequested ? 12.0f : 1.0f),
-            playerPreview.Position(), tavernInteractPressed, lbNow,
-            tavernRestartPressed,
-            tavernGameplaySmokeRequested);
+            dt * (automateTavern ? 12.0f : 1.0f), playerPreview.Position(),
+            tavernInteractPressed, lbNow, tavernRestartPressed, automateTavern);
+        gameTimeOfDayHours = tavernScene.BusinessHour();
         const TavernScene::Action hudAction =
             tavernScene.DrawHud(static_cast<int>(window.Width()),
                                 static_cast<int>(window.Height()));
@@ -2005,7 +2007,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
           returnFromTavern();
       }
 
-      // SSAO, Post Processing, and Cascaded Shadows panels moved to SceneEditor (Phase 4).
+      // SSAO, Post Processing, and Cascaded Shadows panels moved to SceneEditor
+      // (Phase 4).
       if (appMode == AppMode::Game) {
         overworldCollisionColliders =
             overworldScene.BuildCollisionColliders(overworldCollisionShapes);
@@ -2443,6 +2446,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         tavernGameplaySmokeLogged = true;
         requestQuit = true;
       }
+      if (tavernDaySmokeRequested && !tavernDaySmokeLogged &&
+          tavernScene.DayCycleSmokeComplete()) {
+        std::ostringstream message;
+        message << "Tavern day smoke: 05:00-24:00 business day completed; hour="
+                << tavernScene.BusinessHour()
+                << " cycles=" << tavernScene.CompletedCycles()
+                << " gold=" << tavernScene.Gold()
+                << " served=" << tavernScene.ServedCustomers()
+                << " walkouts=" << tavernScene.Walkouts();
+        TraceAppEvent(message.str().c_str());
+        tavernDaySmokeLogged = true;
+        requestQuit = true;
+      }
       if (traceGameFrame)
         TraceAppEvent("game frame: end");
 
@@ -2468,7 +2484,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       if (debugLog)
         dx.DumpDebugMessages(debugLog);
     }
-    if (tavernSmokeRequested || tavernGameplaySmokeRequested) {
+    if (tavernSmokeRequested || tavernGameplaySmokeRequested ||
+        tavernDaySmokeRequested) {
       std::ofstream debugLog("tavern_smoke_debug_log.txt",
                              std::ios::out | std::ios::trunc);
       if (debugLog)
