@@ -80,8 +80,8 @@ struct MaterialImages {
   float emissiveFactor[3] = {0.0f, 0.0f, 0.0f};
 };
 
-// Static glTF mesh part with owned texture images.
-// One part maps to one primitive/material pair so stage models can keep UV textures.
+// glTF の primitive / material ごとの mesh part。
+// texture image を所有し、static / skinned model の両方で利用する。
 struct LoadedMeshPart {
   LoadedMesh mesh;
   LoadedImage baseColorImage;
@@ -91,6 +91,8 @@ struct LoadedMeshPart {
   LoadedImage emissiveImage;
   LoadedImage heightImage;
   Material material;
+  bool alphaBlend = false;
+  bool doubleSided = false;
 
   MaterialImages GetMaterialImages() const {
     MaterialImages mat;
@@ -124,6 +126,9 @@ class GltfLoader {
 public:
   bool LoadModel(const std::string &path);
   const LoadedMesh &GetMesh() const { return m_mesh; }
+  const std::vector<LoadedMeshPart> &GetMeshParts() const {
+    return m_meshParts;
+  }
   const LoadedImage &GetBaseColorImage() const { return m_baseColorImage; }
   const LoadedImage &GetNormalImage() const { return m_normalImage; }
   const LoadedImage &GetMetalRoughImage() const { return m_metalRoughImage; }
@@ -162,6 +167,7 @@ private:
   void ExtractAnimations(const tinygltf::Model &model);
 
   LoadedMesh m_mesh;
+  std::vector<LoadedMeshPart> m_meshParts;
   LoadedImage m_baseColorImage;
   LoadedImage m_normalImage;
   LoadedImage m_metalRoughImage;

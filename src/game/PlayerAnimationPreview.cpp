@@ -8,6 +8,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <imgui.h>
 
 using namespace DirectX;
@@ -22,9 +23,53 @@ void PlayerAnimationPreview::Initialize(DxContext &dx) {
   }
 
   const LoadedMesh &mesh = playerLoader.GetMesh();
-  m_meshId = dx.CreateMeshResources(mesh, playerLoader.GetMaterialImages(),
-                                    playerLoader.GetMaterial());
-  m_ready = true;
+  const auto &meshParts = playerLoader.GetMeshParts();
+  m_opaqueMeshIds.clear();
+  m_transparentMeshIds.clear();
+  m_opaqueMeshIds.reserve(meshParts.size());
+  m_transparentMeshIds.reserve(meshParts.size());
+  m_doubleSidedMaterialPartCount = 0;
+  for (const LoadedMeshPart &part : meshParts) {
+    const uint32_t meshId =
+        dx.CreateMeshResources(part.mesh, part.GetMaterialImages(),
+                               part.material);
+    if (meshId == UINT32_MAX)
+      continue;
+    if (part.alphaBlend)
+      m_transparentMeshIds.push_back(meshId);
+    else
+      m_opaqueMeshIds.push_back(meshId);
+    if (part.doubleSided)
+      ++m_doubleSidedMaterialPartCount;
+  }
+
+  // 旧形式または単一 part asset との互換 fallback。
+  if (m_opaqueMeshIds.empty() && m_transparentMeshIds.empty()) {
+    const uint32_t meshId =
+        dx.CreateMeshResources(mesh, playerLoader.GetMaterialImages(),
+                               playerLoader.GetMaterial());
+    if (meshId != UINT32_MAX)
+      m_opaqueMeshIds.push_back(meshId);
+  }
+  const size_t uploadedPartCount =
+      m_opaqueMeshIds.size() + m_transparentMeshIds.size();
+  m_ready = uploadedPartCount > 0 &&
+            (meshParts.empty() || uploadedPartCount == meshParts.size());
+
+  float minY = std::numeric_limits<float>::max();
+  float maxY = std::numeric_limits<float>::lowest();
+  for (const MeshVertex &vertex : mesh.vertices) {
+    minY = std::min(minY, vertex.pos[1]);
+    maxY = std::max(maxY, vertex.pos[1]);
+  }
+  if (minY <= maxY) {
+    m_nativeModelMinY = minY;
+    m_nativeModelHeight = maxY - minY;
+  }
+  // Capsule の half-height 0.85 m に合わせ、全 Scene で見た目を 1.70 m に統一する。
+  constexpr float kTargetPlayerHeightMeters = 1.70f;
+  if (m_nativeModelHeight > 0.0001f)
+    m_modelToWorldScale = kTargetPlayerHeightMeters / m_nativeModelHeight;
 
   if (mesh.hasSkeleton) {
     m_skeleton = mesh.skeleton;
@@ -32,12 +77,22 @@ void PlayerAnimationPreview::Initialize(DxContext &dx) {
 
     BonePalette bindPose;
     ComputeBindPose(m_skeleton, bindPose);
-    dx.GetMeshRenderer().SetBonePalette(m_meshId, bindPose);
+    UploadBonePalette(bindPose);
 
     LoadClip("Idle", "Assets/models/animations/Idle.glb", "", m_clips[0]);
-    LoadClip("Walk", "Assets/models/animations/Walk.glb",
-             "Assets/models/animations/Push.glb", m_clips[1]);
+    LoadClip("Walk", "Assets/models/animations/Walk.glb", "", m_clips[1]);
     LoadClip("Run", "Assets/models/animations/Run.glb", "", m_clips[2]);
+
+    // Walk clip がない場合も Push action は流用せず、Run を低速再生して
+    // locomotion の意味を維持する。Walk asset 追加後は自動的に置き換わる。
+    if (!m_clips[1].loaded && m_clips[2].loaded) {
+      m_clips[1].clipIndex = m_clips[2].clipIndex;
+      m_clips[1].loadedPath =
+          "Assets/models/animations/Run.glb (0.62x Walk fallback)";
+      m_clips[1].loaded = true;
+      m_clips[1].fallback = true;
+      m_clipPlaybackRates[1] = 0.62f;
+    }
 
     OutputDebugStringA("[PlayerPreview] Player VRM and animation clips loaded.\n");
   } else {
@@ -75,38 +130,193 @@ bool PlayerAnimationPreview::LoadClip(const std::string &label,
 }
 
 int PlayerAnimationPreview::ActiveClipIndex() const {
-  const int slot = static_cast<int>(m_activeSlot);
+  return ClipIndex(m_activeSlot);
+}
+
+int PlayerAnimationPreview::ClipIndex(ClipSlot clipSlot) const {
+  const int slot = static_cast<int>(clipSlot);
   if (slot < 0 || slot >= static_cast<int>(m_clips.size()))
     return -1;
   return m_clips[slot].clipIndex;
+}
+
+float PlayerAnimationPreview::ClipDuration(ClipSlot clipSlot) const {
+  const int clipIndex = ClipIndex(clipSlot);
+  if (clipIndex < 0 || clipIndex >= static_cast<int>(m_animations.size()))
+    return 0.0f;
+  return m_animations[clipIndex].duration;
+}
+
+float PlayerAnimationPreview::ClipPlaybackRate(ClipSlot clipSlot) const {
+  const int slot = static_cast<int>(clipSlot);
+  if (slot < 0 || slot >= static_cast<int>(m_clipPlaybackRates.size()))
+    return 1.0f;
+  return m_clipPlaybackRates[slot];
+}
+
+void PlayerAnimationPreview::SelectLocomotionClip(ClipSlot slot) {
+  m_manualPreview = true;
+  TransitionToClip(slot);
+}
+
+void PlayerAnimationPreview::TransitionToClip(ClipSlot slot) {
+  if (slot == m_activeSlot) {
+    m_hasQueuedTransition = false;
+    return;
+  }
+
+  if (m_transitioning) {
+    // 直前の clip へ戻る場合は crossfade を反転し、現在 pose の連続性を保つ。
+    if (slot == m_previousSlot) {
+      std::swap(m_activeSlot, m_previousSlot);
+      std::swap(m_animTime, m_previousAnimTime);
+      m_transitionElapsed = std::clamp(
+          m_transitionDuration - m_transitionElapsed, 0.0f,
+          m_transitionDuration);
+      m_hasQueuedTransition = false;
+      return;
+    }
+
+    // 第三の clip は現在の crossfade 完了後に開始し、純 clip への跳ねを防ぐ。
+    m_queuedSlot = slot;
+    m_hasQueuedTransition = true;
+    return;
+  }
+
+  const float previousDuration = ClipDuration(m_activeSlot);
+  const float nextDuration = ClipDuration(slot);
+  float normalizedPhase = 0.0f;
+  // Walk / Run 間だけ歩容 phase を同期する。Idle からは clip の先頭で開始する。
+  const bool synchronizeLocomotionPhase =
+      m_activeSlot != ClipSlot::Idle && slot != ClipSlot::Idle;
+  if (synchronizeLocomotionPhase && previousDuration > 0.0001f)
+    normalizedPhase = std::fmod(m_animTime, previousDuration) / previousDuration;
+
+  m_previousSlot = m_activeSlot;
+  m_previousAnimTime = m_animTime;
+  m_activeSlot = slot;
+  m_animTime = nextDuration > 0.0001f ? normalizedPhase * nextDuration : 0.0f;
+  m_transitionElapsed = 0.0f;
+  m_transitioning = ClipIndex(m_previousSlot) >= 0 &&
+                    ClipIndex(m_activeSlot) >= 0 &&
+                    m_transitionDuration > 0.0001f;
+  m_hasQueuedTransition = false;
+}
+
+void PlayerAnimationPreview::UploadBonePalette(const BonePalette &palette) {
+  m_bonePaletteFinite = true;
+  const int matrixCount = std::clamp(palette.boneCount, 0, kMaxBones);
+  for (int i = 0; i < matrixCount && m_bonePaletteFinite; ++i) {
+    XMFLOAT4X4 matrix{};
+    XMStoreFloat4x4(&matrix, palette.matrices[i]);
+    const float *values = &matrix._11;
+    for (int element = 0; element < 16; ++element) {
+      if (!std::isfinite(values[element])) {
+        m_bonePaletteFinite = false;
+        break;
+      }
+    }
+  }
+
+  if (!m_dx)
+    return;
+  for (const uint32_t meshId : m_opaqueMeshIds)
+    m_dx->GetMeshRenderer().SetBonePalette(meshId, palette);
+  for (const uint32_t meshId : m_transparentMeshIds)
+    m_dx->GetMeshRenderer().SetBonePalette(meshId, palette);
+}
+
+void PlayerAnimationPreview::UpdateAnimationPose(float dt) {
+  if (!m_ready || !m_hasSkeleton)
+    return;
+
+  const float safeDt = std::max(0.0f, dt);
+  m_animTime += safeDt * ClipPlaybackRate(m_activeSlot);
+
+  BonePalette palette;
+  const int activeClipIndex = ActiveClipIndex();
+  const int previousClipIndex = ClipIndex(m_previousSlot);
+  if (m_transitioning && previousClipIndex >= 0 && activeClipIndex >= 0) {
+    m_previousAnimTime += safeDt * ClipPlaybackRate(m_previousSlot);
+    m_transitionElapsed += safeDt;
+    const float linearBlend =
+        std::clamp(m_transitionElapsed / m_transitionDuration, 0.0f, 1.0f);
+    const float smoothBlend =
+        linearBlend * linearBlend * (3.0f - 2.0f * linearBlend);
+    EvaluateAnimationBlend(m_skeleton, m_animations[previousClipIndex],
+                           m_previousAnimTime, m_animations[activeClipIndex],
+                           m_animTime, smoothBlend, palette);
+    if (linearBlend >= 1.0f) {
+      m_transitioning = false;
+      if (m_hasQueuedTransition) {
+        const ClipSlot queuedSlot = m_queuedSlot;
+        m_hasQueuedTransition = false;
+        TransitionToClip(queuedSlot);
+      }
+    }
+  } else if (activeClipIndex >= 0 &&
+             activeClipIndex < static_cast<int>(m_animations.size())) {
+    EvaluateAnimation(m_skeleton, m_animations[activeClipIndex], m_animTime,
+                      palette);
+  } else {
+    ComputeProceduralIdle(m_skeleton, m_animTime, palette);
+  }
+
+  UploadBonePalette(palette);
 }
 
 void PlayerAnimationPreview::Update(float dt) {
   if (!m_ready || !m_hasSkeleton)
     return;
 
+  m_lastMovementSpeed = 0.0f;
   if (m_autoCycle) {
-    m_cycleTimer += dt;
+    m_manualPreview = true;
+    m_cycleTimer += std::max(0.0f, dt);
     if (m_cycleTimer >= 3.0f) {
       m_cycleTimer = 0.0f;
-      int next = (static_cast<int>(m_activeSlot) + 1) % 3;
-      m_activeSlot = static_cast<ClipSlot>(next);
-      m_animTime = 0.0f;
+      const int next = (static_cast<int>(m_activeSlot) + 1) % 3;
+      TransitionToClip(static_cast<ClipSlot>(next));
     }
+  } else if (!m_manualPreview) {
+    TransitionToClip(ClipSlot::Idle);
   }
 
-  m_animTime += dt;
+  UpdateAnimationPose(dt);
+}
 
-  BonePalette palette;
-  const int clipIndex = ActiveClipIndex();
+void PlayerAnimationPreview::UpdateFacing(float targetYaw, float dt) {
+  const float delta = std::remainder(targetYaw - m_previewYaw, XM_2PI);
+  const float turnBlend = 1.0f - std::exp(-14.0f * std::max(0.0f, dt));
+  m_previewYaw += delta * turnBlend;
+  if (m_previewYaw > XM_PI)
+    m_previewYaw -= XM_2PI;
+  else if (m_previewYaw < -XM_PI)
+    m_previewYaw += XM_2PI;
+}
+
+PlayerAnimationPreview::ClipDiagnostics
+PlayerAnimationPreview::GetClipDiagnostics(ClipSlot slot) const {
+  ClipDiagnostics diagnostics{};
+  const int slotIndex = static_cast<int>(slot);
+  if (slotIndex < 0 || slotIndex >= static_cast<int>(m_clips.size()))
+    return diagnostics;
+
+  const PreviewClip &previewClip = m_clips[slotIndex];
+  diagnostics.label = previewClip.label;
+  diagnostics.sourcePath = previewClip.loadedPath;
+  diagnostics.loaded = previewClip.loaded;
+  diagnostics.fallback = previewClip.fallback;
+  const int clipIndex = previewClip.clipIndex;
   if (clipIndex >= 0 && clipIndex < static_cast<int>(m_animations.size())) {
-    EvaluateAnimation(m_skeleton, m_animations[clipIndex], m_animTime, palette);
-  } else {
-    ComputeProceduralIdle(m_skeleton, m_animTime, palette);
+    diagnostics.duration = m_animations[clipIndex].duration;
+    diagnostics.trackCount = m_animations[clipIndex].tracks.size();
   }
+  return diagnostics;
+}
 
-  if (m_dx)
-    m_dx->GetMeshRenderer().SetBonePalette(m_meshId, palette);
+float PlayerAnimationPreview::WorldModelHeight() const {
+  return m_nativeModelHeight * m_modelToWorldScale * m_previewScale;
 }
 
 void PlayerAnimationPreview::Update(float dt, const Input &input,
@@ -144,7 +354,9 @@ void PlayerAnimationPreview::Update(float dt, const Input &input,
   const float moveLenSq = moveX * moveX + moveY * moveY + moveZ * moveZ;
   const bool isMoving = moveLenSq > 0.0001f;
   if (isMoving) {
-    const float invLen = 1.0f / std::sqrt(moveLenSq);
+    const float rawLength = std::sqrt(moveLenSq);
+    const float inputStrength = std::min(1.0f, rawLength);
+    const float invLen = 1.0f / rawLength;
     moveX *= invLen;
     moveY *= invLen;
     moveZ *= invLen;
@@ -152,10 +364,11 @@ void PlayerAnimationPreview::Update(float dt, const Input &input,
     const bool running = input.IsKeyDown(VK_SHIFT) ||
                          input.IsGamepadButtonDown(XINPUT_GAMEPAD_A);
     const float moveSpeed = running ? 6.0f : 3.2f;
+    const XMFLOAT3 previousPosition = m_previewPosition;
     XMFLOAT3 desiredPosition = m_previewPosition;
-    desiredPosition.x += moveX * moveSpeed * dt;
-    desiredPosition.y += moveY * moveSpeed * dt;
-    desiredPosition.z += moveZ * moveSpeed * dt;
+    desiredPosition.x += moveX * moveSpeed * inputStrength * dt;
+    desiredPosition.y += moveY * moveSpeed * inputStrength * dt;
+    desiredPosition.z += moveZ * moveSpeed * inputStrength * dt;
 
     if (debugFly) {
       const float bounds = std::max(0.0f, worldHalfExtentMeters);
@@ -170,14 +383,37 @@ void PlayerAnimationPreview::Update(float dt, const Input &input,
               worldHalfExtentMeters);
     }
 
+    const float displacementX = m_previewPosition.x - previousPosition.x;
+    const float displacementZ = m_previewPosition.z - previousPosition.z;
+    m_lastMovementSpeed =
+        dt > 0.00001f
+            ? std::sqrt(displacementX * displacementX +
+                        displacementZ * displacementZ) /
+                  dt
+            : 0.0f;
+
     if (moveX * moveX + moveZ * moveZ > 0.0001f)
-      m_previewYaw = std::atan2(moveX, moveZ);
-    m_activeSlot = running ? ClipSlot::Run : ClipSlot::Walk;
-  } else if (!m_autoCycle) {
-    m_activeSlot = ClipSlot::Idle;
+      UpdateFacing(std::atan2(moveX, moveZ), dt);
+    if (!m_autoCycle && !m_manualPreview) {
+      TransitionToClip(m_lastMovementSpeed > 0.05f
+                           ? (running ? ClipSlot::Run : ClipSlot::Walk)
+                           : ClipSlot::Idle);
+    }
+  } else {
+    m_lastMovementSpeed = 0.0f;
+    if (!m_autoCycle && !m_manualPreview)
+      TransitionToClip(ClipSlot::Idle);
   }
 
-  Update(dt);
+  if (m_autoCycle) {
+    m_cycleTimer += std::max(0.0f, dt);
+    if (m_cycleTimer >= 3.0f) {
+      m_cycleTimer = 0.0f;
+      const int next = (static_cast<int>(m_activeSlot) + 1) % 3;
+      TransitionToClip(static_cast<ClipSlot>(next));
+    }
+  }
+  UpdateAnimationPose(dt);
 }
 
 
@@ -193,13 +429,19 @@ void PlayerAnimationPreview::BuildFrame(FrameData &frame,
   if (!m_ready)
     return;
 
-  const float renderScale = m_previewScale * std::max(0.01f, scaleMultiplier);
+  const float renderScale = m_modelToWorldScale * m_previewScale *
+                            std::max(0.01f, scaleMultiplier);
+  const float groundOffset = -m_nativeModelMinY * renderScale;
   const XMMATRIX world =
       XMMatrixScaling(renderScale, renderScale, renderScale) *
       XMMatrixRotationY(m_previewYaw) *
-      XMMatrixTranslation(m_previewPosition.x, m_previewPosition.y + 0.01f,
+      XMMatrixTranslation(m_previewPosition.x,
+                          m_previewPosition.y + groundOffset + 0.01f,
                           m_previewPosition.z);
-  frame.opaqueItems.push_back({m_meshId, world});
+  for (const uint32_t meshId : m_opaqueMeshIds)
+    frame.opaqueItems.push_back({meshId, world});
+  for (const uint32_t meshId : m_transparentMeshIds)
+    frame.transparentItems.push_back({meshId, world});
 
   GPUPointLight light{};
   light.position = {m_previewPosition.x, 1.1f, m_previewPosition.z - 1.5f};
@@ -210,7 +452,7 @@ void PlayerAnimationPreview::BuildFrame(FrameData &frame,
 }
 
 void PlayerAnimationPreview::DrawDebugUi() {
-  if (!ImGui::Begin("CHI-35 Player Animation Preview")) {
+  if (!ImGui::Begin("プレイヤーアニメーション")) {
     ImGui::End();
     return;
   }
@@ -220,8 +462,17 @@ void PlayerAnimationPreview::DrawDebugUi() {
 }
 
 void PlayerAnimationPreview::DrawDebugControls() {
-  ImGui::Text("Player: Assets/models/MyFirstChar.vrm");
-  ImGui::Text("Skeleton: %s", m_hasSkeleton ? "OK" : "NG");
+  ImGui::Text("モデル: Assets/models/MyFirstChar.vrm");
+  ImGui::Text("スケルトン: %s", m_hasSkeleton ? "OK" : "NG");
+  ImGui::Text("マテリアル: %zu（不透明 %zu / 透過 %zu / 両面 %zu）",
+              MaterialPartCount(), OpaqueMaterialPartCount(),
+              TransparentMaterialPartCount(), DoubleSidedMaterialPartCount());
+  ImGui::Text("ボーン数: %zu", m_skeleton.bones.size());
+  ImGui::Text("身長: native %.3f m -> world %.3f m", m_nativeModelHeight,
+              WorldModelHeight());
+  ImGui::Text("移動速度: %.2f m/s", m_lastMovementSpeed);
+  ImGui::Text("ボーンパレット: %s",
+              m_bonePaletteFinite ? "正常" : "異常");
   ImGui::Separator();
 
   for (int i = 0; i < 3; ++i) {
@@ -229,10 +480,9 @@ void PlayerAnimationPreview::DrawDebugControls() {
     const bool selected = static_cast<int>(m_activeSlot) == i;
     std::string buttonLabel = clip.label;
     if (clip.fallback)
-      buttonLabel += " (fallback)";
+      buttonLabel += "（代替）";
     if (ImGui::RadioButton(buttonLabel.c_str(), selected)) {
-      m_activeSlot = static_cast<ClipSlot>(i);
-      m_animTime = 0.0f;
+      SelectLocomotionClip(static_cast<ClipSlot>(i));
       m_cycleTimer = 0.0f;
     }
 
@@ -242,11 +492,16 @@ void PlayerAnimationPreview::DrawDebugControls() {
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("%s", clip.loadedPath.c_str());
     } else {
-      ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "Missing");
+      ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "未読込");
     }
   }
 
-  ImGui::Checkbox("Auto cycle", &m_autoCycle);
-  ImGui::SliderFloat("Yaw", &m_previewYaw, -3.14159265f, 3.14159265f);
-  ImGui::SliderFloat("Scale", &m_previewScale, 0.2f, 2.0f);
+  ImGui::Checkbox("手動プレビュー", &m_manualPreview);
+  ImGui::Checkbox("自動切替", &m_autoCycle);
+  if (m_autoCycle)
+    m_manualPreview = true;
+  ImGui::SliderFloat("遷移時間", &m_transitionDuration, 0.05f, 0.40f,
+                     "%.2f s");
+  ImGui::SliderFloat("向き", &m_previewYaw, -3.14159265f, 3.14159265f);
+  ImGui::SliderFloat("スケール倍率", &m_previewScale, 0.75f, 1.25f);
 }

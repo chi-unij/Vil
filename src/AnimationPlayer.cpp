@@ -8,20 +8,88 @@ using namespace DirectX;
 // Helpers
 // ============================================================================
 
-// Compute the TRUE global bind pose from inverse bind matrices.
-// globalBind[i] = inverse(IBM[i]).
+static bool IsFiniteVector(FXMVECTOR value) {
+  XMFLOAT4 components;
+  XMStoreFloat4(&components, value);
+  return std::isfinite(components.x) && std::isfinite(components.y) &&
+         std::isfinite(components.z) && std::isfinite(components.w);
+}
+
+static bool IsFiniteMatrix(const XMMATRIX &matrix) {
+  for (int row = 0; row < 4; ++row) {
+    if (!IsFiniteVector(matrix.r[row]))
+      return false;
+  }
+  return true;
+}
+
+static XMMATRIX FiniteMatrixOrIdentity(const XMMATRIX &matrix) {
+  return IsFiniteMatrix(matrix) ? matrix : XMMatrixIdentity();
+}
+
+static bool TryInvertFiniteMatrix(const XMMATRIX &matrix,
+                                  XMMATRIX &inverseOut) {
+  inverseOut = XMMatrixIdentity();
+  if (!IsFiniteMatrix(matrix))
+    return false;
+
+  XMVECTOR determinant = XMVectorZero();
+  const XMMATRIX inverse = XMMatrixInverse(&determinant, matrix);
+  const float determinantValue = XMVectorGetX(determinant);
+  if (!std::isfinite(determinantValue) || determinantValue == 0.0f ||
+      !IsFiniteMatrix(inverse)) {
+    return false;
+  }
+
+  inverseOut = inverse;
+  return true;
+}
+
+static bool IsUsableQuaternion(FXMVECTOR quaternion) {
+  if (!IsFiniteVector(quaternion))
+    return false;
+
+  const float lengthSquared = XMVectorGetX(XMVector4LengthSq(quaternion));
+  return std::isfinite(lengthSquared) && lengthSquared > 1.0e-12f;
+}
+
+static bool TryNormalizeQuaternion(FXMVECTOR quaternion,
+                                   XMVECTOR &normalizedOut) {
+  normalizedOut = XMQuaternionIdentity();
+  if (!IsUsableQuaternion(quaternion))
+    return false;
+
+  const XMVECTOR normalized = XMQuaternionNormalize(quaternion);
+  if (!IsFiniteVector(normalized))
+    return false;
+
+  normalizedOut = normalized;
+  return true;
+}
+
+static XMVECTOR ExtractFiniteTranslation(const XMMATRIX &matrix) {
+  const float x = XMVectorGetX(matrix.r[3]);
+  const float y = XMVectorGetY(matrix.r[3]);
+  const float z = XMVectorGetZ(matrix.r[3]);
+  if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+    return XMVectorZero();
+  return XMVectorSet(x, y, z, 0.0f);
+}
+
+// inverse bind matrix から global bind pose を復元する。
+// 壊れた行列は identity に固定し、以降の palette を有限値に保つ。
 static void ComputeGlobalBindPose(const Skeleton &skel, XMMATRIX *globalBind,
                                   int count) {
   for (int i = 0; i < count; ++i) {
-    XMMATRIX ibm = XMLoadFloat4x4(&skel.bones[i].inverseBindMatrix);
-    XMVECTOR det;
-    globalBind[i] = XMMatrixInverse(&det, ibm);
+    const XMMATRIX ibm =
+        XMLoadFloat4x4(&skel.bones[i].inverseBindMatrix);
+    if (!TryInvertFiniteMatrix(ibm, globalBind[i]))
+      globalBind[i] = XMMatrixIdentity();
   }
 }
 
-// Compute true local bind transforms from global bind poses.
-// localBind[i] = globalBind[i] * inverse(globalBind[parent]).
-// This correctly accounts for intermediate non-joint nodes in VRM.
+// global bind pose から各 bone の local bind transform を復元する。
+// 中間の non-joint node を含む VRM でも親子差分を正しく維持する。
 static void ComputeLocalBindPose(const Skeleton &skel,
                                  const XMMATRIX *globalBind,
                                  XMMATRIX *localBind, int count) {
@@ -30,24 +98,58 @@ static void ComputeLocalBindPose(const Skeleton &skel,
     if (parent < 0 || parent >= count) {
       localBind[i] = globalBind[i];
     } else {
-      XMVECTOR det;
-      XMMATRIX parentInv = XMMatrixInverse(&det, globalBind[parent]);
-      localBind[i] = globalBind[i] * parentInv;
+      XMMATRIX parentInverse = XMMatrixIdentity();
+      if (!TryInvertFiniteMatrix(globalBind[parent], parentInverse)) {
+        localBind[i] = globalBind[i];
+        continue;
+      }
+
+      localBind[i] =
+          FiniteMatrixOrIdentity(globalBind[i] * parentInverse);
     }
   }
 }
 
-// Walk skeleton hierarchy: compute global transform for each bone.
-static void ComputeGlobalTransforms(const Skeleton &skel,
-                                    const XMMATRIX *locals,
-                                    XMMATRIX *globalOut, int count) {
-  for (int i = 0; i < count; ++i) {
-    int parent = skel.bones[i].parentIndex;
-    if (parent < 0 || parent >= count)
-      globalOut[i] = locals[i];
-    else
-      globalOut[i] = locals[i] * globalOut[parent];
+// 親が後方 index にある skeleton も DFS で先に解決する。
+// cycle を検出した bone は local transform を root として固定する。
+static void ResolveGlobalTransform(const Skeleton &skel,
+                                   const XMMATRIX *locals,
+                                   XMMATRIX *globalOut,
+                                   unsigned char *visitState, int boneIndex,
+                                   int count) {
+  if (visitState[boneIndex] == 2)
+    return;
+
+  const XMMATRIX local = FiniteMatrixOrIdentity(locals[boneIndex]);
+  if (visitState[boneIndex] == 1) {
+    globalOut[boneIndex] = local;
+    visitState[boneIndex] = 2;
+    return;
   }
+
+  visitState[boneIndex] = 1;
+  const int parent = skel.bones[boneIndex].parentIndex;
+  if (parent < 0 || parent >= count) {
+    globalOut[boneIndex] = local;
+  } else {
+    ResolveGlobalTransform(skel, locals, globalOut, visitState, parent, count);
+    if (visitState[boneIndex] == 2)
+      return;
+
+    const XMMATRIX combined = local * globalOut[parent];
+    globalOut[boneIndex] =
+        IsFiniteMatrix(combined) ? combined : local;
+  }
+
+  visitState[boneIndex] = 2;
+}
+
+static void ComputeGlobalTransforms(const Skeleton &skel,
+                                    const XMMATRIX *locals, XMMATRIX *globalOut,
+                                    int count) {
+  unsigned char visitState[kMaxBones] = {};
+  for (int i = 0; i < count; ++i)
+    ResolveGlobalTransform(skel, locals, globalOut, visitState, i, count);
 }
 
 // Find the two keyframes surrounding 'time' and return interpolation factor.
@@ -97,9 +199,120 @@ static XMVECTOR SampleTrack(const AnimTrack &track, float time) {
   XMVECTOR b = XMLoadFloat4(&vB);
 
   if (track.path == AnimTargetPath::Rotation) {
-    return XMQuaternionSlerp(a, b, t);
+    return XMQuaternionNormalize(XMQuaternionSlerp(a, b, t));
   } else {
     return XMVectorLerp(a, b, t);
+  }
+}
+
+static float LoopClipTime(const AnimationClip &clip, float time) {
+  if (clip.duration <= 0.0f)
+    return time;
+
+  float loopedTime = fmodf(time, clip.duration);
+  if (loopedTime < 0.0f)
+    loopedTime += clip.duration;
+  return loopedTime;
+}
+
+static void InitializePalette(int count, BonePalette &out) {
+  out.boneCount = count;
+  for (int i = 0; i < kMaxBones; ++i)
+    out.matrices[i] = XMMatrixIdentity();
+}
+
+// 各 bone を正しい bind-local transform で初期化してから、clip の local TRS を
+// sample する。省略された channel は bind pose の成分をそのまま維持する。
+static void SampleClipLocalPose(const Skeleton &skel, const AnimationClip &clip,
+                                float time, XMVECTOR *boneT, XMVECTOR *boneR,
+                                XMVECTOR *boneS, int count) {
+  XMMATRIX globalBind[kMaxBones];
+  XMMATRIX localBind[kMaxBones];
+  ComputeGlobalBindPose(skel, globalBind, count);
+  ComputeLocalBindPose(skel, globalBind, localBind, count);
+
+  for (int i = 0; i < count; ++i) {
+    // Decompose 失敗時にも未初期化 vector を残さない。
+    boneT[i] = ExtractFiniteTranslation(localBind[i]);
+    boneR[i] = XMQuaternionIdentity();
+    boneS[i] = XMVectorSet(1.0f, 1.0f, 1.0f, 0.0f);
+
+    XMVECTOR decomposedT = boneT[i];
+    XMVECTOR decomposedR = boneR[i];
+    XMVECTOR decomposedS = boneS[i];
+    XMVECTOR normalizedR = XMQuaternionIdentity();
+    if (XMMatrixDecompose(&decomposedS, &decomposedR, &decomposedT,
+                          localBind[i]) &&
+        IsFiniteVector(decomposedT) && IsFiniteVector(decomposedS) &&
+        TryNormalizeQuaternion(decomposedR, normalizedR)) {
+      boneT[i] = decomposedT;
+      boneR[i] = normalizedR;
+      boneS[i] = decomposedS;
+    }
+  }
+
+  const float loopedTime = LoopClipTime(clip, time);
+  for (const auto &track : clip.tracks) {
+    if (track.boneIndex < 0 || track.boneIndex >= count ||
+        track.keyframes.empty()) {
+      continue;
+    }
+
+    const XMVECTOR value = SampleTrack(track, loopedTime);
+    if (!IsFiniteVector(value))
+      continue;
+
+    switch (track.path) {
+    case AnimTargetPath::Translation:
+      boneT[track.boneIndex] = value;
+      break;
+    case AnimTargetPath::Rotation: {
+      XMVECTOR normalized = XMQuaternionIdentity();
+      if (TryNormalizeQuaternion(value, normalized))
+        boneR[track.boneIndex] = normalized;
+      break;
+    }
+    case AnimTargetPath::Scale:
+      boneS[track.boneIndex] = value;
+      break;
+    }
+  }
+}
+
+static void BuildPaletteFromLocalPose(const Skeleton &skel,
+                                      const XMVECTOR *boneT,
+                                      const XMVECTOR *boneR,
+                                      const XMVECTOR *boneS, int count,
+                                      BonePalette &out) {
+  XMMATRIX locals[kMaxBones];
+  for (int i = 0; i < count; ++i) {
+    const XMVECTOR translation =
+        IsFiniteVector(boneT[i]) ? boneT[i] : XMVectorZero();
+    const XMVECTOR scale = IsFiniteVector(boneS[i])
+                               ? boneS[i]
+                               : XMVectorSet(1.0f, 1.0f, 1.0f, 0.0f);
+    const XMVECTOR rotation = IsUsableQuaternion(boneR[i])
+                                  ? boneR[i]
+                                  : XMQuaternionIdentity();
+
+    const XMMATRIX local = XMMatrixScalingFromVector(scale) *
+                           XMMatrixRotationQuaternion(rotation) *
+                           XMMatrixTranslationFromVector(translation);
+    locals[i] = FiniteMatrixOrIdentity(local);
+  }
+
+  XMMATRIX globals[kMaxBones];
+  ComputeGlobalTransforms(skel, locals, globals, count);
+
+  for (int i = 0; i < count; ++i) {
+    const XMMATRIX ibm = XMLoadFloat4x4(&skel.bones[i].inverseBindMatrix);
+    XMMATRIX unusedInverse = XMMatrixIdentity();
+    if (!TryInvertFiniteMatrix(ibm, unusedInverse)) {
+      out.matrices[i] = XMMatrixIdentity();
+      continue;
+    }
+
+    out.matrices[i] = FiniteMatrixOrIdentity(ibm * globals[i]);
   }
 }
 
@@ -142,113 +355,54 @@ void ComputeProceduralIdle(const Skeleton &skel, float time, BonePalette &out) {
 // Animation Clip Evaluation
 // ============================================================================
 
-// Core: decompose local bind transforms, override with animation data,
-// recompose, walk hierarchy, multiply by IBM.
+// bind pose 基準の local TRS を sample し、hierarchy と inverse bind matrix を
+// 適用して最終 bone palette を構築する。
 static void EvaluateClipCore(const Skeleton &skel, const AnimationClip &clip,
                              float time, BonePalette &out) {
   int count = static_cast<int>(skel.bones.size());
   count = (std::min)(count, kMaxBones);
-  out.boneCount = count;
+  InitializePalette(count, out);
 
-  for (int i = 0; i < kMaxBones; ++i)
-    out.matrices[i] = XMMatrixIdentity();
-
-  if (count == 0 || clip.tracks.empty())
+  if (count == 0)
     return;
 
-  // Step 1: Compute true bind poses from IBMs.
-  XMMATRIX globalBind[kMaxBones];
-  XMMATRIX localBind[kMaxBones];
-  ComputeGlobalBindPose(skel, globalBind, count);
-  ComputeLocalBindPose(skel, globalBind, localBind, count);
-
-  // Step 2: Decompose local bind transforms into T, R, S.
   XMVECTOR boneT[kMaxBones], boneR[kMaxBones], boneS[kMaxBones];
-  for (int i = 0; i < count; ++i) {
-    XMMatrixDecompose(&boneS[i], &boneR[i], &boneT[i], localBind[i]);
-  }
-
-  // Step 3: Override with animation track values.
-  for (const auto &track : clip.tracks) {
-    if (track.boneIndex < 0 || track.boneIndex >= count)
-      continue;
-    if (track.keyframes.empty())
-      continue;
-
-    XMVECTOR val = SampleTrack(track, time);
-    switch (track.path) {
-    case AnimTargetPath::Translation:
-      boneT[track.boneIndex] = val;
-      break;
-    case AnimTargetPath::Rotation:
-      boneR[track.boneIndex] = val;
-      break;
-    case AnimTargetPath::Scale:
-      boneS[track.boneIndex] = val;
-      break;
-    }
-  }
-
-  // Step 4: Recompose local matrices and walk hierarchy.
-  XMMATRIX locals[kMaxBones];
-  for (int i = 0; i < count; ++i) {
-    locals[i] = XMMatrixScalingFromVector(boneS[i]) *
-                XMMatrixRotationQuaternion(boneR[i]) *
-                XMMatrixTranslationFromVector(boneT[i]);
-  }
-
-  XMMATRIX globals[kMaxBones];
-  ComputeGlobalTransforms(skel, locals, globals, count);
-
-  // Step 5: Final skin matrix = IBM * animGlobal.
-  for (int i = 0; i < count; ++i) {
-    XMMATRIX ibm = XMLoadFloat4x4(&skel.bones[i].inverseBindMatrix);
-    out.matrices[i] = ibm * globals[i];
-  }
+  SampleClipLocalPose(skel, clip, time, boneT, boneR, boneS, count);
+  BuildPaletteFromLocalPose(skel, boneT, boneR, boneS, count, out);
 }
 
 void EvaluateAnimation(const Skeleton &skel, const AnimationClip &clip,
                        float time, BonePalette &out) {
-  // Loop the animation time.
-  float loopedTime = time;
-  if (clip.duration > 0.0f) {
-    loopedTime = fmodf(time, clip.duration);
-    if (loopedTime < 0.0f)
-      loopedTime += clip.duration;
-  }
-
-  EvaluateClipCore(skel, clip, loopedTime, out);
+  EvaluateClipCore(skel, clip, time, out);
 }
 
 // ============================================================================
 // Blended Animation (crossfade between two clips)
 // ============================================================================
 
-void EvaluateAnimationBlend(const Skeleton &skel,
-                            const AnimationClip &clipA, float timeA,
-                            const AnimationClip &clipB, float timeB,
-                            float blendFactor, BonePalette &out) {
+void EvaluateAnimationBlend(const Skeleton &skel, const AnimationClip &clipA,
+                            float timeA, const AnimationClip &clipB,
+                            float timeB, float blendFactor, BonePalette &out) {
   int count = static_cast<int>(skel.bones.size());
   count = (std::min)(count, kMaxBones);
-  out.boneCount = count;
-
-  for (int i = 0; i < kMaxBones; ++i)
-    out.matrices[i] = XMMatrixIdentity();
+  InitializePalette(count, out);
 
   if (count == 0)
     return;
 
-  // Evaluate both clips separately, then blend the final matrices.
-  BonePalette palA, palB;
-  EvaluateAnimation(skel, clipA, timeA, palA);
-  EvaluateAnimation(skel, clipB, timeB, palB);
+  XMVECTOR boneTA[kMaxBones], boneRA[kMaxBones], boneSA[kMaxBones];
+  XMVECTOR boneTB[kMaxBones], boneRB[kMaxBones], boneSB[kMaxBones];
+  SampleClipLocalPose(skel, clipA, timeA, boneTA, boneRA, boneSA, count);
+  SampleClipLocalPose(skel, clipB, timeB, boneTB, boneRB, boneSB, count);
 
-  float bf = (std::max)(0.0f, (std::min)(1.0f, blendFactor));
-
-  // Blend per-bone: decompose each final matrix, slerp/lerp, recompose.
-  // Simpler approach: linear matrix interpolation (works well for small blend windows).
-  for (int i = 0; i < kMaxBones; ++i) {
-    // Weighted average of the two skin matrices.
-    out.matrices[i] = palA.matrices[i] * (1.0f - bf) + palB.matrices[i] * bf;
+  const float bf = (std::max)(0.0f, (std::min)(1.0f, blendFactor));
+  XMVECTOR blendedT[kMaxBones], blendedR[kMaxBones], blendedS[kMaxBones];
+  for (int i = 0; i < count; ++i) {
+    blendedT[i] = XMVectorLerp(boneTA[i], boneTB[i], bf);
+    blendedR[i] =
+        XMQuaternionNormalize(XMQuaternionSlerp(boneRA[i], boneRB[i], bf));
+    blendedS[i] = XMVectorLerp(boneSA[i], boneSB[i], bf);
   }
+
+  BuildPaletteFromLocalPose(skel, blendedT, blendedR, blendedS, count, out);
 }

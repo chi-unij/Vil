@@ -619,6 +619,7 @@ static void PopulateEditorWelcomeScene(Scene &scene, DxContext &dx) {
 }
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
+  int applicationExitCode = 0;
   try {
 #if defined(VILLIEN_EDITOR_BUILD)
     constexpr bool kDedicatedEditorBuild = true;
@@ -627,6 +628,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
 #endif
     const bool dxrSmokeRequested =
         HasCommandLineSwitch(commandLine, L"--dxr-smoke");
+    const bool playerAnimationSmokeRequested =
+        HasCommandLineSwitch(commandLine, L"--player-animation-smoke");
     const bool dxrOverworldSmokeRequested =
         HasCommandLineSwitch(commandLine, L"--dxr-overworld-smoke");
     const bool dxrOverworldRequested =
@@ -642,7 +645,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         HasCommandLineSwitch(commandLine, L"--tavern") ||
         tavernSmokeRequested || tavernGameplaySmokeRequested ||
         tavernDaySmokeRequested;
-    const bool dxrSmokeMode = dxrSmokeRequested || dxrOverworldSmokeRequested;
+    const bool dxrSmokeMode =
+        !playerAnimationSmokeRequested &&
+        (dxrSmokeRequested || dxrOverworldSmokeRequested);
     const bool dxrProofRequested =
         HasCommandLineSwitch(commandLine, L"--dxr-proof") || dxrSmokeRequested;
     const bool launchEditor = kDedicatedEditorBuild ||
@@ -731,10 +736,137 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     dx.GetMeshRenderer().SetIBLDescriptors(iblGenerator.IBLTableGpuBase());
     dx.SetIblTableGpu(iblGenerator.IBLTableGpuBase());
 
-    // CHI-35: Player / Idle / Walk / Run クリップ確認用プレビュー。
+    // Player / Idle / Walk / Run クリップ確認用プレビュー。
     PlayerAnimationPreview playerPreview;
     playerPreview.Initialize(dx);
     TraceAppEvent("startup: player preview ready");
+
+    constexpr size_t kPlayerAnimationSmokeExpectedParts = 13;
+    constexpr size_t kPlayerAnimationSmokeExpectedOpaqueParts = 9;
+    constexpr size_t kPlayerAnimationSmokeExpectedTransparentParts = 4;
+    constexpr size_t kPlayerAnimationSmokeExpectedDoubleSidedParts = 8;
+    // 0.18 秒の crossfade が完了した pose まで描画して検証する。
+    constexpr int kPlayerAnimationSmokeFramesPerState = 16;
+    constexpr std::array<PlayerAnimationPreview::ClipSlot, 4>
+        kPlayerAnimationSmokeSequence = {
+            PlayerAnimationPreview::ClipSlot::Idle,
+            PlayerAnimationPreview::ClipSlot::Walk,
+            PlayerAnimationPreview::ClipSlot::Run,
+            PlayerAnimationPreview::ClipSlot::Idle,
+        };
+    constexpr int kPlayerAnimationSmokeTotalFrames =
+        kPlayerAnimationSmokeFramesPerState *
+        static_cast<int>(kPlayerAnimationSmokeSequence.size());
+    int playerAnimationSmokeRenderedFrames = 0;
+    bool playerAnimationSmokeFailed = false;
+    bool playerAnimationSmokeSequenceCompleted = false;
+
+    const auto playerClipName = [](PlayerAnimationPreview::ClipSlot slot) {
+      switch (slot) {
+      case PlayerAnimationPreview::ClipSlot::Idle:
+        return "Idle";
+      case PlayerAnimationPreview::ClipSlot::Walk:
+        return "Walk";
+      case PlayerAnimationPreview::ClipSlot::Run:
+        return "Run";
+      }
+      return "Unknown";
+    };
+    const auto failPlayerAnimationSmoke = [&](const std::string &reason) {
+      if (!playerAnimationSmokeRequested || playerAnimationSmokeFailed)
+        return;
+      playerAnimationSmokeFailed = true;
+      applicationExitCode = 2;
+      const std::string message = "Player animation smoke: FAIL; " + reason;
+      TraceAppEvent(message.c_str());
+    };
+
+    if (playerAnimationSmokeRequested) {
+      if (!playerPreview.IsReady())
+        failPlayerAnimationSmoke("player model is not ready");
+      if (!playerPreview.HasSkeleton())
+        failPlayerAnimationSmoke("player skeleton is unavailable");
+
+      const size_t skeletonBoneCount = playerPreview.SkeletonBoneCount();
+      if (skeletonBoneCount == 0 ||
+          skeletonBoneCount > static_cast<size_t>(kMaxBones)) {
+        failPlayerAnimationSmoke(
+            "skeleton bone count is outside the supported range: " +
+            std::to_string(skeletonBoneCount));
+      }
+
+      const size_t materialPartCount = playerPreview.MaterialPartCount();
+      if (materialPartCount != kPlayerAnimationSmokeExpectedParts) {
+        failPlayerAnimationSmoke(
+            "expected 13 material parts, got " +
+            std::to_string(materialPartCount));
+      }
+      if (playerPreview.OpaqueMaterialPartCount() !=
+              kPlayerAnimationSmokeExpectedOpaqueParts ||
+          playerPreview.TransparentMaterialPartCount() !=
+              kPlayerAnimationSmokeExpectedTransparentParts) {
+        failPlayerAnimationSmoke(
+            "expected 9 opaque and 4 transparent material parts, got " +
+            std::to_string(playerPreview.OpaqueMaterialPartCount()) +
+            " opaque and " +
+            std::to_string(playerPreview.TransparentMaterialPartCount()) +
+            " transparent");
+      }
+      if (playerPreview.DoubleSidedMaterialPartCount() !=
+          kPlayerAnimationSmokeExpectedDoubleSidedParts) {
+        failPlayerAnimationSmoke(
+            "expected 8 double-sided material parts, got " +
+            std::to_string(playerPreview.DoubleSidedMaterialPartCount()));
+      }
+
+      const auto validateClip = [&](PlayerAnimationPreview::ClipSlot slot) {
+        const PlayerAnimationPreview::ClipDiagnostics diagnostics =
+            playerPreview.GetClipDiagnostics(slot);
+        std::ostringstream status;
+        status << "Player animation smoke: clip " << playerClipName(slot)
+               << " loaded=" << (diagnostics.loaded ? 1 : 0)
+               << " duration=" << diagnostics.duration
+               << " tracks=" << diagnostics.trackCount << " source="
+               << diagnostics.sourcePath;
+        TraceAppEvent(status.str().c_str());
+
+        if (!diagnostics.loaded || diagnostics.duration <= 0.0f ||
+            !std::isfinite(diagnostics.duration) ||
+            diagnostics.trackCount == 0) {
+          failPlayerAnimationSmoke(std::string(playerClipName(slot)) +
+                                   " clip diagnostics are invalid");
+        }
+        if (slot == PlayerAnimationPreview::ClipSlot::Walk &&
+            diagnostics.sourcePath.find("Push.glb") != std::string::npos) {
+          failPlayerAnimationSmoke(
+              "Walk clip must not use Push.glb: " + diagnostics.sourcePath);
+        }
+        if (slot == PlayerAnimationPreview::ClipSlot::Walk &&
+            diagnostics.fallback) {
+          failPlayerAnimationSmoke(
+              "Walk clip must load the dedicated Walk.glb asset: " +
+              diagnostics.sourcePath);
+        }
+      };
+      validateClip(PlayerAnimationPreview::ClipSlot::Idle);
+      validateClip(PlayerAnimationPreview::ClipSlot::Walk);
+      validateClip(PlayerAnimationPreview::ClipSlot::Run);
+
+      if (!playerPreview.BonePaletteFinite())
+        failPlayerAnimationSmoke("initial bone palette contains non-finite data");
+      if (!playerAnimationSmokeFailed) {
+        std::ostringstream readyMessage;
+        readyMessage << "Player animation smoke: diagnostics ready; parts="
+                     << materialPartCount << " opaque="
+                     << playerPreview.OpaqueMaterialPartCount()
+                     << " transparent="
+                     << playerPreview.TransparentMaterialPartCount()
+                     << " doubleSided="
+                     << playerPreview.DoubleSidedMaterialPartCount()
+                     << " bones=" << skeletonBoneCount;
+        TraceAppEvent(readyMessage.str().c_str());
+      }
+    }
     BossArenaScene bossArenaScene;
     bossArenaScene.Initialize(dx);
     bossArenaScene.Reset(playerPreview);
@@ -854,7 +986,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     // ---- Editor/Game mode toggle (Milestone 4 Phase 0) ----
     enum class AppMode { Title, Game, Tavern, BossArena, Editor };
     AppMode appMode =
-        tavernRequested
+        playerAnimationSmokeRequested
+            ? AppMode::Game
+            : tavernRequested
             ? AppMode::Tavern
             : (dxrOverworldRequested
                    ? AppMode::Game
@@ -894,7 +1028,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                   0.1f, 1000.0f);
       TraceAppEvent("tavern transition: return to overworld");
     };
-    if (tavernRequested)
+    if (tavernRequested && !playerAnimationSmokeRequested)
       enterTavernMode();
     TitleScreen titleScreen;
     Scene editorScene;
@@ -903,7 +1037,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     TraceAppEvent("startup: editor welcome scene ready");
     CameraPreset editorReturnCamera;
     bool editorReturnCameraValid = false;
-    if (dxrOverworldRequested) {
+    if (dxrOverworldRequested || playerAnimationSmokeRequested) {
       playerPreview.SetPosition(overworldScene.PlayerSpawnPosition());
       playerPreview.SetYaw(0.0f);
       const DirectX::XMFLOAT3 spawn = playerPreview.Position();
@@ -911,10 +1045,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
                       gameCameraPosition.z);
       cam.SetYawPitch(0.0f, -0.28f);
-      TraceAppEvent(
-          dxrOverworldSmokeRequested
-              ? "DXR overworld smoke: reflection monolith route ready"
-              : "DXR overworld review: reflection monolith route ready");
+      if (playerAnimationSmokeRequested) {
+        TraceAppEvent("Player animation smoke: Overworld route ready");
+      } else {
+        TraceAppEvent(
+            dxrOverworldSmokeRequested
+                ? "DXR overworld smoke: reflection monolith route ready"
+                : "DXR overworld review: reflection monolith route ready");
+      }
     }
     bool scenePlayMode = false;
     std::string sceneSnapshot;
@@ -1574,8 +1712,36 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         rainEmitter.Update(static_cast<double>(dt));
       }
 
-      if (appMode == AppMode::Tavern && !uiWantsKeyboard &&
-          !gameFreeCameraEnabled) {
+      if (playerAnimationSmokeRequested) {
+        if (!playerAnimationSmokeFailed &&
+            !playerAnimationSmokeSequenceCompleted) {
+          const int sequenceIndex =
+              playerAnimationSmokeRenderedFrames /
+              kPlayerAnimationSmokeFramesPerState;
+          if (sequenceIndex < 0 ||
+              sequenceIndex >=
+                  static_cast<int>(kPlayerAnimationSmokeSequence.size())) {
+            failPlayerAnimationSmoke("animation sequence index is invalid");
+          } else {
+            const PlayerAnimationPreview::ClipSlot expectedClip =
+                kPlayerAnimationSmokeSequence[sequenceIndex];
+            playerPreview.SelectLocomotionClip(expectedClip);
+            playerPreview.Update(1.0f / 60.0f);
+            if (playerPreview.ActiveClip() != expectedClip) {
+              failPlayerAnimationSmoke(
+                  std::string("expected active clip ") +
+                  playerClipName(expectedClip) + ", got " +
+                  playerClipName(playerPreview.ActiveClip()));
+            }
+            if (!playerPreview.BonePaletteFinite()) {
+              failPlayerAnimationSmoke(
+                  std::string(playerClipName(expectedClip)) +
+                  " produced a non-finite bone palette");
+            }
+          }
+        }
+      } else if (appMode == AppMode::Tavern && !uiWantsKeyboard &&
+                 !gameFreeCameraEnabled) {
         if (tavernScene.PlayerMovementLocked()) {
           playerPreview.Update(dt);
         } else {
@@ -2156,7 +2322,29 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         frame.bloomIntensity = 0.35f;
       } else if (appMode == AppMode::Game) {
         overworldScene.BuildFrame(frame);
+        const size_t playerOpaqueItemBegin = frame.opaqueItems.size();
+        const size_t playerTransparentItemBegin =
+            frame.transparentItems.size();
         playerPreview.BuildFrame(frame);
+        if (playerAnimationSmokeRequested &&
+            !playerAnimationSmokeFailed &&
+            !playerAnimationSmokeSequenceCompleted) {
+          const size_t appendedOpaquePlayerItems =
+              frame.opaqueItems.size() - playerOpaqueItemBegin;
+          const size_t appendedTransparentPlayerItems =
+              frame.transparentItems.size() - playerTransparentItemBegin;
+          if (appendedOpaquePlayerItems !=
+                  kPlayerAnimationSmokeExpectedOpaqueParts ||
+              appendedTransparentPlayerItems !=
+                  kPlayerAnimationSmokeExpectedTransparentParts) {
+            failPlayerAnimationSmoke(
+                "Player BuildFrame expected 9 opaque and 4 transparent items, "
+                "got " +
+                std::to_string(appendedOpaquePlayerItems) + " opaque and " +
+                std::to_string(appendedTransparentPlayerItems) +
+                " transparent");
+          }
+        }
         if (showCollisionDebug) {
           overworldScene.AppendCollisionDebugLines(frame,
                                                    overworldCollisionColliders);
@@ -2174,9 +2362,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         frame.ssrReflectionParams = {1.20f, 24.0f, 0.18f, 0.20f};
       } else if (appMode == AppMode::Tavern) {
         tavernScene.BuildFrame(frame);
-        // Tavern の procedural furniture は実寸寄りなので、モデル読込時の
-        // preview scale をこの mode だけ補正する。
-        playerPreview.BuildFrame(frame, 2.15f);
+        playerPreview.BuildFrame(frame);
         frame.gridEnabled = false;
         frame.clearColor[0] = 0.035f;
         frame.clearColor[1] = 0.020f;
@@ -2444,6 +2630,44 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       if (traceGameFrame)
         TraceAppEvent("pass: EndFrame");
       dx.EndFrame();
+      if (playerAnimationSmokeRequested &&
+          !playerAnimationSmokeSequenceCompleted) {
+        if (playerAnimationSmokeFailed) {
+          requestQuit = true;
+        } else {
+          ++playerAnimationSmokeRenderedFrames;
+          if ((playerAnimationSmokeRenderedFrames %
+               kPlayerAnimationSmokeFramesPerState) == 0) {
+            const int completedSequenceIndex =
+                playerAnimationSmokeRenderedFrames /
+                    kPlayerAnimationSmokeFramesPerState -
+                1;
+            if (playerPreview.IsTransitioning()) {
+              failPlayerAnimationSmoke(
+                  std::string("crossfade did not settle for state ") +
+                  playerClipName(
+                      kPlayerAnimationSmokeSequence[completedSequenceIndex]));
+            } else {
+              const std::string stateMessage =
+                  std::string("Player animation smoke: settled state ") +
+                  playerClipName(
+                      kPlayerAnimationSmokeSequence[completedSequenceIndex]) +
+                  " after " +
+                  std::to_string(kPlayerAnimationSmokeFramesPerState) +
+                  " rendered frames";
+              TraceAppEvent(stateMessage.c_str());
+            }
+          }
+          if (!playerAnimationSmokeFailed &&
+              playerAnimationSmokeRenderedFrames ==
+              kPlayerAnimationSmokeTotalFrames) {
+            TraceAppEvent(
+                "Player animation smoke: render sequence completed");
+            playerAnimationSmokeSequenceCompleted = true;
+            requestQuit = true;
+          }
+        }
+      }
       if (dxrSmokeMode && dxrProofDispatchLogged &&
           dxrSmokeFramesRemaining > 0) {
         --dxrSmokeFramesRemaining;
@@ -2518,6 +2742,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         PostQuitMessage(0);
     }
 
+    if (playerAnimationSmokeRequested &&
+        !playerAnimationSmokeSequenceCompleted &&
+        !playerAnimationSmokeFailed) {
+      failPlayerAnimationSmoke(
+          "application ended before all " +
+          std::to_string(kPlayerAnimationSmokeTotalFrames) +
+          " render frames completed");
+    }
+
     // ---- Shutdown (reverse init order) ----
     dx.WaitForGpu(); // Flush GPU before releasing any resources
     if (dxrSmokeMode) {
@@ -2532,6 +2765,36 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                              std::ios::out | std::ios::trunc);
       if (debugLog)
         dx.DumpDebugMessages(debugLog);
+    }
+    if (playerAnimationSmokeRequested) {
+      std::ostringstream debugReport;
+      dx.DumpDebugMessages(debugReport);
+      const std::string debugReportText = debugReport.str();
+      std::ofstream debugLog("player_animation_smoke_debug_log.txt",
+                             std::ios::out | std::ios::trunc);
+      if (debugLog)
+        debugLog << debugReportText;
+      if (debugReportText.find(
+              "D3D12 Error/Corruption messages:\n  (none)\n") ==
+          std::string::npos) {
+        failPlayerAnimationSmoke(
+            "D3D12 debug layer reported an error/corruption message");
+      } else if (playerAnimationSmokeSequenceCompleted &&
+                 !playerAnimationSmokeFailed) {
+        std::ostringstream passMessage;
+        passMessage << "Player animation smoke: PASS; parts="
+                    << playerPreview.MaterialPartCount()
+                    << " opaque=" << playerPreview.OpaqueMaterialPartCount()
+                    << " transparent="
+                    << playerPreview.TransparentMaterialPartCount()
+                    << " doubleSided="
+                    << playerPreview.DoubleSidedMaterialPartCount()
+                    << " bones=" << playerPreview.SkeletonBoneCount()
+                    << " transitions=Idle>Walk>Run>Idle renderedFrames="
+                    << playerAnimationSmokeRenderedFrames
+                    << " d3dErrors=0";
+        TraceAppEvent(passMessage.str().c_str());
+      }
     }
     hybridReflection.Reset();
     ssaoRenderer.Reset();
@@ -2565,5 +2828,5 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                 MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SYSTEMMODAL);
     return -1;
   }
-  return 0;
+  return applicationExitCode;
 }

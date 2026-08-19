@@ -49,6 +49,7 @@ Desktop.ini
 /app_trace_log.txt
 /dxr_smoke_debug_log.txt
 /tavern_smoke_debug_log.txt
+/player_animation_smoke_debug_log.txt
 /imgui.ini
 /docs/discovery/url.md
 /featuretools/artifacts/

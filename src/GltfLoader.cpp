@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -163,7 +165,9 @@ static bool GetAccessorFloatData(const tinygltf::Model &model,
 
   // Element sizes (float).
   size_t elemBytes = 0;
-  if (expectedType == TINYGLTF_TYPE_VEC2)
+  if (expectedType == TINYGLTF_TYPE_SCALAR)
+    elemBytes = sizeof(float);
+  else if (expectedType == TINYGLTF_TYPE_VEC2)
     elemBytes = sizeof(float) * 2;
   else if (expectedType == TINYGLTF_TYPE_VEC3)
     elemBytes = sizeof(float) * 3;
@@ -353,6 +357,9 @@ static void ComputeTangents(LoadedMesh &mesh) {
     const uint32_t i1 = mesh.indices[i + 1];
     const uint32_t i2 = mesh.indices[i + 2];
 
+    if (i0 >= vertCount || i1 >= vertCount || i2 >= vertCount)
+      continue;
+
     const auto &v0 = mesh.vertices[i0];
     const auto &v1 = mesh.vertices[i1];
     const auto &v2 = mesh.vertices[i2];
@@ -419,25 +426,94 @@ static LoadedImage ExtractTextureImage(const tinygltf::Model &model,
   return ConvertToRgba(model.images[srcImg]);
 }
 
+// glTF の両面マテリアルを、背面用頂点を持つ通常の三角形へ展開する。
+// renderer 全体の rasterizer state を変更せず、法線マップの handedness も維持する。
+static bool ExpandDoubleSidedGeometry(LoadedMesh &mesh) {
+  const size_t vertexCount = mesh.vertices.size();
+  const size_t indexCount = mesh.indices.size();
+  const size_t maxIndex =
+      static_cast<size_t>((std::numeric_limits<uint32_t>::max)());
+  if (vertexCount == 0 || indexCount == 0 || indexCount % 3 != 0)
+    return false;
+  if (vertexCount > maxIndex / 2 + 1 ||
+      vertexCount > (std::numeric_limits<size_t>::max)() / 2 ||
+      indexCount > (std::numeric_limits<size_t>::max)() / 2)
+    return false;
+
+  for (uint32_t index : mesh.indices) {
+    if (index >= vertexCount)
+      return false;
+  }
+
+  mesh.vertices.reserve(vertexCount * 2);
+  for (size_t i = 0; i < vertexCount; ++i) {
+    MeshVertex back = mesh.vertices[i];
+    back.normal[0] = -back.normal[0];
+    back.normal[1] = -back.normal[1];
+    back.normal[2] = -back.normal[2];
+    back.tangent[3] = -back.tangent[3];
+    mesh.vertices.push_back(back);
+  }
+
+  const uint32_t backVertexBase = static_cast<uint32_t>(vertexCount);
+  mesh.indices.reserve(indexCount * 2);
+  for (size_t i = 0; i < indexCount; i += 3) {
+    const uint32_t i0 = mesh.indices[i + 0];
+    const uint32_t i1 = mesh.indices[i + 1];
+    const uint32_t i2 = mesh.indices[i + 2];
+    mesh.indices.push_back(backVertexBase + i0);
+    mesh.indices.push_back(backVertexBase + i2);
+    mesh.indices.push_back(backVertexBase + i1);
+  }
+  return true;
+}
+
+// accessor の index を検証しながら uint32_t へ展開する。
+static bool DecodePrimitiveIndices(const uint8_t *bytes, size_t stride,
+                                   size_t elementBytes, size_t count,
+                                   size_t vertexCount,
+                                   std::vector<uint32_t> &outIndices) {
+  outIndices.clear();
+  if (!bytes || count == 0 || count % 3 != 0 ||
+      vertexCount > static_cast<size_t>((std::numeric_limits<uint32_t>::max)()))
+    return false;
+
+  outIndices.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    const uint8_t *element = bytes + i * stride;
+    uint32_t index = 0;
+    if (elementBytes == 1)
+      index = *element;
+    else if (elementBytes == 2)
+      memcpy(&index, element, sizeof(uint16_t));
+    else if (elementBytes == 4)
+      memcpy(&index, element, sizeof(uint32_t));
+    else
+      return false;
+
+    if (index >= vertexCount) {
+      outIndices.clear();
+      return false;
+    }
+    outIndices.push_back(index);
+  }
+  return true;
+}
+
 static void ApplyMaterialToPart(const tinygltf::Model &model, int materialIndex,
                                 LoadedMeshPart &part) {
   part.material = {};
+  part.alphaBlend = false;
+  part.doubleSided = false;
 
   if (materialIndex < 0 ||
-      materialIndex >= static_cast<int>(model.materials.size())) {
-    if (!model.images.empty()) {
-      part.baseColorImage = ConvertToRgba(model.images[0]);
-      part.material.hasBaseColor = !part.baseColorImage.pixels.empty();
-    }
+      materialIndex >= static_cast<int>(model.materials.size()))
     return;
-  }
 
   const auto &mat = model.materials[materialIndex];
 
   const int bcTexIndex = mat.pbrMetallicRoughness.baseColorTexture.index;
   part.baseColorImage = ExtractTextureImage(model, bcTexIndex);
-  if (part.baseColorImage.pixels.empty() && !model.images.empty())
-    part.baseColorImage = ConvertToRgba(model.images[0]);
 
   part.normalImage = ExtractTextureImage(model, mat.normalTexture.index);
   part.metalRoughImage = ExtractTextureImage(
@@ -461,11 +537,10 @@ static void ApplyMaterialToPart(const tinygltf::Model &model, int materialIndex,
         static_cast<float>(mat.emissiveFactor[1]),
         static_cast<float>(mat.emissiveFactor[2])};
   }
-  part.material.alphaCutout =
-      (mat.alphaMode == "MASK" || mat.alphaMode == "BLEND");
+  part.material.alphaCutout = (mat.alphaMode == "MASK");
+  part.alphaBlend = (mat.alphaMode == "BLEND");
+  part.doubleSided = mat.doubleSided;
   part.material.alphaCutoff = static_cast<float>(mat.alphaCutoff);
-  if (part.material.alphaCutoff <= 0.0f)
-    part.material.alphaCutoff = 0.5f;
 
   part.material.hasBaseColor = !part.baseColorImage.pixels.empty();
   part.material.hasNormal = !part.normalImage.pixels.empty();
@@ -710,6 +785,8 @@ void GltfLoader::ExtractAnimations(const tinygltf::Model &model) {
 }
 
 bool GltfLoader::LoadModel(const std::string &path) {
+  m_meshParts.clear();
+
   tinygltf::Model model;
   tinygltf::TinyGLTF loader;
   std::string err;
@@ -753,6 +830,11 @@ bool GltfLoader::LoadModel(const std::string &path) {
   m_mesh.skeleton = {};
   m_mesh.animations.clear();
   m_mesh.hasSkeleton = false;
+  size_t primitiveCount = 0;
+  for (const auto &mesh : model.meshes)
+    primitiveCount += mesh.primitives.size();
+  m_meshParts.reserve(primitiveCount);
+
   bool anyTangentsMissing = false;
   int firstMaterialIdx = -1; // track first material for texture extraction
 
@@ -761,6 +843,9 @@ bool GltfLoader::LoadModel(const std::string &path) {
 
   for (const auto &mesh : model.meshes) {
     for (const auto &prim : mesh.primitives) {
+      if (prim.mode != TINYGLTF_MODE_TRIANGLES)
+        continue;
+
       // POSITION (required)
       if (prim.attributes.find("POSITION") == prim.attributes.end())
         continue;
@@ -778,8 +863,12 @@ bool GltfLoader::LoadModel(const std::string &path) {
       size_t normStride = 0;
       if (prim.attributes.find("NORMAL") != prim.attributes.end()) {
         const int ni = prim.attributes.at("NORMAL");
-        if (ni >= 0 && ni < static_cast<int>(model.accessors.size()))
-          GetAccessorFloatData(model, model.accessors[ni], TINYGLTF_TYPE_VEC3, normData, normStride);
+        if (ni >= 0 && ni < static_cast<int>(model.accessors.size())) {
+          const auto &normalAcc = model.accessors[ni];
+          if (normalAcc.count >= posAcc.count)
+            GetAccessorFloatData(model, normalAcc, TINYGLTF_TYPE_VEC3,
+                                 normData, normStride);
+        }
       }
 
       // TEXCOORD_0
@@ -787,8 +876,12 @@ bool GltfLoader::LoadModel(const std::string &path) {
       size_t uvStride = 0;
       if (prim.attributes.find("TEXCOORD_0") != prim.attributes.end()) {
         const int ui = prim.attributes.at("TEXCOORD_0");
-        if (ui >= 0 && ui < static_cast<int>(model.accessors.size()))
-          GetAccessorFloatData(model, model.accessors[ui], TINYGLTF_TYPE_VEC2, uvData, uvStride);
+        if (ui >= 0 && ui < static_cast<int>(model.accessors.size())) {
+          const auto &uvAcc = model.accessors[ui];
+          if (uvAcc.count >= posAcc.count)
+            GetAccessorFloatData(model, uvAcc, TINYGLTF_TYPE_VEC2, uvData,
+                                 uvStride);
+        }
       }
 
       // TANGENT
@@ -797,8 +890,12 @@ bool GltfLoader::LoadModel(const std::string &path) {
       bool hasTangents = false;
       if (prim.attributes.find("TANGENT") != prim.attributes.end()) {
         const int ti = prim.attributes.at("TANGENT");
-        if (ti >= 0 && ti < static_cast<int>(model.accessors.size()))
-          hasTangents = GetAccessorFloatData(model, model.accessors[ti], TINYGLTF_TYPE_VEC4, tanData, tanStride);
+        if (ti >= 0 && ti < static_cast<int>(model.accessors.size())) {
+          const auto &tangentAcc = model.accessors[ti];
+          if (tangentAcc.count >= posAcc.count)
+            hasTangents = GetAccessorFloatData(
+                model, tangentAcc, TINYGLTF_TYPE_VEC4, tanData, tanStride);
+        }
       }
 
       // JOINTS_0 (bone indices per vertex)
@@ -808,8 +905,12 @@ bool GltfLoader::LoadModel(const std::string &path) {
       bool hasJoints = false;
       if (hasSkin && prim.attributes.find("JOINTS_0") != prim.attributes.end()) {
         const int ji = prim.attributes.at("JOINTS_0");
-        if (ji >= 0 && ji < static_cast<int>(model.accessors.size()))
-          hasJoints = GetAccessorJointData(model, model.accessors[ji], jointBytes, jointStride, jointComponentType);
+        if (ji >= 0 && ji < static_cast<int>(model.accessors.size())) {
+          const auto &jointAcc = model.accessors[ji];
+          if (jointAcc.count >= posAcc.count)
+            hasJoints = GetAccessorJointData(model, jointAcc, jointBytes,
+                                             jointStride, jointComponentType);
+        }
       }
 
       // WEIGHTS_0 (bone weights per vertex)
@@ -818,8 +919,13 @@ bool GltfLoader::LoadModel(const std::string &path) {
       bool hasWeights = false;
       if (hasSkin && prim.attributes.find("WEIGHTS_0") != prim.attributes.end()) {
         const int wi = prim.attributes.at("WEIGHTS_0");
-        if (wi >= 0 && wi < static_cast<int>(model.accessors.size()))
-          hasWeights = GetAccessorFloatData(model, model.accessors[wi], TINYGLTF_TYPE_VEC4, weightData, weightStride);
+        if (wi >= 0 && wi < static_cast<int>(model.accessors.size())) {
+          const auto &weightAcc = model.accessors[wi];
+          if (weightAcc.count >= posAcc.count)
+            hasWeights = GetAccessorFloatData(
+                model, weightAcc, TINYGLTF_TYPE_VEC4, weightData,
+                weightStride);
+        }
       }
 
       // INDICES
@@ -831,8 +937,22 @@ bool GltfLoader::LoadModel(const std::string &path) {
       if (!GetAccessorIndexData(model, idxAcc, idxBytes, idxStride, idxElemBytes))
         continue;
 
+      std::vector<uint32_t> primitiveIndices;
+      if (!DecodePrimitiveIndices(idxBytes, idxStride, idxElemBytes,
+                                  idxAcc.count, posAcc.count,
+                                  primitiveIndices))
+        continue;
+
+      if (m_mesh.vertices.size() >
+              static_cast<size_t>((std::numeric_limits<uint32_t>::max)()) ||
+          posAcc.count >
+              static_cast<size_t>((std::numeric_limits<uint32_t>::max)()) -
+                  m_mesh.vertices.size())
+        continue;
+
       // Vertex base offset for merging multiple primitives.
       const uint32_t vertBase = static_cast<uint32_t>(m_mesh.vertices.size());
+      LoadedMeshPart part;
 
       // Interleave vertices.
       const size_t vCount = posAcc.count;
@@ -907,15 +1027,22 @@ bool GltfLoader::LoadModel(const std::string &path) {
       }
       if (!hasTangents) anyTangentsMissing = true;
 
+      part.mesh.vertices.assign(m_mesh.vertices.begin() + vertBase,
+                                m_mesh.vertices.end());
+      part.mesh.indices.reserve(primitiveIndices.size());
+
       // Indices — offset by vertBase.
-      for (size_t i = 0; i < idxAcc.count; ++i) {
-        const uint8_t *e = idxBytes + i * idxStride;
-        uint32_t idx = 0;
-        if (idxElemBytes == 1) idx = *e;
-        else if (idxElemBytes == 2) idx = *reinterpret_cast<const uint16_t *>(e);
-        else if (idxElemBytes == 4) idx = *reinterpret_cast<const uint32_t *>(e);
+      for (uint32_t idx : primitiveIndices) {
         m_mesh.indices.push_back(vertBase + idx);
+        part.mesh.indices.push_back(idx);
       }
+
+      if (!hasTangents)
+        ComputeTangents(part.mesh);
+      ApplyMaterialToPart(model, prim.material, part);
+      if (part.doubleSided && !ExpandDoubleSidedGeometry(part.mesh))
+        continue;
+      m_meshParts.push_back(std::move(part));
 
       // Track first material found.
       if (firstMaterialIdx < 0 && prim.material >= 0)
@@ -923,12 +1050,33 @@ bool GltfLoader::LoadModel(const std::string &path) {
     }
   }
 
+  // multi-material part を canonical merged mesh に再構築し、両面展開も反映する。
+  m_mesh.vertices.clear();
+  m_mesh.indices.clear();
+  for (const auto &part : m_meshParts) {
+    if (m_mesh.vertices.size() >
+            static_cast<size_t>((std::numeric_limits<uint32_t>::max)()) ||
+        part.mesh.vertices.size() >
+            static_cast<size_t>((std::numeric_limits<uint32_t>::max)()) -
+                m_mesh.vertices.size())
+      return false;
+    if (part.mesh.indices.size() >
+        (std::numeric_limits<size_t>::max)() - m_mesh.indices.size())
+      return false;
+
+    const uint32_t vertexBase = static_cast<uint32_t>(m_mesh.vertices.size());
+    m_mesh.vertices.insert(m_mesh.vertices.end(), part.mesh.vertices.begin(),
+                           part.mesh.vertices.end());
+    m_mesh.indices.reserve(m_mesh.indices.size() + part.mesh.indices.size());
+    for (uint32_t index : part.mesh.indices)
+      m_mesh.indices.push_back(vertexBase + index);
+  }
+
   if (m_mesh.vertices.empty() || m_mesh.indices.empty())
     return false;
 
   // Compute tangents from UVs if any primitive lacked them.
   if (anyTangentsMissing) {
-    ComputeTangents(m_mesh);
     std::cout << "Computed tangents from UVs (some primitives had no TANGENT attribute).\n";
   }
 
@@ -956,6 +1104,12 @@ bool GltfLoader::LoadModel(const std::string &path) {
   ExtractSkeleton(model);
   ExtractAnimations(model);
 
+  // 全 part は同じ canonical skeleton と bone palette index を使用する。
+  for (auto &part : m_meshParts) {
+    part.mesh.skeleton = m_mesh.skeleton;
+    part.mesh.hasSkeleton = m_mesh.hasSkeleton;
+  }
+
   // ---- Extract material textures (from first material found) ----
   m_baseColorImage = {};
   m_normalImage = {};
@@ -975,9 +1129,6 @@ bool GltfLoader::LoadModel(const std::string &path) {
       if (srcImg >= 0 && srcImg < static_cast<int>(model.images.size()))
         imageIndex = srcImg;
     }
-    // Fallback: if there is no baseColor texture specified, just pick image[0].
-    if (imageIndex < 0 && !model.images.empty())
-      imageIndex = 0;
     if (imageIndex >= 0 && imageIndex < static_cast<int>(model.images.size())) {
       m_baseColorImage = ConvertToRgba(model.images[imageIndex]);
       std::cout << "BaseColor Image: " << model.images[imageIndex].width << "x"
@@ -1035,12 +1186,6 @@ bool GltfLoader::LoadModel(const std::string &path) {
     m_material.hasAO         = !m_aoImage.pixels.empty();
     m_material.hasEmissive   = !m_emissiveImage.pixels.empty();
     // hasHeight set later in LoadHeightMap()
-  } else {
-    // No material: try image[0] as baseColor fallback.
-    if (!model.images.empty()) {
-      m_baseColorImage = ConvertToRgba(model.images[0]);
-      std::cout << "No material; using image[0] as baseColor.\n";
-    }
   }
 
   return true;
@@ -1148,18 +1293,24 @@ bool LoadStaticModelParts(const std::string &path,
       size_t normStride = 0;
       if (prim.attributes.find("NORMAL") != prim.attributes.end()) {
         const int ni = prim.attributes.at("NORMAL");
-        if (ni >= 0 && ni < static_cast<int>(model.accessors.size()))
-          GetAccessorFloatData(model, model.accessors[ni], TINYGLTF_TYPE_VEC3,
-                               normData, normStride);
+        if (ni >= 0 && ni < static_cast<int>(model.accessors.size())) {
+          const auto &normalAcc = model.accessors[ni];
+          if (normalAcc.count >= posAcc.count)
+            GetAccessorFloatData(model, normalAcc, TINYGLTF_TYPE_VEC3,
+                                 normData, normStride);
+        }
       }
 
       const float *uvData = nullptr;
       size_t uvStride = 0;
       if (prim.attributes.find("TEXCOORD_0") != prim.attributes.end()) {
         const int ui = prim.attributes.at("TEXCOORD_0");
-        if (ui >= 0 && ui < static_cast<int>(model.accessors.size()))
-          GetAccessorFloatData(model, model.accessors[ui], TINYGLTF_TYPE_VEC2,
-                               uvData, uvStride);
+        if (ui >= 0 && ui < static_cast<int>(model.accessors.size())) {
+          const auto &uvAcc = model.accessors[ui];
+          if (uvAcc.count >= posAcc.count)
+            GetAccessorFloatData(model, uvAcc, TINYGLTF_TYPE_VEC2, uvData,
+                                 uvStride);
+        }
       }
 
       const float *tanData = nullptr;
@@ -1168,9 +1319,11 @@ bool LoadStaticModelParts(const std::string &path,
       if (prim.attributes.find("TANGENT") != prim.attributes.end()) {
         const int ti = prim.attributes.at("TANGENT");
         if (ti >= 0 && ti < static_cast<int>(model.accessors.size())) {
-          hasTangents =
-              GetAccessorFloatData(model, model.accessors[ti],
-                                   TINYGLTF_TYPE_VEC4, tanData, tanStride);
+          const auto &tangentAcc = model.accessors[ti];
+          if (tangentAcc.count >= posAcc.count)
+            hasTangents =
+                GetAccessorFloatData(model, tangentAcc, TINYGLTF_TYPE_VEC4,
+                                     tanData, tanStride);
         }
       }
 
@@ -1180,6 +1333,12 @@ bool LoadStaticModelParts(const std::string &path,
       size_t idxElemBytes = 0;
       if (!GetAccessorIndexData(model, idxAcc, idxBytes, idxStride,
                                 idxElemBytes))
+        continue;
+
+      std::vector<uint32_t> primitiveIndices;
+      if (!DecodePrimitiveIndices(idxBytes, idxStride, idxElemBytes,
+                                  idxAcc.count, posAcc.count,
+                                  primitiveIndices))
         continue;
 
       LoadedMeshPart part;
@@ -1232,18 +1391,7 @@ bool LoadStaticModelParts(const std::string &path,
             v.boneWeights[3] = 0.0f;
       }
 
-      part.mesh.indices.reserve(idxAcc.count);
-      for (size_t i = 0; i < idxAcc.count; ++i) {
-        const uint8_t *e = idxBytes + i * idxStride;
-        uint32_t idx = 0;
-        if (idxElemBytes == 1)
-          idx = *e;
-        else if (idxElemBytes == 2)
-          idx = *reinterpret_cast<const uint16_t *>(e);
-        else if (idxElemBytes == 4)
-          idx = *reinterpret_cast<const uint32_t *>(e);
-        part.mesh.indices.push_back(idx);
-      }
+      part.mesh.indices = std::move(primitiveIndices);
       if (flipsWinding) {
         for (size_t i = 0; i + 2 < part.mesh.indices.size(); i += 3)
           std::swap(part.mesh.indices[i + 1], part.mesh.indices[i + 2]);
@@ -1252,6 +1400,8 @@ bool LoadStaticModelParts(const std::string &path,
       if (!hasTangents)
         ComputeTangents(part.mesh);
       ApplyMaterialToPart(model, prim.material, part);
+      if (part.doubleSided && !ExpandDoubleSidedGeometry(part.mesh))
+        continue;
 
       if (!part.mesh.vertices.empty() && !part.mesh.indices.empty())
         outParts.push_back(std::move(part));
@@ -1455,7 +1605,8 @@ bool LoadAnimationFile(const std::string &path,
   }
 
   std::cout << "Animation bone remapping: " << animNodeToTargetBone.size()
-            << "/" << model.nodes.size() << " nodes matched to target skeleton.\n";
+            << "/" << model.nodes.size()
+            << " nodes matched to target skeleton.\n";
 
   // ---- Global-space retargeting ----
   // Mixamo re-oriented the bone axes significantly (e.g., UpperLeg has ~180°
@@ -1464,21 +1615,84 @@ bool LoadAnimationFile(const std::string &path,
   // to VRoid LOCAL rotations. This works because both skeletons share the
   // same T-pose joint positions — only local axis orientations differ.
 
+  const int numNodes = static_cast<int>(model.nodes.size());
+
   // Build Mixamo node -> parent map.
   std::unordered_map<int, int> mixNodeParent;
-  for (int n = 0; n < static_cast<int>(model.nodes.size()); ++n)
+  for (int n = 0; n < numNodes; ++n)
     for (int c : model.nodes[n].children)
       mixNodeParent[c] = n;
 
-  // Extract Mixamo rest local rotations for ALL nodes (not just matched bones).
-  int numNodes = static_cast<int>(model.nodes.size());
+  // mapped bone とその ancestor だけを animation source とする。
+  // camera、prop、別 rig の timeline が clip 長や root seam
+  // を変えないようにする。
+  std::vector<bool> sourceNodeAffectsSkeleton(numNodes, false);
+  for (const auto &pair : animNodeToTargetBone) {
+    int nodeIndex = pair.first;
+    for (int depth = 0;
+         depth < numNodes && nodeIndex >= 0 && nodeIndex < numNodes; ++depth) {
+      if (sourceNodeAffectsSkeleton[nodeIndex])
+        break;
+      sourceNodeAffectsSkeleton[nodeIndex] = true;
+      const auto parentIt = mixNodeParent.find(nodeIndex);
+      if (parentIt == mixNodeParent.end())
+        break;
+      nodeIndex = parentIt->second;
+    }
+  }
+
+  // Mixamo の Armature など、skeleton 外の controller node も含めて
+  // source 全 node の rest-local TRS を抽出する。
+  std::vector<XMVECTOR> mixNodeLocalT(numNodes, XMVectorZero());
   std::vector<XMVECTOR> mixNodeLocalR(numNodes, XMQuaternionIdentity());
+  std::vector<XMVECTOR> mixNodeLocalS(numNodes,
+                                      XMVectorSet(1.0f, 1.0f, 1.0f, 0.0f));
   for (int n = 0; n < numNodes; ++n) {
     const auto &node = model.nodes[n];
-    if (node.rotation.size() == 4)
-      mixNodeLocalR[n] = XMQuaternionNormalize(XMVectorSet(
-          (float)node.rotation[0], (float)node.rotation[1],
-          (float)node.rotation[2], (float)node.rotation[3]));
+    if (node.translation.size() == 3) {
+      mixNodeLocalT[n] =
+          XMVectorSet(static_cast<float>(node.translation[0]),
+                      static_cast<float>(node.translation[1]),
+                      static_cast<float>(node.translation[2]), 0.0f);
+    }
+    if (node.rotation.size() == 4) {
+      mixNodeLocalR[n] = XMQuaternionNormalize(
+          XMVectorSet(static_cast<float>(node.rotation[0]),
+                      static_cast<float>(node.rotation[1]),
+                      static_cast<float>(node.rotation[2]),
+                      static_cast<float>(node.rotation[3])));
+    }
+    if (node.scale.size() == 3) {
+      mixNodeLocalS[n] = XMVectorSet(static_cast<float>(node.scale[0]),
+                                     static_cast<float>(node.scale[1]),
+                                     static_cast<float>(node.scale[2]), 0.0f);
+    }
+
+    if (node.matrix.size() == 16) {
+      XMFLOAT4X4 sourceMatrix(static_cast<float>(node.matrix[0]),
+                              static_cast<float>(node.matrix[1]),
+                              static_cast<float>(node.matrix[2]),
+                              static_cast<float>(node.matrix[3]),
+                              static_cast<float>(node.matrix[4]),
+                              static_cast<float>(node.matrix[5]),
+                              static_cast<float>(node.matrix[6]),
+                              static_cast<float>(node.matrix[7]),
+                              static_cast<float>(node.matrix[8]),
+                              static_cast<float>(node.matrix[9]),
+                              static_cast<float>(node.matrix[10]),
+                              static_cast<float>(node.matrix[11]),
+                              static_cast<float>(node.matrix[12]),
+                              static_cast<float>(node.matrix[13]),
+                              static_cast<float>(node.matrix[14]),
+                              static_cast<float>(node.matrix[15]));
+      XMVECTOR decomposedS, decomposedR, decomposedT;
+      if (XMMatrixDecompose(&decomposedS, &decomposedR, &decomposedT,
+                            XMLoadFloat4x4(&sourceMatrix))) {
+        mixNodeLocalT[n] = decomposedT;
+        mixNodeLocalR[n] = XMQuaternionNormalize(decomposedR);
+        mixNodeLocalS[n] = decomposedS;
+      }
+    }
   }
 
   // Compute Mixamo GLOBAL rest rotations (walk from root to leaves).
@@ -1487,13 +1701,16 @@ bool LoadAnimationFile(const std::string &path,
   {
     std::vector<bool> visited(numNodes, false);
     std::function<void(int)> visit = [&](int n) {
-      if (n < 0 || n >= numNodes || visited[n]) return;
+      if (n < 0 || n >= numNodes || visited[n])
+        return;
       auto pit = mixNodeParent.find(n);
-      if (pit != mixNodeParent.end()) visit(pit->second);
+      if (pit != mixNodeParent.end())
+        visit(pit->second);
       visited[n] = true;
       topoOrder.push_back(n);
     };
-    for (int n = 0; n < numNodes; ++n) visit(n);
+    for (int n = 0; n < numNodes; ++n)
+      visit(n);
   }
 
   std::vector<XMVECTOR> mixGlobalR(numNodes, XMQuaternionIdentity());
@@ -1502,7 +1719,8 @@ bool LoadAnimationFile(const std::string &path,
     if (pit != mixNodeParent.end()) {
       // XMQuaternionMultiply(A, B) = "first A, then B" in DirectXMath
       // global = compose(local, parentGlobal) = "first local, then parent"
-      mixGlobalR[n] = XMQuaternionMultiply(mixNodeLocalR[n], mixGlobalR[pit->second]);
+      mixGlobalR[n] =
+          XMQuaternionMultiply(mixNodeLocalR[n], mixGlobalR[pit->second]);
     } else {
       mixGlobalR[n] = mixNodeLocalR[n];
     }
@@ -1525,17 +1743,16 @@ bool LoadAnimationFile(const std::string &path,
     }
   }
 
-  // Compute VRoid LOCAL bind rotations: localR[i] = inv(globalR[parent]) * globalR[i]
+  // Compute VRoid LOCAL bind rotations: localR[i] = inv(globalR[parent]) *
+  // globalR[i]
   std::vector<XMVECTOR> vroidLocalBindR(boneCount, XMQuaternionIdentity());
   for (int i = 0; i < boneCount; ++i) {
     int parent = targetSkeleton.bones[i].parentIndex;
     if (parent >= 0 && parent < boneCount) {
       // Hamilton: local = inv(parent) * global
       // DXMath:   XMQuaternionMultiply(global, inv(parent))
-      vroidLocalBindR[i] = XMQuaternionNormalize(
-          XMQuaternionMultiply(
-              vroidGlobalBindR[i],
-              XMQuaternionInverse(vroidGlobalBindR[parent])));
+      vroidLocalBindR[i] = XMQuaternionNormalize(XMQuaternionMultiply(
+          vroidGlobalBindR[i], XMQuaternionInverse(vroidGlobalBindR[parent])));
     } else {
       vroidLocalBindR[i] = vroidGlobalBindR[i];
     }
@@ -1546,169 +1763,312 @@ bool LoadAnimationFile(const std::string &path,
   for (const auto &pair : animNodeToTargetBone)
     boneToMixNode[pair.second] = pair.first;
 
+  // controller motion は意味上の skeleton Root を優先する。
+  // Armature を実 bone に alias せず、互換 skeleton では mapped root へ戻す。
+  int targetRootBone = -1;
+  auto namedRoot = targetBoneMap.find("Root");
+  if (namedRoot != targetBoneMap.end() &&
+      boneToMixNode.find(namedRoot->second) != boneToMixNode.end() &&
+      targetSkeleton.bones[namedRoot->second].parentIndex < 0) {
+    targetRootBone = namedRoot->second;
+  } else {
+    for (int bi = 0; bi < boneCount; ++bi) {
+      if (targetSkeleton.bones[bi].parentIndex < 0 &&
+          boneToMixNode.find(bi) != boneToMixNode.end()) {
+        targetRootBone = bi;
+        break;
+      }
+    }
+  }
+
+  const int sourceRootNode =
+      targetRootBone >= 0 ? boneToMixNode[targetRootBone] : -1;
+  XMVECTOR targetRootBindT = XMVectorZero();
+  if (targetRootBone >= 0) {
+    XMVECTOR rootScale, rootRotation, rootTranslation;
+    if (XMMatrixDecompose(
+            &rootScale, &rootRotation, &rootTranslation,
+            XMLoadFloat4x4(
+                &targetSkeleton.bones[targetRootBone].localTransform))) {
+      targetRootBindT = rootTranslation;
+    }
+  }
+
   // ---- Extract animation clips using global-space retargeting ----
   for (const auto &anim : model.animations) {
     AnimationClip clip;
-    clip.name = anim.name.empty()
-                    ? "Anim_" + std::to_string(outClips.size())
-                    : anim.name;
+    clip.name = anim.name.empty() ? "Anim_" + std::to_string(outClips.size())
+                                  : anim.name;
     clip.duration = 0.0f;
 
-    // Step 1: Collect all rotation channels indexed by Mixamo node.
-    // For each node, store (sampler input accessor, sampler output accessor).
+    // Step 1: unmatched controller を含む全 source TRS channel を集める。
+    // それらの transform も source hierarchy 経由で mapped bone に作用する。
     struct ChannelData {
       int mixNodeIdx;
-      int targetBone;
+      AnimTargetPath path;
       const float *timeData;
       size_t timeStride;
       const float *valData;
       size_t valStride;
       size_t keyCount;
+      bool stepInterpolation;
     };
-    std::vector<ChannelData> rotChannels;
+    std::vector<ChannelData> transformChannels;
     std::vector<float> allTimes; // union of all keyframe times
+    bool unsupportedInterpolation = false;
 
     for (const auto &channel : anim.channels) {
-      if (channel.target_node < 0 || channel.target_path != "rotation")
+      if (channel.target_node < 0 || channel.target_node >= numNodes ||
+          channel.sampler < 0 ||
+          channel.sampler >= static_cast<int>(anim.samplers.size())) {
         continue;
-      auto remapIt = animNodeToTargetBone.find(channel.target_node);
-      if (remapIt == animNodeToTargetBone.end())
+      }
+      if (!sourceNodeAffectsSkeleton[channel.target_node])
         continue;
 
+      AnimTargetPath targetPath;
+      int expectedType = TINYGLTF_TYPE_VEC3;
+      if (channel.target_path == "translation") {
+        targetPath = AnimTargetPath::Translation;
+      } else if (channel.target_path == "rotation") {
+        targetPath = AnimTargetPath::Rotation;
+        expectedType = TINYGLTF_TYPE_VEC4;
+      } else if (channel.target_path == "scale") {
+        targetPath = AnimTargetPath::Scale;
+      } else {
+        continue;
+      }
+
       const auto &sampler = anim.samplers[channel.sampler];
+      if (sampler.input < 0 ||
+          sampler.input >= static_cast<int>(model.accessors.size()) ||
+          sampler.output < 0 ||
+          sampler.output >= static_cast<int>(model.accessors.size())) {
+        continue;
+      }
+      const std::string interpolation =
+          sampler.interpolation.empty() ? "LINEAR" : sampler.interpolation;
+      if (interpolation != "LINEAR" && interpolation != "STEP") {
+        std::cerr << "AnimLoad WARN: animation \"" << clip.name
+                  << "\" uses unsupported interpolation " << interpolation
+                  << "; clip skipped.\n";
+        unsupportedInterpolation = true;
+        break;
+      }
+
       const auto &inputAcc = model.accessors[sampler.input];
-      if (inputAcc.bufferView < 0) continue;
-      const auto &timeBv = model.bufferViews[inputAcc.bufferView];
-      const auto &timeBuf = model.buffers[timeBv.buffer];
-      const size_t timeStart = timeBv.byteOffset + inputAcc.byteOffset;
-      size_t timeStride = timeBv.byteStride ? timeBv.byteStride : sizeof(float);
+      const float *timeData = nullptr;
+      size_t timeStride = 0;
+      if (!GetAccessorFloatData(model, inputAcc, TINYGLTF_TYPE_SCALAR, timeData,
+                                timeStride)) {
+        continue;
+      }
 
       const auto &outputAcc = model.accessors[sampler.output];
       const float *valData = nullptr;
       size_t valStride = 0;
-      if (!GetAccessorFloatData(model, outputAcc, TINYGLTF_TYPE_VEC4, valData,
-                                valStride))
+      if (!GetAccessorFloatData(model, outputAcc, expectedType, valData,
+                                valStride)) {
         continue;
+      }
 
       size_t keyCount = std::min(inputAcc.count, outputAcc.count);
-      const float *timeData = reinterpret_cast<const float *>(
-          &timeBuf.data[timeStart]);
+      bool validTimes = keyCount > 0;
+      float previousTime = -std::numeric_limits<float>::infinity();
+      for (size_t k = 0; k < keyCount; ++k) {
+        const float time = *reinterpret_cast<const float *>(
+            reinterpret_cast<const uint8_t *>(timeData) + k * timeStride);
+        if (!std::isfinite(time) || (k > 0 && time <= previousTime)) {
+          validTimes = false;
+          break;
+        }
+        previousTime = time;
+      }
+      if (!validTimes) {
+        std::cerr << "AnimLoad WARN: animation \"" << clip.name
+                  << "\" contains invalid keyframe times; channel skipped.\n";
+        continue;
+      }
 
-      rotChannels.push_back({channel.target_node, remapIt->second,
-                             timeData, timeStride, valData, valStride,
-                             keyCount});
+      transformChannels.push_back({channel.target_node, targetPath, timeData,
+                                   timeStride, valData, valStride, keyCount,
+                                   interpolation == "STEP"});
 
       // Collect all unique timestamps.
       for (size_t k = 0; k < keyCount; ++k) {
         float t = *reinterpret_cast<const float *>(
             reinterpret_cast<const uint8_t *>(timeData) + k * timeStride);
         allTimes.push_back(t);
-        if (t > clip.duration) clip.duration = t;
+        if (interpolation == "STEP" && k > 0) {
+          const float previous = *reinterpret_cast<const float *>(
+              reinterpret_cast<const uint8_t *>(timeData) +
+              (k - 1) * timeStride);
+          const float span = t - previous;
+          const float stepGuard = (std::min)(0.0001f, span * 0.25f);
+          // runtime track は linear sample されるため、境界直前の key
+          // を追加し、 STEP の不連続を 0.1 ms 以下の区間へ閉じ込める。
+          if (stepGuard > 1e-6f)
+            allTimes.push_back(t - stepGuard);
+        }
+        if (t > clip.duration)
+          clip.duration = t;
       }
     }
 
-    if (rotChannels.empty()) continue;
+    if (unsupportedInterpolation)
+      continue;
+    if (transformChannels.empty())
+      continue;
 
     // Remove duplicate times and sort.
     std::sort(allTimes.begin(), allTimes.end());
-    allTimes.erase(std::unique(allTimes.begin(), allTimes.end(),
-        [](float a, float b) { return std::fabs(a - b) < 1e-6f; }),
+    allTimes.erase(
+        std::unique(allTimes.begin(), allTimes.end(),
+                    [](float a, float b) { return std::fabs(a - b) < 1e-6f; }),
         allTimes.end());
 
-    // Step 2: For each keyframe time, evaluate ALL Mixamo bones to get globals,
-    // then convert to VRoid local.
+    auto sampleChannel = [](const ChannelData &channel, float time) {
+      size_t lo = 0;
+      size_t hi = 0;
+      float fraction = 0.0f;
+      if (channel.keyCount > 1) {
+        const float firstTime = *reinterpret_cast<const float *>(
+            reinterpret_cast<const uint8_t *>(channel.timeData));
+        const float lastTime = *reinterpret_cast<const float *>(
+            reinterpret_cast<const uint8_t *>(channel.timeData) +
+            (channel.keyCount - 1) * channel.timeStride);
+        if (time >= lastTime) {
+          lo = hi = channel.keyCount - 1;
+        } else if (time > firstTime) {
+          for (size_t k = 0; k + 1 < channel.keyCount; ++k) {
+            const float timeA = *reinterpret_cast<const float *>(
+                reinterpret_cast<const uint8_t *>(channel.timeData) +
+                k * channel.timeStride);
+            const float timeB = *reinterpret_cast<const float *>(
+                reinterpret_cast<const uint8_t *>(channel.timeData) +
+                (k + 1) * channel.timeStride);
+            if (time >= timeA && time < timeB) {
+              lo = k;
+              hi = k + 1;
+              const float span = timeB - timeA;
+              fraction = span > 1e-6f ? (time - timeA) / span : 0.0f;
+              break;
+            }
+          }
+        }
+      }
+
+      if (channel.stepInterpolation) {
+        hi = lo;
+        fraction = 0.0f;
+      }
+
+      const float *valueA = reinterpret_cast<const float *>(
+          reinterpret_cast<const uint8_t *>(channel.valData) +
+          lo * channel.valStride);
+      const float *valueB = reinterpret_cast<const float *>(
+          reinterpret_cast<const uint8_t *>(channel.valData) +
+          hi * channel.valStride);
+      if (channel.path == AnimTargetPath::Rotation) {
+        const XMVECTOR rotationA =
+            XMVectorSet(valueA[0], valueA[1], valueA[2], valueA[3]);
+        const XMVECTOR rotationB =
+            XMVectorSet(valueB[0], valueB[1], valueB[2], valueB[3]);
+        return XMQuaternionNormalize(
+            XMQuaternionSlerp(rotationA, rotationB, fraction));
+      }
+
+      const XMVECTOR vectorA =
+          XMVectorSet(valueA[0], valueA[1], valueA[2], 0.0f);
+      const XMVECTOR vectorB =
+          XMVectorSet(valueB[0], valueB[1], valueB[2], 0.0f);
+      return XMVectorLerp(vectorA, vectorB, fraction);
+    };
+
+    // Step 2: source hierarchy 全体を評価し、mapped global rotation を
+    // target skeleton の local space に戻す。
     // Use per-bone tracks indexed by target bone index.
     std::unordered_map<int, AnimTrack> trackMap;
+    struct RootMotionSample {
+      float time;
+      XMFLOAT3 position;
+    };
+    std::vector<RootMotionSample> rootMotionSamples;
 
     for (size_t ti = 0; ti < allTimes.size(); ++ti) {
       float time = allTimes[ti];
 
-      // Set Mixamo local rotations: start with rest, override with animation.
-      std::vector<XMVECTOR> mixLocalR = mixNodeLocalR; // copy rest
-      for (const auto &ch : rotChannels) {
-        // Find the keyframe pair for this time in this channel.
-        size_t lo = 0, hi = 0;
-        float frac = 0.0f;
-        if (ch.keyCount <= 1) {
-          lo = hi = 0; frac = 0.0f;
-        } else {
-          float firstT = *reinterpret_cast<const float *>(
-              reinterpret_cast<const uint8_t *>(ch.timeData));
-          float lastT = *reinterpret_cast<const float *>(
-              reinterpret_cast<const uint8_t *>(ch.timeData) +
-              (ch.keyCount - 1) * ch.timeStride);
-          if (time <= firstT) { lo = hi = 0; frac = 0.0f; }
-          else if (time >= lastT) { lo = hi = ch.keyCount - 1; frac = 0.0f; }
-          else {
-            for (size_t k = 0; k < ch.keyCount - 1; ++k) {
-              float tA = *reinterpret_cast<const float *>(
-                  reinterpret_cast<const uint8_t *>(ch.timeData) +
-                  k * ch.timeStride);
-              float tB = *reinterpret_cast<const float *>(
-                  reinterpret_cast<const uint8_t *>(ch.timeData) +
-                  (k + 1) * ch.timeStride);
-              if (time >= tA && time < tB) {
-                lo = k; hi = k + 1;
-                float span = tB - tA;
-                frac = (span > 1e-6f) ? (time - tA) / span : 0.0f;
-                break;
-              }
-            }
-          }
+      std::vector<XMVECTOR> mixLocalT = mixNodeLocalT;
+      std::vector<XMVECTOR> mixLocalR = mixNodeLocalR;
+      std::vector<XMVECTOR> mixLocalS = mixNodeLocalS;
+      for (const auto &channel : transformChannels) {
+        const XMVECTOR value = sampleChannel(channel, time);
+        switch (channel.path) {
+        case AnimTargetPath::Translation:
+          mixLocalT[channel.mixNodeIdx] = value;
+          break;
+        case AnimTargetPath::Rotation:
+          mixLocalR[channel.mixNodeIdx] = value;
+          break;
+        case AnimTargetPath::Scale:
+          mixLocalS[channel.mixNodeIdx] = value;
+          break;
         }
-
-        const float *vA = reinterpret_cast<const float *>(
-            reinterpret_cast<const uint8_t *>(ch.valData) + lo * ch.valStride);
-        const float *vB = reinterpret_cast<const float *>(
-            reinterpret_cast<const uint8_t *>(ch.valData) + hi * ch.valStride);
-        XMVECTOR qA = XMVectorSet(vA[0], vA[1], vA[2], vA[3]);
-        XMVECTOR qB = XMVectorSet(vB[0], vB[1], vB[2], vB[3]);
-        XMVECTOR animR = XMQuaternionNormalize(XMQuaternionSlerp(qA, qB, frac));
-
-        mixLocalR[ch.mixNodeIdx] = animR;
       }
 
-      // Walk Mixamo hierarchy to compute global rotations at this frame.
       std::vector<XMVECTOR> mixAnimGlobalR(numNodes, XMQuaternionIdentity());
+      std::vector<XMMATRIX> mixAnimGlobalM(numNodes, XMMatrixIdentity());
       for (int n : topoOrder) {
+        const XMMATRIX localMatrix =
+            XMMatrixScalingFromVector(mixLocalS[n]) *
+            XMMatrixRotationQuaternion(mixLocalR[n]) *
+            XMMatrixTranslationFromVector(mixLocalT[n]);
         auto pit = mixNodeParent.find(n);
-        if (pit != mixNodeParent.end())
-          mixAnimGlobalR[n] = XMQuaternionMultiply(
-              mixLocalR[n], mixAnimGlobalR[pit->second]);
-        else
+        if (pit != mixNodeParent.end()) {
+          mixAnimGlobalR[n] =
+              XMQuaternionMultiply(mixLocalR[n], mixAnimGlobalR[pit->second]);
+          mixAnimGlobalM[n] = localMatrix * mixAnimGlobalM[pit->second];
+        } else {
           mixAnimGlobalR[n] = mixLocalR[n];
+          mixAnimGlobalM[n] = localMatrix;
+        }
       }
 
-      // Global-space DELTA retargeting:
-      // 1. delta[i] = how much bone i rotated from Mixamo rest in global space
-      //    animGlobal = restGlobal * delta  →  delta = inv(restGlobal) * animGlobal
-      //    DXMath: delta = XMQuaternionMultiply(inv(restGlobal), animGlobal)
-      // 2. Apply delta to VRoid global: vroidAnimGlobal = vroidBindGlobal * delta
-      //    DXMath: XMQuaternionMultiply(vroidBindGlobal, delta)
-      // 3. Convert to VRoid local: local = animGlobal * inv(parentAnimGlobal)
-      //    DXMath: XMQuaternionMultiply(animGlobal, inv(parentAnimGlobal))
+      if (sourceRootNode >= 0 && sourceRootNode < numNodes) {
+        RootMotionSample sample{time, {}};
+        XMStoreFloat3(&sample.position,
+                      XMVector3TransformCoord(XMVectorZero(),
+                                              mixAnimGlobalM[sourceRootNode]));
+        rootMotionSamples.push_back(sample);
+      }
 
-      // First compute per-bone deltas and VRoid animated globals.
+      // global-space delta retarget:
+      // 1. source rest からの global rotation delta を求める。
+      // 2. delta を VRoid global bind rotation に適用する。
+      // 3. parent の animated global を除き、VRoid local rotation に戻す。
+
+      // bone ごとの delta と VRoid animated global を先に求める。
       std::vector<XMVECTOR> vroidAnimGlobal(boneCount);
       for (int bi = 0; bi < boneCount; ++bi)
         vroidAnimGlobal[bi] = vroidGlobalBindR[bi]; // default: bind pose
 
-      for (const auto &ch : rotChannels) {
-        int bi = ch.targetBone;
-        int mixNode = ch.mixNodeIdx;
+      for (const auto &pair : boneToMixNode) {
+        const int bi = pair.first;
+        const int mixNode = pair.second;
+        if (bi < 0 || bi >= boneCount || mixNode < 0 || mixNode >= numNodes) {
+          continue;
+        }
 
         // Delta in global space.
-        XMVECTOR delta = XMQuaternionNormalize(
-            XMQuaternionMultiply(
-                XMQuaternionInverse(mixGlobalR[mixNode]),
-                mixAnimGlobalR[mixNode]));
+        XMVECTOR delta = XMQuaternionNormalize(XMQuaternionMultiply(
+            XMQuaternionInverse(mixGlobalR[mixNode]), mixAnimGlobalR[mixNode]));
 
         // Apply delta to VRoid global bind.
         vroidAnimGlobal[bi] = XMQuaternionNormalize(
             XMQuaternionMultiply(vroidGlobalBindR[bi], delta));
       }
 
-      // Walk VRoid hierarchy to convert globals to locals.
+      // VRoid hierarchy を巡回し、global rotation を local に戻す。
       for (int bi = 0; bi < boneCount; ++bi) {
         auto mixIt = boneToMixNode.find(bi);
         if (mixIt == boneToMixNode.end())
@@ -1721,10 +2081,8 @@ bool LoadAnimationFile(const std::string &path,
                 : XMQuaternionIdentity();
 
         // local = animGlobal * inv(parentAnimGlobal)
-        XMVECTOR vroidLocalR = XMQuaternionNormalize(
-            XMQuaternionMultiply(
-                vroidAnimGlobal[bi],
-                XMQuaternionInverse(parentAnimGlobal)));
+        XMVECTOR vroidLocalR = XMQuaternionNormalize(XMQuaternionMultiply(
+            vroidAnimGlobal[bi], XMQuaternionInverse(parentAnimGlobal)));
 
         auto &track = trackMap[bi];
         if (track.keyframes.empty()) {
@@ -1738,13 +2096,51 @@ bool LoadAnimationFile(const std::string &path,
       }
     }
 
+    AnimTrack rootMotionTrack;
+    bool hasRootMotionTrack = false;
+    if (targetRootBone >= 0 && rootMotionSamples.size() >= 2) {
+      // gameplay 側の world 移動を維持するため、clip の首尾 drift を除去し、
+      // loop 内の重心移動（bob / sway）だけを target Root に残す。
+      const RootMotionSample &first = rootMotionSamples.front();
+      const RootMotionSample &last = rootMotionSamples.back();
+      const XMVECTOR firstPosition = XMLoadFloat3(&first.position);
+      const XMVECTOR lastPosition = XMLoadFloat3(&last.position);
+      const XMVECTOR clipDrift = lastPosition - firstPosition;
+      const float timeSpan = last.time - first.time;
+      float maxOffsetSq = 0.0f;
+
+      rootMotionTrack.boneIndex = targetRootBone;
+      rootMotionTrack.path = AnimTargetPath::Translation;
+      rootMotionTrack.keyframes.reserve(rootMotionSamples.size());
+      for (const RootMotionSample &sample : rootMotionSamples) {
+        const float normalizedTime =
+            timeSpan > 1e-6f ? (sample.time - first.time) / timeSpan : 0.0f;
+        const XMVECTOR sourcePosition = XMLoadFloat3(&sample.position);
+        const XMVECTOR cyclicOffset =
+            sourcePosition - firstPosition - clipDrift * normalizedTime;
+        maxOffsetSq = (std::max)(maxOffsetSq,
+                                 XMVectorGetX(XMVector3LengthSq(cyclicOffset)));
+
+        AnimKeyframe keyframe;
+        keyframe.time = sample.time;
+        XMStoreFloat4(&keyframe.value, targetRootBindT + cyclicOffset);
+        keyframe.value.w = 0.0f;
+        rootMotionTrack.keyframes.push_back(keyframe);
+      }
+
+      hasRootMotionTrack = std::isfinite(maxOffsetSq) && maxOffsetSq > 1e-12f;
+    }
+
     // Collect tracks into clip.
     for (auto &pair : trackMap)
       clip.tracks.push_back(std::move(pair.second));
+    if (hasRootMotionTrack)
+      clip.tracks.push_back(std::move(rootMotionTrack));
 
     if (!clip.tracks.empty()) {
-      std::cout << "Loaded animation \"" << clip.name << "\": "
-                << clip.tracks.size() << " tracks, " << clip.duration << "s\n";
+      std::cout << "Loaded animation \"" << clip.name
+                << "\": " << clip.tracks.size() << " tracks, " << clip.duration
+                << "s\n";
       outClips.push_back(std::move(clip));
     }
   }
