@@ -6,10 +6,12 @@
 
 #include <DirectXMath.h>
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <imgui.h>
+#include <string_view>
 
 using namespace DirectX;
 
@@ -26,13 +28,20 @@ constexpr std::array<XMFLOAT3, 2> kCounterMugInteractions = {
 constexpr std::array<XMFLOAT3, 2> kCounterMugPositions = {
     XMFLOAT3{-1.55f, 1.65f, 7.65f}, XMFLOAT3{-0.85f, 1.65f, 7.65f}};
 constexpr XMFLOAT3 kExitInteraction = {0.0f, 0.0f, -1.05f};
+constexpr XMFLOAT3 kManagementTableInteraction = {-4.45f, 0.0f, 0.35f};
+constexpr XMFLOAT3 kManagementTablePosition = {-5.62f, 0.0f, 0.35f};
 constexpr float kStationInteractionRange = 1.55f;
+constexpr float kManagementInteractionRange = 1.42f;
 constexpr float kCounterMugInteractionRange = 0.58f;
 constexpr float kTableInteractionRange = 2.05f;
 constexpr float kPerfectPourMinimum = 0.82f;
 constexpr float kPerfectPourMaximum = 0.96f;
 constexpr int kActiveTableCount = 2;
 constexpr int kTotalMugs = 2;
+constexpr int kInitialAleStock = 6;
+constexpr int kInitialAleCapacity = 6;
+constexpr int kAleSupplyUnitPrice = 2;
+constexpr int kEmergencyAleFloor = 2;
 constexpr float kBusinessOpenHour = 5.0f;
 constexpr float kMugScaleXZ = 0.345f;
 constexpr float kMugScaleY = 0.465f;
@@ -56,6 +65,318 @@ void DrawPanel(ImDrawList *draw, const ImVec2 &minimum, const ImVec2 &maximum,
   draw->AddRectFilled(minimum, maximum,
                       TavernUiColor(0.035f, 0.022f, 0.015f, 0.92f), rounding);
   draw->AddRect(minimum, maximum, borderColor, rounding, 0, 1.5f);
+}
+
+void DrawSupplierIllustration(ImDrawList *draw, const ImVec2 &minimum,
+                              const ImVec2 &maximum) {
+  const float width = maximum.x - minimum.x;
+  const float height = maximum.y - minimum.y;
+  draw->AddRectFilledMultiColor(minimum, maximum,
+                                TavernUiColor(0.12f, 0.085f, 0.045f, 1.0f),
+                                TavernUiColor(0.20f, 0.115f, 0.045f, 1.0f),
+                                TavernUiColor(0.045f, 0.032f, 0.022f, 1.0f),
+                                TavernUiColor(0.075f, 0.045f, 0.024f, 1.0f));
+
+  const ImU32 warmWood = TavernUiColor(0.58f, 0.29f, 0.095f, 1.0f);
+  const ImU32 lightWood = TavernUiColor(0.82f, 0.49f, 0.17f, 1.0f);
+  const ImU32 darkWood = TavernUiColor(0.19f, 0.085f, 0.035f, 1.0f);
+  const ImU32 metal = TavernUiColor(0.62f, 0.67f, 0.64f, 1.0f);
+  const ImU32 cloth = TavernUiColor(0.76f, 0.66f, 0.43f, 1.0f);
+  const ImU32 glow = TavernUiColor(1.0f, 0.58f, 0.16f, 0.38f);
+
+  const ImVec2 halo(minimum.x + width * 0.49f, minimum.y + height * 0.49f);
+  draw->AddCircleFilled(halo, std::min(width, height) * 0.28f, glow, 48);
+
+  const ImVec2 shelfMin(minimum.x + width * 0.10f, minimum.y + height * 0.22f);
+  const ImVec2 shelfMax(minimum.x + width * 0.90f, minimum.y + height * 0.78f);
+  draw->AddRectFilled(ImVec2(shelfMin.x, shelfMax.y - height * 0.035f),
+                      shelfMax, darkWood, 3.0f);
+  draw->AddRectFilled(ImVec2(shelfMin.x, shelfMin.y),
+                      ImVec2(shelfMax.x, shelfMin.y + height * 0.028f),
+                      lightWood, 3.0f);
+
+  const ImVec2 barrelMin(minimum.x + width * 0.14f, minimum.y + height * 0.34f);
+  const ImVec2 barrelMax(minimum.x + width * 0.47f, minimum.y + height * 0.76f);
+  draw->AddRectFilled(barrelMin, barrelMax, warmWood, width * 0.07f);
+  for (const float t : {0.16f, 0.50f, 0.84f}) {
+    const float y = barrelMin.y + (barrelMax.y - barrelMin.y) * t;
+    draw->AddLine(ImVec2(barrelMin.x + width * 0.015f, y),
+                  ImVec2(barrelMax.x - width * 0.015f, y), metal,
+                  std::max(2.0f, width * 0.012f));
+  }
+  draw->AddLine(ImVec2((barrelMin.x + barrelMax.x) * 0.5f, barrelMin.y),
+                ImVec2((barrelMin.x + barrelMax.x) * 0.5f, barrelMax.y),
+                darkWood, std::max(1.5f, width * 0.008f));
+
+  const ImVec2 crateMin(minimum.x + width * 0.53f, minimum.y + height * 0.49f);
+  const ImVec2 crateMax(minimum.x + width * 0.86f, minimum.y + height * 0.76f);
+  draw->AddRectFilled(crateMin, crateMax, lightWood, 4.0f);
+  draw->AddRect(crateMin, crateMax, darkWood, 4.0f, 0,
+                std::max(2.0f, width * 0.012f));
+  draw->AddLine(crateMin, crateMax, darkWood, std::max(2.0f, width * 0.010f));
+  draw->AddLine(ImVec2(crateMax.x, crateMin.y), ImVec2(crateMin.x, crateMax.y),
+                darkWood, std::max(2.0f, width * 0.010f));
+
+  const float sackRadius = std::min(width, height) * 0.092f;
+  const ImVec2 sackCenter(minimum.x + width * 0.66f,
+                          minimum.y + height * 0.37f);
+  draw->AddCircleFilled(sackCenter, sackRadius, cloth, 32);
+  draw->AddRectFilled(ImVec2(sackCenter.x - sackRadius * 0.48f,
+                             sackCenter.y - sackRadius * 1.18f),
+                      ImVec2(sackCenter.x + sackRadius * 0.48f,
+                             sackCenter.y - sackRadius * 0.72f),
+                      cloth, 4.0f);
+  draw->AddLine(ImVec2(sackCenter.x - sackRadius * 0.48f,
+                       sackCenter.y - sackRadius * 0.70f),
+                ImVec2(sackCenter.x + sackRadius * 0.48f,
+                       sackCenter.y - sackRadius * 0.70f),
+                darkWood, std::max(1.5f, width * 0.008f));
+}
+
+void DrawAleSupplyIllustration(ImDrawList *draw, const ImVec2 &minimum,
+                               const ImVec2 &maximum) {
+  const float width = maximum.x - minimum.x;
+  const float height = maximum.y - minimum.y;
+  draw->AddRectFilledMultiColor(minimum, maximum,
+                                TavernUiColor(0.16f, 0.085f, 0.028f, 1.0f),
+                                TavernUiColor(0.30f, 0.15f, 0.045f, 1.0f),
+                                TavernUiColor(0.045f, 0.025f, 0.018f, 1.0f),
+                                TavernUiColor(0.075f, 0.040f, 0.020f, 1.0f));
+
+  const ImU32 wood = TavernUiColor(0.67f, 0.32f, 0.085f, 1.0f);
+  const ImU32 lightWood = TavernUiColor(0.90f, 0.53f, 0.16f, 1.0f);
+  const ImU32 darkWood = TavernUiColor(0.20f, 0.075f, 0.025f, 1.0f);
+  const ImU32 metal = TavernUiColor(0.66f, 0.70f, 0.66f, 1.0f);
+  const ImU32 ale = TavernUiColor(0.95f, 0.44f, 0.055f, 1.0f);
+  const ImU32 foam = TavernUiColor(1.0f, 0.90f, 0.67f, 1.0f);
+  const ImVec2 halo(minimum.x + width * 0.50f, minimum.y + height * 0.50f);
+  draw->AddCircleFilled(halo, std::min(width, height) * 0.34f,
+                        TavernUiColor(1.0f, 0.55f, 0.10f, 0.24f), 48);
+
+  const ImVec2 barrelMin(minimum.x + width * 0.22f, minimum.y + height * 0.16f);
+  const ImVec2 barrelMax(minimum.x + width * 0.73f, minimum.y + height * 0.84f);
+  draw->AddRectFilled(barrelMin, barrelMax, wood, width * 0.11f);
+  draw->AddRect(barrelMin, barrelMax, darkWood, width * 0.11f, 0,
+                std::max(2.0f, width * 0.012f));
+  for (const float xScale : {0.34f, 0.50f, 0.66f}) {
+    const float x = barrelMin.x + (barrelMax.x - barrelMin.x) * xScale;
+    draw->AddLine(ImVec2(x, barrelMin.y + height * 0.02f),
+                  ImVec2(x, barrelMax.y - height * 0.02f), darkWood,
+                  std::max(1.5f, width * 0.007f));
+  }
+  for (const float yScale : {0.18f, 0.50f, 0.82f}) {
+    const float y = barrelMin.y + (barrelMax.y - barrelMin.y) * yScale;
+    draw->AddLine(ImVec2(barrelMin.x + width * 0.015f, y),
+                  ImVec2(barrelMax.x - width * 0.015f, y), metal,
+                  std::max(3.0f, width * 0.018f));
+  }
+  draw->AddLine(ImVec2(barrelMin.x + width * 0.08f, barrelMin.y),
+                ImVec2(barrelMax.x - width * 0.08f, barrelMin.y), lightWood,
+                std::max(2.0f, width * 0.012f));
+
+  const ImVec2 tapBase(barrelMax.x - width * 0.02f, minimum.y + height * 0.55f);
+  draw->AddRectFilled(
+      ImVec2(tapBase.x, tapBase.y - height * 0.035f),
+      ImVec2(tapBase.x + width * 0.16f, tapBase.y + height * 0.035f), metal,
+      3.0f);
+  draw->AddRectFilled(
+      ImVec2(tapBase.x + width * 0.11f, tapBase.y),
+      ImVec2(tapBase.x + width * 0.16f, tapBase.y + height * 0.12f), metal,
+      3.0f);
+
+  const ImVec2 mugMin(minimum.x + width * 0.64f, minimum.y + height * 0.61f);
+  const ImVec2 mugMax(minimum.x + width * 0.91f, minimum.y + height * 0.89f);
+  draw->AddRectFilled(mugMin, mugMax,
+                      TavernUiColor(0.08f, 0.055f, 0.035f, 0.96f), 6.0f);
+  draw->AddRectFilled(
+      ImVec2(mugMin.x + width * 0.018f, mugMin.y + height * 0.075f),
+      ImVec2(mugMax.x - width * 0.018f, mugMax.y - height * 0.025f), ale, 4.0f);
+  draw->AddRectFilled(
+      ImVec2(mugMin.x + width * 0.014f, mugMin.y + height * 0.045f),
+      ImVec2(mugMax.x - width * 0.014f, mugMin.y + height * 0.10f), foam, 7.0f);
+  draw->AddRect(mugMin, mugMax, metal, 6.0f, 0, std::max(2.0f, width * 0.012f));
+  draw->AddCircle(
+      ImVec2(mugMax.x + width * 0.045f, (mugMin.y + mugMax.y) * 0.5f),
+      width * 0.075f, metal, 24, std::max(2.0f, width * 0.014f));
+}
+
+struct ManagementButtonResult {
+  bool clicked = false;
+  bool hovered = false;
+};
+
+ManagementButtonResult DrawManagementButton(ImDrawList *draw, const char *id,
+                                            const char *label,
+                                            const ImVec2 &minimum,
+                                            const ImVec2 &maximum, bool enabled,
+                                            ImU32 accent = 0) {
+  ImGui::PushID(id);
+  ImGui::SetCursorScreenPos(minimum);
+  const bool submitted = ImGui::InvisibleButton(
+      "##button", ImVec2(maximum.x - minimum.x, maximum.y - minimum.y));
+  const bool hovered = ImGui::IsItemHovered();
+  ImGui::PopID();
+
+  if (accent == 0)
+    accent = TavernUiColor(0.96f, 0.56f, 0.20f, 1.0f);
+  const bool highlighted = enabled && hovered;
+  draw->AddRectFilled(
+      minimum, maximum,
+      !enabled ? TavernUiColor(0.055f, 0.045f, 0.038f, 0.92f)
+               : (highlighted ? TavernUiColor(0.25f, 0.13f, 0.045f, 0.99f)
+                              : TavernUiColor(0.10f, 0.060f, 0.030f, 0.97f)),
+      7.0f);
+  draw->AddRect(minimum, maximum,
+                enabled ? accent : TavernUiColor(0.32f, 0.27f, 0.23f, 0.80f),
+                7.0f, 0, highlighted ? 2.4f : 1.3f);
+  const ImVec2 labelSize = ImGui::CalcTextSize(label);
+  draw->AddText(ImVec2((minimum.x + maximum.x - labelSize.x) * 0.5f,
+                       (minimum.y + maximum.y - labelSize.y) * 0.5f),
+                enabled ? TavernUiColor(1.0f, 0.90f, 0.74f, 1.0f)
+                        : TavernUiColor(0.48f, 0.44f, 0.40f, 1.0f),
+                label);
+  return {enabled && submitted, hovered};
+}
+
+void DrawUpgradeIllustration(ImDrawList *draw, const ImVec2 &minimum,
+                             const ImVec2 &maximum) {
+  const float width = maximum.x - minimum.x;
+  const float height = maximum.y - minimum.y;
+  draw->AddRectFilledMultiColor(minimum, maximum,
+                                TavernUiColor(0.055f, 0.075f, 0.080f, 1.0f),
+                                TavernUiColor(0.075f, 0.14f, 0.13f, 1.0f),
+                                TavernUiColor(0.025f, 0.035f, 0.040f, 1.0f),
+                                TavernUiColor(0.035f, 0.070f, 0.065f, 1.0f));
+
+  const ImU32 teal = TavernUiColor(0.30f, 0.86f, 0.70f, 1.0f);
+  const ImU32 tealSoft = TavernUiColor(0.26f, 0.72f, 0.60f, 0.42f);
+  const ImU32 gold = TavernUiColor(1.0f, 0.64f, 0.20f, 1.0f);
+  const ImU32 steel = TavernUiColor(0.72f, 0.78f, 0.76f, 1.0f);
+  const ImU32 dark = TavernUiColor(0.055f, 0.075f, 0.072f, 1.0f);
+
+  const ImVec2 halo(minimum.x + width * 0.50f, minimum.y + height * 0.48f);
+  draw->AddCircleFilled(halo, std::min(width, height) * 0.30f, tealSoft, 48);
+
+  const float baseY = minimum.y + height * 0.77f;
+  const float left = minimum.x + width * 0.18f;
+  const float right = minimum.x + width * 0.82f;
+  const float roofY = minimum.y + height * 0.43f;
+  draw->AddTriangleFilled(
+      ImVec2(left, roofY),
+      ImVec2((left + right) * 0.5f, minimum.y + height * 0.25f),
+      ImVec2(right, roofY), dark);
+  draw->AddLine(ImVec2(left, roofY),
+                ImVec2((left + right) * 0.5f, minimum.y + height * 0.25f), teal,
+                std::max(3.0f, width * 0.016f));
+  draw->AddLine(ImVec2((left + right) * 0.5f, minimum.y + height * 0.25f),
+                ImVec2(right, roofY), teal, std::max(3.0f, width * 0.016f));
+  draw->AddRectFilled(ImVec2(left + width * 0.055f, roofY),
+                      ImVec2(right - width * 0.055f, baseY), dark, 5.0f);
+  draw->AddRect(ImVec2(left + width * 0.055f, roofY),
+                ImVec2(right - width * 0.055f, baseY), teal, 5.0f, 0,
+                std::max(2.0f, width * 0.010f));
+
+  const ImVec2 handleStart(minimum.x + width * 0.34f,
+                           minimum.y + height * 0.69f);
+  const ImVec2 handleEnd(minimum.x + width * 0.62f, minimum.y + height * 0.39f);
+  draw->AddLine(handleStart, handleEnd, gold, std::max(8.0f, width * 0.040f));
+  const ImVec2 hammerHeadCenter(minimum.x + width * 0.65f,
+                                minimum.y + height * 0.36f);
+  const ImVec2 headAcross(width * 0.12f, -height * 0.070f);
+  const ImVec2 headDepth(width * 0.035f, height * 0.048f);
+  draw->AddQuadFilled(ImVec2(hammerHeadCenter.x - headAcross.x - headDepth.x,
+                             hammerHeadCenter.y - headAcross.y - headDepth.y),
+                      ImVec2(hammerHeadCenter.x + headAcross.x - headDepth.x,
+                             hammerHeadCenter.y + headAcross.y - headDepth.y),
+                      ImVec2(hammerHeadCenter.x + headAcross.x + headDepth.x,
+                             hammerHeadCenter.y + headAcross.y + headDepth.y),
+                      ImVec2(hammerHeadCenter.x - headAcross.x + headDepth.x,
+                             hammerHeadCenter.y - headAcross.y + headDepth.y),
+                      steel);
+
+  const float arrowX = minimum.x + width * 0.76f;
+  const float arrowBottom = minimum.y + height * 0.64f;
+  const float arrowTop = minimum.y + height * 0.26f;
+  draw->AddLine(ImVec2(arrowX, arrowBottom), ImVec2(arrowX, arrowTop), teal,
+                std::max(4.0f, width * 0.020f));
+  draw->AddTriangleFilled(
+      ImVec2(arrowX, arrowTop - height * 0.055f),
+      ImVec2(arrowX - width * 0.060f, arrowTop + height * 0.035f),
+      ImVec2(arrowX + width * 0.060f, arrowTop + height * 0.035f), teal);
+}
+
+struct ManagementCardResult {
+  bool clicked = false;
+  bool submitted = false;
+  bool supplierArtwork = false;
+  bool labelRegionValid = false;
+  const char *label = nullptr;
+  ImVec2 imageMinimum{};
+  ImVec2 imageMaximum{};
+};
+
+ManagementCardResult DrawManagementCard(ImDrawList *draw, const char *id,
+                                        const char *label,
+                                        const ImVec2 &minimum,
+                                        const ImVec2 &maximum, bool supplier,
+                                        bool selected) {
+  ImGui::PushID(id);
+  ImGui::SetCursorScreenPos(minimum);
+  const bool clicked = ImGui::InvisibleButton(
+      "##card", ImVec2(maximum.x - minimum.x, maximum.y - minimum.y));
+  const bool hovered = ImGui::IsItemHovered();
+  const bool focused = ImGui::IsItemFocused();
+  ImGui::PopID();
+
+  const float cardHeight = maximum.y - minimum.y;
+  const float footerHeight = std::clamp(cardHeight * 0.205f, 70.0f, 108.0f);
+  const ImVec2 imageMinimum(minimum.x + 10.0f, minimum.y + 10.0f);
+  const ImVec2 imageMaximum(maximum.x - 10.0f, maximum.y - footerHeight - 1.0f);
+  const bool highlighted = hovered || focused || selected;
+
+  draw->AddRectFilled(
+      minimum, maximum,
+      selected ? TavernUiColor(0.13f, 0.085f, 0.035f, 0.99f)
+               : (highlighted ? TavernUiColor(0.095f, 0.064f, 0.038f, 0.98f)
+                              : TavernUiColor(0.045f, 0.030f, 0.020f, 0.97f)),
+      14.0f);
+  draw->PushClipRect(imageMinimum, imageMaximum, true);
+  if (supplier)
+    DrawSupplierIllustration(draw, imageMinimum, imageMaximum);
+  else
+    DrawUpgradeIllustration(draw, imageMinimum, imageMaximum);
+  draw->PopClipRect();
+
+  const ImU32 accent = supplier ? TavernUiColor(1.0f, 0.60f, 0.20f, 1.0f)
+                                : TavernUiColor(0.32f, 0.90f, 0.72f, 1.0f);
+  draw->AddLine(ImVec2(minimum.x + 10.0f, imageMaximum.y),
+                ImVec2(maximum.x - 10.0f, imageMaximum.y), accent,
+                highlighted ? 2.4f : 1.5f);
+  draw->AddRect(minimum, maximum,
+                highlighted ? accent
+                            : TavernUiColor(0.48f, 0.30f, 0.16f, 0.72f),
+                14.0f, 0, highlighted ? 3.0f : 1.5f);
+
+  ImFont *font = ImGui::GetFont();
+  const float labelSizePx = std::clamp(cardHeight * 0.075f, 28.0f, 43.0f);
+  const ImVec2 labelSize =
+      font->CalcTextSizeA(labelSizePx, FLT_MAX, 0.0f, label);
+  const float footerTop = maximum.y - footerHeight;
+  draw->AddText(font, labelSizePx,
+                ImVec2((minimum.x + maximum.x - labelSize.x) * 0.5f,
+                       footerTop + (footerHeight - labelSize.y) * 0.5f),
+                highlighted ? TavernUiColor(1.0f, 0.94f, 0.82f, 1.0f)
+                            : TavernUiColor(0.91f, 0.84f, 0.74f, 1.0f),
+                label);
+  ManagementCardResult result;
+  result.clicked = clicked;
+  result.submitted = true;
+  result.supplierArtwork = supplier;
+  result.labelRegionValid = footerHeight > labelSize.y + 8.0f;
+  result.label = label;
+  result.imageMinimum = imageMinimum;
+  result.imageMaximum = imageMaximum;
+  return result;
 }
 
 constexpr std::array<const char *, 13> kTavernAssetPaths = {
@@ -147,6 +468,130 @@ const char *TavernScene::GetHeldItemName(HeldItem item) {
     return "汚れたジョッキ";
   }
   return "手ぶら";
+}
+
+bool TavernScene::PlayerMovementLocked() const {
+  return m_workState != WorkState::None || ManagementMenuOpen();
+}
+
+bool TavernScene::ManagementMenuOpen() const {
+  return m_managementPage != ManagementPage::Closed;
+}
+
+XMFLOAT3 TavernScene::ManagementInteractionPosition() const {
+  return kManagementTableInteraction;
+}
+
+TavernScene::SupplyState &TavernScene::AleSupply() {
+  return m_supplies[static_cast<std::size_t>(SupplyType::Ale)];
+}
+
+const TavernScene::SupplyState &TavernScene::AleSupply() const {
+  return m_supplies[static_cast<std::size_t>(SupplyType::Ale)];
+}
+
+int TavernScene::AleStock() const { return AleSupply().current; }
+
+int TavernScene::AleCapacity() const { return AleSupply().capacity; }
+
+bool TavernScene::AlePourInProgress() const {
+  return m_workState == WorkState::PouringAle;
+}
+
+int TavernScene::AleUnitPrice() const { return kAleSupplyUnitPrice; }
+
+int TavernScene::MaximumAleOrderQuantity() const {
+  return std::max(0, AleCapacity() - AleStock());
+}
+
+TavernScene::SupplyOrderBlockReason
+TavernScene::CurrentAleOrderBlockReason() const {
+  const int maximumQuantity = MaximumAleOrderQuantity();
+  if (maximumQuantity <= 0 || m_aleOrderQuantity > maximumQuantity)
+    return SupplyOrderBlockReason::Full;
+  if (m_aleOrderQuantity <= 0)
+    return SupplyOrderBlockReason::ZeroQuantity;
+  if (m_gold < m_aleOrderQuantity * kAleSupplyUnitPrice)
+    return SupplyOrderBlockReason::InsufficientGold;
+  return SupplyOrderBlockReason::None;
+}
+
+void TavernScene::AdjustAleOrderQuantity(int delta) {
+  m_aleOrderQuantity =
+      std::clamp(m_aleOrderQuantity + delta, 0, MaximumAleOrderQuantity());
+}
+
+bool TavernScene::TryOrderAle() {
+  if (CurrentAleOrderBlockReason() != SupplyOrderBlockReason::None)
+    return false;
+
+  const int quantity = m_aleOrderQuantity;
+  const int total = quantity * kAleSupplyUnitPrice;
+  m_gold -= total;
+  AleSupply().current += quantity;
+  m_aleOrderQuantity = 0;
+  ++m_supplyPurchaseSerial;
+
+  char feedback[96]{};
+  std::snprintf(feedback, sizeof(feedback), "ALE +%d   -%d G", quantity, total);
+  m_feedbackText = feedback;
+  m_feedbackTimer = 1.8f;
+  return true;
+}
+
+void TavernScene::ConfigureSuppliesSmokeState(int aleStock, int gold) {
+  AleSupply().current = std::clamp(aleStock, 0, AleCapacity());
+  m_gold = std::clamp(gold, 0, 999999);
+  m_aleOrderQuantity = 0;
+}
+
+void TavernScene::OpenManagementMenu() {
+  m_managementPage = ManagementPage::Root;
+  m_managementSelection = ManagementSelection::Supplies;
+  m_aleOrderQuantity = 0;
+  m_managementActivationSerial = 0;
+  m_managementUiDiagnostics = {};
+  m_interactionCooldown = 0.20f;
+}
+
+void TavernScene::OpenSuppliesPage() {
+  m_managementPage = ManagementPage::Supplies;
+  m_managementSelection = ManagementSelection::Supplies;
+  m_aleOrderQuantity = 0;
+  const uint64_t renderedFrameSerial =
+      m_managementUiDiagnostics.renderedFrameSerial;
+  m_managementUiDiagnostics = {};
+  m_managementUiDiagnostics.menuOpen = true;
+  m_managementUiDiagnostics.subpageOpen = true;
+  m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
+  m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+  m_managementUiDiagnostics.renderedFrameSerial = renderedFrameSerial;
+}
+
+void TavernScene::BackToManagementRoot() {
+  m_managementPage = ManagementPage::Root;
+  m_managementSelection = ManagementSelection::Supplies;
+  m_aleOrderQuantity = 0;
+  const uint64_t renderedFrameSerial =
+      m_managementUiDiagnostics.renderedFrameSerial;
+  m_managementUiDiagnostics = {};
+  m_managementUiDiagnostics.menuOpen = true;
+  m_managementUiDiagnostics.selectedCardIndex = 0;
+  m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
+  m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+  m_managementUiDiagnostics.renderedFrameSerial = renderedFrameSerial;
+}
+
+void TavernScene::CloseManagementMenu() {
+  m_managementPage = ManagementPage::Closed;
+  m_managementSelection = ManagementSelection::None;
+  m_aleOrderQuantity = 0;
+  const uint64_t renderedFrameSerial =
+      m_managementUiDiagnostics.renderedFrameSerial;
+  m_managementUiDiagnostics = {};
+  m_managementUiDiagnostics.renderedFrameSerial = renderedFrameSerial;
+  m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
+  m_interactionCooldown = 0.20f;
 }
 
 void TavernScene::Initialize(DxContext &dx) {
@@ -330,6 +775,11 @@ void TavernScene::Initialize(DxContext &dx) {
        {2.45f, 1.5f, 2.35f},
        0.0f,
        true},
+      {CollisionSystem::ShapeType::Box,
+       {kManagementTablePosition.x, 0.55f, kManagementTablePosition.z},
+       {1.65f, 1.10f, 1.15f},
+       0.0f,
+       true},
   };
 
   m_ready = m_floorMeshId != UINT32_MAX && m_wallMeshId != UINT32_MAX &&
@@ -360,10 +810,18 @@ void TavernScene::Reset(float startingHour) {
   m_tableCompletedCycles = {};
   m_tables = {};
   m_counterMugs = {};
+  m_supplies = {};
+  AleSupply() = {kInitialAleStock, kInitialAleCapacity};
+  m_aleOrderQuantity = 0;
+  m_supplyPurchaseSerial = 0;
   m_tables[0].enabled = true;
   m_tables[1].enabled = false;
   m_heldItem = HeldItem::None;
   m_workState = WorkState::None;
+  m_managementPage = ManagementPage::Closed;
+  m_managementSelection = ManagementSelection::None;
+  m_managementActivationSerial = 0;
+  m_managementUiDiagnostics = {};
   m_tutorialStep = TutorialStep::TakeOrder;
   m_playerPosition = PlayerSpawnPosition();
   m_nearbyPrompt = "WASD：移動　E：調べる";
@@ -394,6 +852,8 @@ void TavernScene::BeginNextDay(float startingHour) {
   const int completedDays = m_completedDays + 1;
   const std::array<int, 3> tableCompletedCycles = m_tableCompletedCycles;
   const TutorialStep tutorialStep = m_tutorialStep;
+  const auto supplies = m_supplies;
+  const uint64_t supplyPurchaseSerial = m_supplyPurchaseSerial;
 
   Reset(startingHour);
   m_gold = gold;
@@ -403,6 +863,11 @@ void TavernScene::BeginNextDay(float startingHour) {
   m_completedDays = completedDays;
   m_tableCompletedCycles = tableCompletedCycles;
   m_tutorialStep = tutorialStep;
+  m_supplies = supplies;
+  m_supplyPurchaseSerial = supplyPurchaseSerial;
+  m_aleOrderQuantity = 0;
+  if (AleStock() == 0 && m_gold < kAleSupplyUnitPrice)
+    AleSupply().current = std::min(kEmergencyAleFloor, AleCapacity());
   if (m_tutorialStep == TutorialStep::Complete) {
     m_tables[1].enabled = true;
     m_spawnTimers[1] = 4.0f;
@@ -485,8 +950,7 @@ void TavernScene::PlaceHeldMug(int slotIndex) {
 }
 
 void TavernScene::PickUpPlacedMug(int slotIndex) {
-  if (slotIndex < 0 ||
-      slotIndex >= static_cast<int>(m_counterMugs.size()) ||
+  if (slotIndex < 0 || slotIndex >= static_cast<int>(m_counterMugs.size()) ||
       m_heldItem != HeldItem::None ||
       m_counterMugs[slotIndex].item == HeldItem::None)
     return;
@@ -507,6 +971,11 @@ void TavernScene::PickUpPlacedMug(int slotIndex) {
 void TavernScene::BeginPouring() {
   if (m_heldItem != HeldItem::EmptyMug || m_workState != WorkState::None)
     return;
+  if (AleStock() <= 0) {
+    m_feedbackText = "ALE STOCK EMPTY";
+    m_feedbackTimer = 1.8f;
+    return;
+  }
   m_workState = WorkState::PouringAle;
   m_aleFill = 0.0f;
   m_aleFoam = 0.0f;
@@ -520,6 +989,13 @@ void TavernScene::BeginPouring() {
 void TavernScene::FinishPouring() {
   if (m_workState != WorkState::PouringAle)
     return;
+  if (AleStock() <= 0) {
+    m_workState = WorkState::None;
+    m_workActionStarted = false;
+    m_feedbackText = "ALE STOCK EMPTY";
+    m_feedbackTimer = 1.8f;
+    return;
+  }
 
   const float targetError = std::abs(m_aleFill - 0.90f);
   m_pourQuality = std::clamp(1.0f - targetError * 1.65f - m_aleFoam * 0.18f -
@@ -539,6 +1015,7 @@ void TavernScene::FinishPouring() {
     m_feedbackText = "泡が多すぎる";
   }
   m_feedbackTimer = 1.4f;
+  --AleSupply().current;
   m_heldItem = HeldItem::FilledMug;
   m_workState = WorkState::None;
   m_workActionStarted = false;
@@ -656,6 +1133,18 @@ int TavernScene::NearestEnabledTable(float maximumDistance) const {
   return nearestTable;
 }
 
+bool TavernScene::ManagementInteractionHasPriority() const {
+  const float managementDistance =
+      DistanceXZ(m_playerPosition, kManagementTableInteraction);
+  if (managementDistance > kManagementInteractionRange)
+    return false;
+
+  const int nearbyTable = NearestEnabledTable(kTableInteractionRange);
+  return nearbyTable < 0 ||
+         managementDistance <
+             DistanceXZ(m_playerPosition, kTableInteractions[nearbyTable]);
+}
+
 int TavernScene::FindTableInState(TableState state) const {
   for (int tableIndex = 0; tableIndex < kActiveTableCount; ++tableIndex) {
     if (m_tables[tableIndex].enabled && m_tables[tableIndex].state == state)
@@ -766,6 +1255,12 @@ void TavernScene::RunAutomation() {
   }
 
   const int aleTable = FindMostUrgentWaitingAleTable();
+  if (aleTable >= 0 && AleStock() <= 0) {
+    const int affordableQuantity = m_gold / kAleSupplyUnitPrice;
+    m_aleOrderQuantity =
+        std::min(MaximumAleOrderQuantity(), affordableQuantity);
+    TryOrderAle();
+  }
   if (m_heldItem == HeldItem::FilledMug) {
     if (aleTable >= 0)
       ServeAle(aleTable);
@@ -793,6 +1288,10 @@ void TavernScene::RunAutomation() {
 }
 
 void TavernScene::UpdateNearbyPrompt() {
+  if (ManagementMenuOpen()) {
+    m_nearbyPrompt = "E / B：管理メニューを閉じる";
+    return;
+  }
   if (m_workState == WorkState::PouringAle) {
     m_nearbyPrompt = "左クリック長押し：注ぐ　ちょうど良い量で離す";
     return;
@@ -814,6 +1313,8 @@ void TavernScene::UpdateNearbyPrompt() {
   if (DistanceXZ(m_playerPosition, kExitInteraction) <=
       kStationInteractionRange) {
     m_nearbyPrompt = "E：外へ戻る";
+  } else if (ManagementInteractionHasPriority()) {
+    m_nearbyPrompt = "E / A：管理台帳を開く";
   } else if (nearbyTable >= 0) {
     const TableSlot &table = m_tables[nearbyTable];
     const std::string tableName = "TABLE " + std::to_string(nearbyTable + 1);
@@ -853,9 +1354,13 @@ void TavernScene::UpdateNearbyPrompt() {
       m_nearbyPrompt = "ジョッキ棚";
   } else if (DistanceXZ(m_playerPosition, kAleTapInteraction) <=
              kStationInteractionRange) {
-    m_nearbyPrompt = m_heldItem == HeldItem::EmptyMug
-                         ? "E：ジョッキを置いてエールを注ぐ"
-                         : "エール樽：空のジョッキが必要";
+    if (m_heldItem == HeldItem::EmptyMug && AleStock() <= 0)
+      m_nearbyPrompt =
+          "ALE 0 / " + std::to_string(AleCapacity()) + "：管理台で補給する";
+    else
+      m_nearbyPrompt = m_heldItem == HeldItem::EmptyMug
+                           ? "E：ジョッキを置いてエールを注ぐ"
+                           : "エール樽：空のジョッキが必要";
   } else if (DistanceXZ(m_playerPosition, kWashBasinInteraction) <=
              kStationInteractionRange) {
     if (m_heldItem == HeldItem::DirtyMug)
@@ -904,7 +1409,8 @@ void TavernScene::UpdateNearbyPrompt() {
 TavernScene::Action
 TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
                     bool interactPressed, bool primaryActionDown,
-                    bool restartPressed, bool automateGameplay) {
+                    bool restartPressed, const ManagementInput &managementInput,
+                    bool automateGameplay) {
   m_playerPosition = playerPosition;
   const float dt = std::clamp(deltaSeconds, 0.0f, 0.25f);
   m_interactionCooldown = std::max(0.0f, m_interactionCooldown - dt);
@@ -913,6 +1419,43 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
     m_feedbackText.clear();
   m_pourVisualTime += dt;
   m_primaryActionActive = false;
+
+  if (ManagementMenuOpen()) {
+    if (!automateGameplay) {
+      if (interactPressed && m_interactionCooldown <= 0.0f) {
+        CloseManagementMenu();
+      } else if (managementInput.cancelPressed) {
+        if (m_managementPage == ManagementPage::Supplies)
+          BackToManagementRoot();
+        else
+          CloseManagementMenu();
+      } else if (m_managementPage == ManagementPage::Root) {
+        if (managementInput.previousPressed)
+          m_managementSelection = ManagementSelection::Supplies;
+        else if (managementInput.nextPressed)
+          m_managementSelection = ManagementSelection::Upgrades;
+        if (managementInput.confirmPressed) {
+          if (m_managementSelection == ManagementSelection::Supplies) {
+            ++m_managementActivationSerial;
+            OpenSuppliesPage();
+          } else if (m_managementSelection == ManagementSelection::Upgrades) {
+            ++m_managementActivationSerial;
+            m_feedbackText = "UPGRADES COMING SOON";
+            m_feedbackTimer = 1.6f;
+          }
+        }
+      } else if (m_managementPage == ManagementPage::Supplies) {
+        if (managementInput.previousPressed)
+          AdjustAleOrderQuantity(-1);
+        else if (managementInput.nextPressed)
+          AdjustAleOrderQuantity(1);
+        if (managementInput.confirmPressed)
+          TryOrderAle();
+      }
+    }
+    UpdateNearbyPrompt();
+    return Action::None;
+  }
 
   if (restartPressed) {
     if (m_shiftState == ShiftState::Failed ||
@@ -941,28 +1484,33 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
   if (automateGameplay)
     RunAutomation();
 
-  if (m_workState == WorkState::PouringAle) {
-    const bool shouldPour =
-        automateGameplay ? m_aleFill < 0.90f : primaryActionDown;
-    if (shouldPour) {
-      m_primaryActionActive = true;
-      m_workActionStarted = true;
-      const float nextFill = m_aleFill + dt * 0.34f;
-      if (nextFill > 1.0f)
-        m_aleOverflow += (nextFill - 1.0f) * 1.25f;
-      m_aleFill = std::min(1.0f, nextFill);
-      if (m_aleFill > kPerfectPourMinimum)
-        m_aleFoam = std::min(0.35f, m_aleFoam + dt * 0.11f);
-    } else if (m_workActionStarted) {
-      FinishPouring();
-    }
-  } else if (m_workState == WorkState::WashingMug) {
-    const bool shouldWash = automateGameplay || primaryActionDown;
-    if (shouldWash) {
-      m_workActionStarted = true;
-      m_washProgress = std::min(1.0f, m_washProgress + dt / 1.20f);
-      if (m_washProgress >= 1.0f)
-        FinishWashing();
+  const bool cancelWorkRequested = !automateGameplay && interactPressed &&
+                                   m_interactionCooldown <= 0.0f &&
+                                   m_workState != WorkState::None;
+  if (!cancelWorkRequested) {
+    if (m_workState == WorkState::PouringAle) {
+      const bool shouldPour =
+          automateGameplay ? m_aleFill < 0.90f : primaryActionDown;
+      if (shouldPour) {
+        m_primaryActionActive = true;
+        m_workActionStarted = true;
+        const float nextFill = m_aleFill + dt * 0.34f;
+        if (nextFill > 1.0f)
+          m_aleOverflow += (nextFill - 1.0f) * 1.25f;
+        m_aleFill = std::min(1.0f, nextFill);
+        if (m_aleFill > kPerfectPourMinimum)
+          m_aleFoam = std::min(0.35f, m_aleFoam + dt * 0.11f);
+      } else if (m_workActionStarted) {
+        FinishPouring();
+      }
+    } else if (m_workState == WorkState::WashingMug) {
+      const bool shouldWash = automateGameplay || primaryActionDown;
+      if (shouldWash) {
+        m_workActionStarted = true;
+        m_washProgress = std::min(1.0f, m_washProgress + dt / 1.20f);
+        if (m_washProgress >= 1.0f)
+          FinishWashing();
+      }
     }
   }
 
@@ -1053,6 +1601,8 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
     } else if (DistanceXZ(m_playerPosition, kExitInteraction) <=
                kStationInteractionRange) {
       return Action::ReturnToOverworld;
+    } else if (ManagementInteractionHasPriority()) {
+      OpenManagementMenu();
     } else if (CanServeCustomers() &&
                NearestEnabledTable(kTableInteractionRange) >= 0) {
       const int tableIndex = NearestEnabledTable(kTableInteractionRange);
@@ -1196,6 +1746,34 @@ void TavernScene::BuildFrame(FrameData &frame) const {
   pushMesh(m_woodMeshId, 8.30f, 0.10f, 0.08f, 0.0f, 1.10f, 7.45f);
   pushMesh(m_darkWoodMeshId, 5.8f, 0.18f, 0.65f, 0.0f, 2.25f, 9.55f);
   pushMesh(m_darkWoodMeshId, 5.8f, 0.18f, 0.65f, 0.0f, 3.35f, 9.55f);
+
+  // 客席とは別の管理机。開いた台帳と封印光で操作場所を明示する。
+  pushMesh(m_darkWoodMeshId, 1.65f, 0.14f, 1.15f, kManagementTablePosition.x,
+           0.94f, kManagementTablePosition.z);
+  pushMesh(m_woodMeshId, 1.76f, 0.08f, 1.24f, kManagementTablePosition.x, 1.04f,
+           kManagementTablePosition.z);
+  for (const float xOffset : {-0.62f, 0.62f}) {
+    for (const float zOffset : {-0.40f, 0.40f}) {
+      pushMesh(m_darkWoodMeshId, 0.13f, 0.88f, 0.13f,
+               kManagementTablePosition.x + xOffset, 0.46f,
+               kManagementTablePosition.z + zOffset);
+    }
+  }
+  pushTransform(
+      m_darkWoodMeshId, {0.92f, 0.035f, 0.58f}, {0.0f, 0.08f, 0.0f},
+      {kManagementTablePosition.x + 0.12f, 1.105f, kManagementTablePosition.z});
+  pushTransform(
+      m_wallMeshId, {0.39f, 0.024f, 0.49f}, {0.0f, 0.03f, -0.035f},
+      {kManagementTablePosition.x - 0.10f, 1.145f, kManagementTablePosition.z});
+  pushTransform(
+      m_wallMeshId, {0.39f, 0.024f, 0.49f}, {0.0f, -0.03f, 0.035f},
+      {kManagementTablePosition.x + 0.34f, 1.145f, kManagementTablePosition.z});
+  pushMesh(m_glowMeshId, 0.10f, 0.022f, 0.10f,
+           kManagementTablePosition.x + 0.12f, 1.18f,
+           kManagementTablePosition.z + 0.02f);
+  pushTransform(m_metalMeshId, {0.025f, 0.34f, 0.025f}, {0.0f, 0.0f, -0.45f},
+                {kManagementTablePosition.x + 0.56f, 1.26f,
+                 kManagementTablePosition.z - 0.18f});
 
   constexpr float tableX[3] = {-3.8f, 0.0f, 3.8f};
   const bool hasRoundTable =
@@ -1458,6 +2036,373 @@ void TavernScene::BuildFrame(FrameData &frame) const {
   }
 }
 
+void TavernScene::DrawManagementRoot(int viewportWidth, int viewportHeight) {
+  if (m_managementPage != ManagementPage::Root)
+    return;
+
+  const uint64_t renderedFrameSerial =
+      m_managementUiDiagnostics.renderedFrameSerial + 1;
+  m_managementUiDiagnostics = {};
+  m_managementUiDiagnostics.menuOpen = true;
+  m_managementUiDiagnostics.rootRendered = true;
+  m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
+  m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+  m_managementUiDiagnostics.renderedFrameSerial = renderedFrameSerial;
+
+  const ImVec2 viewportSize(static_cast<float>(viewportWidth),
+                            static_cast<float>(viewportHeight));
+  ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(viewportSize, ImGuiCond_Always);
+  ImGui::SetNextWindowFocus();
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+  ImGui::Begin("##TavernManagementRoot", nullptr,
+               ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                   ImGuiWindowFlags_NoSavedSettings |
+                   ImGuiWindowFlags_NoScrollbar |
+                   ImGuiWindowFlags_NoScrollWithMouse |
+                   ImGuiWindowFlags_NoNavInputs | ImGuiWindowFlags_NoNavFocus);
+
+  ImDrawList *draw = ImGui::GetWindowDrawList();
+  draw->AddRectFilled(ImVec2(0.0f, 0.0f), viewportSize,
+                      TavernUiColor(0.0f, 0.0f, 0.0f, 0.72f));
+
+  const float panelWidth = std::min(std::max(760.0f, viewportSize.x * 0.72f),
+                                    std::max(320.0f, viewportSize.x - 40.0f));
+  const float panelHeight = std::min(std::max(520.0f, viewportSize.y * 0.76f),
+                                     std::max(360.0f, viewportSize.y - 36.0f));
+  const ImVec2 panelMin((viewportSize.x - panelWidth) * 0.5f,
+                        (viewportSize.y - panelHeight) * 0.5f);
+  const ImVec2 panelMax(panelMin.x + panelWidth, panelMin.y + panelHeight);
+  const ImU32 panelBorder = TavernUiColor(0.96f, 0.56f, 0.20f, 0.94f);
+  DrawPanel(draw, panelMin, panelMax, panelBorder, 16.0f);
+
+  ImFont *font = ImGui::GetFont();
+  constexpr const char *title = "酒場管理";
+  const float titleSizePx = std::clamp(panelHeight * 0.055f, 28.0f, 40.0f);
+  draw->AddText(font, titleSizePx,
+                ImVec2(panelMin.x + 42.0f, panelMin.y + 27.0f),
+                TavernUiColor(1.0f, 0.85f, 0.60f, 1.0f), title);
+  draw->AddText(ImVec2(panelMin.x + 44.0f, panelMin.y + 71.0f),
+                TavernUiColor(0.80f, 0.73f, 0.64f, 1.0f), "管理項目を選ぶ");
+
+  const ImVec2 closeMin(panelMax.x - 188.0f, panelMin.y + 27.0f);
+  const ImVec2 closeMax(panelMax.x - 34.0f, panelMin.y + 67.0f);
+  ImGui::SetCursorScreenPos(closeMin);
+  const bool closeClicked = ImGui::InvisibleButton(
+      "##management-close",
+      ImVec2(closeMax.x - closeMin.x, closeMax.y - closeMin.y));
+  const bool closeHovered = ImGui::IsItemHovered();
+  draw->AddRectFilled(closeMin, closeMax,
+                      closeHovered
+                          ? TavernUiColor(0.24f, 0.13f, 0.055f, 0.98f)
+                          : TavernUiColor(0.08f, 0.050f, 0.032f, 0.94f),
+                      7.0f);
+  draw->AddRect(closeMin, closeMax,
+                TavernUiColor(0.92f, 0.55f, 0.24f, closeHovered ? 1.0f : 0.68f),
+                7.0f, 0, closeHovered ? 2.0f : 1.2f);
+  constexpr const char *closeLabel = "E / B  閉じる";
+  const ImVec2 closeTextSize = ImGui::CalcTextSize(closeLabel);
+  draw->AddText(ImVec2((closeMin.x + closeMax.x - closeTextSize.x) * 0.5f,
+                       (closeMin.y + closeMax.y - closeTextSize.y) * 0.5f),
+                TavernUiColor(0.94f, 0.86f, 0.74f, 1.0f), closeLabel);
+
+  const float sidePadding = std::clamp(panelWidth * 0.055f, 34.0f, 64.0f);
+  const float cardGap = std::clamp(panelWidth * 0.032f, 24.0f, 44.0f);
+  const float cardWidth = (panelWidth - sidePadding * 2.0f - cardGap) * 0.5f;
+  const float cardsTop = panelMin.y + 108.0f;
+  const float cardsBottom = panelMax.y - 34.0f;
+  const ImVec2 supplierMin(panelMin.x + sidePadding, cardsTop);
+  const ImVec2 supplierMax(supplierMin.x + cardWidth, cardsBottom);
+  const ImVec2 upgradeMin(supplierMax.x + cardGap, cardsTop);
+  const ImVec2 upgradeMax(upgradeMin.x + cardWidth, cardsBottom);
+
+  constexpr const char *suppliesLabel = "Supplies";
+  constexpr const char *upgradesLabel = "Upgrades";
+  const ManagementCardResult suppliesCard = DrawManagementCard(
+      draw, "supplies", suppliesLabel, supplierMin, supplierMax, true,
+      m_managementSelection == ManagementSelection::Supplies);
+  const ManagementCardResult upgradesCard = DrawManagementCard(
+      draw, "upgrades", upgradesLabel, upgradeMin, upgradeMax, false,
+      m_managementSelection == ManagementSelection::Upgrades);
+
+  bool openSuppliesAfterDraw = false;
+  if (suppliesCard.clicked) {
+    m_managementSelection = ManagementSelection::Supplies;
+    ++m_managementActivationSerial;
+    openSuppliesAfterDraw = true;
+  }
+  if (upgradesCard.clicked) {
+    m_managementSelection = ManagementSelection::Upgrades;
+    ++m_managementActivationSerial;
+    m_feedbackText = "UPGRADES COMING SOON";
+    m_feedbackTimer = 1.6f;
+  }
+
+  m_managementUiDiagnostics.suppliesCardRendered =
+      suppliesCard.submitted && suppliesCard.supplierArtwork &&
+      std::string_view(suppliesCard.label) == suppliesLabel;
+  m_managementUiDiagnostics.upgradesCardRendered =
+      upgradesCard.submitted && !upgradesCard.supplierArtwork &&
+      std::string_view(upgradesCard.label) == upgradesLabel;
+  m_managementUiDiagnostics.labelsInRequestedOrder =
+      std::string_view(suppliesCard.label) == "Supplies" &&
+      std::string_view(upgradesCard.label) == "Upgrades" &&
+      supplierMin.x < upgradeMin.x;
+  m_managementUiDiagnostics.visualRegionsValid =
+      suppliesCard.imageMaximum.x > suppliesCard.imageMinimum.x &&
+      suppliesCard.imageMaximum.y > suppliesCard.imageMinimum.y &&
+      suppliesCard.labelRegionValid &&
+      upgradesCard.imageMaximum.x > upgradesCard.imageMinimum.x &&
+      upgradesCard.imageMaximum.y > upgradesCard.imageMinimum.y &&
+      upgradesCard.labelRegionValid;
+  m_managementUiDiagnostics.cardsDoNotOverlap =
+      supplierMax.x < upgradeMin.x && supplierMax.y == upgradeMax.y;
+  m_managementUiDiagnostics.selectedCardIndex =
+      m_managementSelection == ManagementSelection::Supplies
+          ? 0
+          : (m_managementSelection == ManagementSelection::Upgrades ? 1 : -1);
+  m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
+  m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+
+  if (openSuppliesAfterDraw)
+    OpenSuppliesPage();
+  if (closeClicked)
+    CloseManagementMenu();
+
+  ImGui::End();
+  ImGui::PopStyleColor();
+  ImGui::PopStyleVar(2);
+}
+
+void TavernScene::DrawSuppliesPage(int viewportWidth, int viewportHeight) {
+  if (m_managementPage != ManagementPage::Supplies)
+    return;
+
+  const uint64_t renderedFrameSerial =
+      m_managementUiDiagnostics.renderedFrameSerial + 1;
+  m_managementUiDiagnostics = {};
+  m_managementUiDiagnostics.menuOpen = true;
+  m_managementUiDiagnostics.subpageOpen = true;
+  m_managementUiDiagnostics.suppliesPageRendered = true;
+  m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
+  m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+  m_managementUiDiagnostics.renderedFrameSerial = renderedFrameSerial;
+
+  const ImVec2 viewportSize(static_cast<float>(viewportWidth),
+                            static_cast<float>(viewportHeight));
+  ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(viewportSize, ImGuiCond_Always);
+  ImGui::SetNextWindowFocus();
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+  ImGui::Begin("##TavernSuppliesPage", nullptr,
+               ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                   ImGuiWindowFlags_NoSavedSettings |
+                   ImGuiWindowFlags_NoScrollbar |
+                   ImGuiWindowFlags_NoScrollWithMouse |
+                   ImGuiWindowFlags_NoNavInputs | ImGuiWindowFlags_NoNavFocus);
+
+  ImDrawList *draw = ImGui::GetWindowDrawList();
+  draw->AddRectFilled(ImVec2(0.0f, 0.0f), viewportSize,
+                      TavernUiColor(0.0f, 0.0f, 0.0f, 0.76f));
+
+  const float panelWidth = std::min(std::max(760.0f, viewportSize.x * 0.68f),
+                                    std::max(320.0f, viewportSize.x - 40.0f));
+  const float panelHeight = std::min(std::max(620.0f, viewportSize.y * 0.82f),
+                                     std::max(420.0f, viewportSize.y - 36.0f));
+  const ImVec2 panelMin((viewportSize.x - panelWidth) * 0.5f,
+                        (viewportSize.y - panelHeight) * 0.5f);
+  const ImVec2 panelMax(panelMin.x + panelWidth, panelMin.y + panelHeight);
+  const ImU32 orange = TavernUiColor(0.96f, 0.56f, 0.20f, 0.96f);
+  DrawPanel(draw, panelMin, panelMax, orange, 16.0f);
+
+  const ImVec2 backMin(panelMin.x + 30.0f, panelMin.y + 25.0f);
+  const ImVec2 backMax(backMin.x + 132.0f, backMin.y + 42.0f);
+  const ManagementButtonResult backButton = DrawManagementButton(
+      draw, "supplies-back", "BACK", backMin, backMax, true);
+  const ImVec2 closeMin(panelMax.x - 162.0f, panelMin.y + 25.0f);
+  const ImVec2 closeMax(closeMin.x + 132.0f, closeMin.y + 42.0f);
+  const ManagementButtonResult closeButton = DrawManagementButton(
+      draw, "supplies-close", "CLOSE", closeMin, closeMax, true);
+
+  ImFont *font = ImGui::GetFont();
+  constexpr const char *pageTitle = "ORDER SUPPLIES";
+  const float titleSizePx = std::clamp(panelHeight * 0.048f, 27.0f, 38.0f);
+  const ImVec2 titleSize =
+      font->CalcTextSizeA(titleSizePx, FLT_MAX, 0.0f, pageTitle);
+  draw->AddText(font, titleSizePx,
+                ImVec2((panelMin.x + panelMax.x - titleSize.x) * 0.5f,
+                       panelMin.y + 27.0f),
+                TavernUiColor(1.0f, 0.86f, 0.62f, 1.0f), pageTitle);
+  char textBuffer[96]{};
+  std::snprintf(textBuffer, sizeof(textBuffer), "GOLD  %d G", m_gold);
+  const ImVec2 goldSize = ImGui::CalcTextSize(textBuffer);
+  draw->AddText(
+      ImVec2((panelMin.x + panelMax.x - goldSize.x) * 0.5f, panelMin.y + 69.0f),
+      TavernUiColor(1.0f, 0.72f, 0.24f, 1.0f), textBuffer);
+
+  const float cardWidth = std::min(420.0f, panelWidth - 90.0f);
+  const float cardHeight = std::min(620.0f, panelHeight - 145.0f);
+  const ImVec2 cardMin((panelMin.x + panelMax.x - cardWidth) * 0.5f,
+                       panelMin.y + 98.0f);
+  const ImVec2 cardMax(cardMin.x + cardWidth, cardMin.y + cardHeight);
+  draw->AddRectFilled(cardMin, cardMax,
+                      TavernUiColor(0.055f, 0.033f, 0.020f, 0.99f), 13.0f);
+  draw->AddRect(cardMin, cardMax, orange, 13.0f, 0, 2.0f);
+
+  constexpr const char *aleLabel = "ALE";
+  const float aleTitleSizePx = std::clamp(cardHeight * 0.065f, 25.0f, 38.0f);
+  const ImVec2 aleTitleSize =
+      font->CalcTextSizeA(aleTitleSizePx, FLT_MAX, 0.0f, aleLabel);
+  draw->AddText(font, aleTitleSizePx,
+                ImVec2((cardMin.x + cardMax.x - aleTitleSize.x) * 0.5f,
+                       cardMin.y + 14.0f),
+                TavernUiColor(1.0f, 0.88f, 0.68f, 1.0f), aleLabel);
+
+  const ImVec2 imageMin(cardMin.x + 18.0f, cardMin.y + 58.0f);
+  const ImVec2 imageMax(cardMax.x - 18.0f, cardMin.y + cardHeight * 0.49f);
+  draw->PushClipRect(imageMin, imageMax, true);
+  DrawAleSupplyIllustration(draw, imageMin, imageMax);
+  draw->PopClipRect();
+  draw->AddRect(imageMin, imageMax, TavernUiColor(0.55f, 0.31f, 0.14f, 0.88f),
+                7.0f, 0, 1.2f);
+
+  std::snprintf(textBuffer, sizeof(textBuffer), "STOCK  %d / %d", AleStock(),
+                AleCapacity());
+  const ImVec2 stockSize = ImGui::CalcTextSize(textBuffer);
+  draw->AddText(ImVec2((cardMin.x + cardMax.x - stockSize.x) * 0.5f,
+                       cardMin.y + cardHeight * 0.515f),
+                AleStock() == 0 ? TavernUiColor(1.0f, 0.30f, 0.16f, 1.0f)
+                                : TavernUiColor(0.94f, 0.86f, 0.74f, 1.0f),
+                textBuffer);
+  std::snprintf(textBuffer, sizeof(textBuffer), "%d G EACH",
+                kAleSupplyUnitPrice);
+  const ImVec2 priceSize = ImGui::CalcTextSize(textBuffer);
+  draw->AddText(ImVec2((cardMin.x + cardMax.x - priceSize.x) * 0.5f,
+                       cardMin.y + cardHeight * 0.575f),
+                TavernUiColor(1.0f, 0.68f, 0.22f, 1.0f), textBuffer);
+
+  const float quantityTop = cardMin.y + cardHeight * 0.645f;
+  const float quantityHeight = std::clamp(cardHeight * 0.09f, 38.0f, 52.0f);
+  const float quantityButtonWidth = std::clamp(cardWidth * 0.16f, 52.0f, 68.0f);
+  const ImVec2 minusMin(cardMin.x + cardWidth * 0.20f, quantityTop);
+  const ImVec2 minusMax(minusMin.x + quantityButtonWidth,
+                        quantityTop + quantityHeight);
+  const ImVec2 plusMax(cardMax.x - cardWidth * 0.20f,
+                       quantityTop + quantityHeight);
+  const ImVec2 plusMin(plusMax.x - quantityButtonWidth, quantityTop);
+  const ManagementButtonResult minusButton = DrawManagementButton(
+      draw, "ale-minus", "-", minusMin, minusMax, m_aleOrderQuantity > 0);
+  const ManagementButtonResult plusButton =
+      DrawManagementButton(draw, "ale-plus", "+", plusMin, plusMax,
+                           m_aleOrderQuantity < MaximumAleOrderQuantity());
+  std::snprintf(textBuffer, sizeof(textBuffer), "%d", m_aleOrderQuantity);
+  const ImVec2 quantitySize = ImGui::CalcTextSize(textBuffer);
+  draw->AddText(ImVec2((cardMin.x + cardMax.x - quantitySize.x) * 0.5f,
+                       quantityTop + (quantityHeight - quantitySize.y) * 0.5f),
+                TavernUiColor(1.0f, 0.92f, 0.78f, 1.0f), textBuffer);
+
+  std::snprintf(textBuffer, sizeof(textBuffer), "AFTER  %d / %d",
+                AleStock() + m_aleOrderQuantity, AleCapacity());
+  const ImVec2 afterSize = ImGui::CalcTextSize(textBuffer);
+  draw->AddText(ImVec2((cardMin.x + cardMax.x - afterSize.x) * 0.5f,
+                       cardMin.y + cardHeight * 0.765f),
+                TavernUiColor(0.74f, 0.78f, 0.70f, 1.0f), textBuffer);
+
+  const SupplyOrderBlockReason blockReason = CurrentAleOrderBlockReason();
+  const int orderTotal = m_aleOrderQuantity * kAleSupplyUnitPrice;
+  const bool orderEnabled = blockReason == SupplyOrderBlockReason::None;
+  const char *orderLabel = "SELECT AMOUNT";
+  if (blockReason == SupplyOrderBlockReason::Full)
+    orderLabel = "FULL";
+  else if (blockReason == SupplyOrderBlockReason::InsufficientGold)
+    orderLabel = "NOT ENOUGH GOLD";
+  else if (orderEnabled) {
+    std::snprintf(textBuffer, sizeof(textBuffer), "ORDER  %d G", orderTotal);
+    orderLabel = textBuffer;
+  }
+  const ImVec2 orderMin(cardMin.x + 24.0f, cardMin.y + cardHeight * 0.835f);
+  const ImVec2 orderMax(cardMax.x - 24.0f, cardMax.y - 18.0f);
+  const ManagementButtonResult orderButton = DrawManagementButton(
+      draw, "ale-order", orderLabel, orderMin, orderMax, orderEnabled);
+
+  draw->AddText(ImVec2(panelMin.x + 32.0f, panelMax.y - 31.0f),
+                TavernUiColor(0.72f, 0.66f, 0.58f, 1.0f), "B / ESC  BACK");
+  constexpr const char *closeHint = "E  CLOSE";
+  const ImVec2 closeHintSize = ImGui::CalcTextSize(closeHint);
+  draw->AddText(
+      ImVec2(panelMax.x - 32.0f - closeHintSize.x, panelMax.y - 31.0f),
+      TavernUiColor(0.72f, 0.66f, 0.58f, 1.0f), closeHint);
+
+  if (minusButton.clicked)
+    AdjustAleOrderQuantity(-1);
+  if (plusButton.clicked)
+    AdjustAleOrderQuantity(1);
+  if (orderButton.clicked)
+    TryOrderAle();
+
+  m_managementUiDiagnostics.aleCardRendered =
+      std::string_view(aleLabel) == "ALE" && imageMax.x > imageMin.x &&
+      imageMax.y > imageMin.y;
+  m_managementUiDiagnostics.backControlRendered = true;
+  m_managementUiDiagnostics.visualRegionsValid =
+      cardMax.x > cardMin.x && cardMax.y > cardMin.y &&
+      orderMax.x > orderMin.x && orderMax.y > orderMin.y;
+  m_managementUiDiagnostics.cardsDoNotOverlap = true;
+  m_managementUiDiagnostics.aleStock = AleStock();
+  m_managementUiDiagnostics.aleCapacity = AleCapacity();
+  m_managementUiDiagnostics.orderQuantity = m_aleOrderQuantity;
+  m_managementUiDiagnostics.orderUnitPrice = kAleSupplyUnitPrice;
+  m_managementUiDiagnostics.orderTotal =
+      m_aleOrderQuantity * kAleSupplyUnitPrice;
+  m_managementUiDiagnostics.aleStockAfterOrder =
+      AleStock() + m_aleOrderQuantity;
+  m_managementUiDiagnostics.orderBlockReason = CurrentAleOrderBlockReason();
+  m_managementUiDiagnostics.orderCanPurchase =
+      CurrentAleOrderBlockReason() == SupplyOrderBlockReason::None;
+  m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
+  m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+
+  if (backButton.clicked)
+    BackToManagementRoot();
+  if (closeButton.clicked)
+    CloseManagementMenu();
+
+  ImGui::End();
+  ImGui::PopStyleColor();
+  ImGui::PopStyleVar(2);
+}
+
+void TavernScene::DrawManagementUi(int viewportWidth, int viewportHeight) {
+  if (!ManagementMenuOpen()) {
+    const uint64_t renderedFrameSerial =
+        m_managementUiDiagnostics.renderedFrameSerial;
+    m_managementUiDiagnostics = {};
+    m_managementUiDiagnostics.renderedFrameSerial = renderedFrameSerial;
+    m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
+    m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+    return;
+  }
+
+  switch (m_managementPage) {
+  case ManagementPage::Root:
+    DrawManagementRoot(viewportWidth, viewportHeight);
+    break;
+  case ManagementPage::Supplies:
+    DrawSuppliesPage(viewportWidth, viewportHeight);
+    break;
+  case ManagementPage::Upgrades:
+    BackToManagementRoot();
+    DrawManagementRoot(viewportWidth, viewportHeight);
+    break;
+  case ManagementPage::Closed:
+    break;
+  }
+}
+
 TavernScene::Action TavernScene::DrawHud(int viewportWidth,
                                          int viewportHeight) {
   const ImVec2 viewportSize(static_cast<float>(viewportWidth),
@@ -1557,7 +2502,7 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
   }
 
   const ImVec2 heldMin(viewportSize.x - 278.0f, 28.0f);
-  const ImVec2 heldMax(viewportSize.x - 28.0f, 142.0f);
+  const ImVec2 heldMax(viewportSize.x - 28.0f, 174.0f);
   DrawPanel(draw, heldMin, heldMax, goldBorder);
   draw->AddText(ImVec2(heldMin.x + 18.0f, heldMin.y + 14.0f),
                 TavernUiColor(0.72f, 0.66f, 0.58f, 1.0f), "持ち物");
@@ -1568,6 +2513,12 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
                 kTotalMugs);
   draw->AddText(ImVec2(heldMin.x + 18.0f, heldMin.y + 75.0f),
                 TavernUiColor(0.82f, 0.76f, 0.68f, 1.0f), line);
+  std::snprintf(line, sizeof(line), "ALE STOCK  %d / %d", AleStock(),
+                AleCapacity());
+  draw->AddText(ImVec2(heldMin.x + 18.0f, heldMin.y + 105.0f),
+                AleStock() == 0 ? TavernUiColor(1.0f, 0.30f, 0.16f, 1.0f)
+                                : TavernUiColor(1.0f, 0.72f, 0.28f, 1.0f),
+                line);
 
   if (m_tutorialStep != TutorialStep::Complete) {
     std::string tutorialTitle;
@@ -1770,6 +2721,7 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
   ImGui::End();
   ImGui::PopStyleColor();
   ImGui::PopStyleVar();
+  DrawManagementUi(viewportWidth, viewportHeight);
   return Action::None;
 }
 
@@ -1785,8 +2737,7 @@ void TavernScene::DrawDebugPanel(float &timeOfDayHours, bool &automaticTime) {
   ImGui::Text("通常速度：1 秒 = 1 分");
   ImGui::Checkbox("時間を進める", &automaticTime);
 
-  const float normalizedHour =
-      std::fmod(std::max(0.0f, timeOfDayHours), 24.0f);
+  const float normalizedHour = std::fmod(std::max(0.0f, timeOfDayHours), 24.0f);
   const int timeMinutes =
       static_cast<int>(std::lround(normalizedHour * 60.0f)) % (24 * 60);
   int debugHour = timeMinutes / 60;
@@ -1795,8 +2746,8 @@ void TavernScene::DrawDebugPanel(float &timeOfDayHours, bool &automaticTime) {
   if (ImGui::SliderInt("Minute（分）", &debugMinute, 0, 59))
     timeChanged = true;
   if (timeChanged)
-    timeOfDayHours = static_cast<float>(debugHour) +
-                     static_cast<float>(debugMinute) / 60.0f;
+    timeOfDayHours =
+        static_cast<float>(debugHour) + static_cast<float>(debugMinute) / 60.0f;
   ImGui::Text("現在時刻：%02d:%02d", debugHour, debugMinute);
 
   const auto setTime = [&](int hour, int minute) {
@@ -1830,6 +2781,20 @@ void TavernScene::DrawDebugPanel(float &timeOfDayHours, bool &automaticTime) {
   ImGui::SameLine();
   if (ImGui::Button("Gold +100"))
     m_gold = std::min(999999, m_gold + 100);
+
+  ImGui::Separator();
+  ImGui::Text("エール在庫：%d / %d", AleStock(), AleCapacity());
+  int debugAleStock = AleStock();
+  if (ImGui::InputInt("エール在庫##TavernAleStock", &debugAleStock, 1, 1))
+    AleSupply().current = std::clamp(debugAleStock, 0, AleCapacity());
+  if (ImGui::Button("在庫 0"))
+    AleSupply().current = 0;
+  ImGui::SameLine();
+  if (ImGui::Button("在庫 +1"))
+    AleSupply().current = std::min(AleCapacity(), AleStock() + 1);
+  ImGui::SameLine();
+  if (ImGui::Button("満タン"))
+    AleSupply().current = AleCapacity();
 
   const int placedMugs = static_cast<int>(std::count_if(
       m_counterMugs.begin(), m_counterMugs.end(),

@@ -643,13 +643,24 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         HasCommandLineSwitch(commandLine, L"--tavern-gameplay-smoke");
     const bool tavernDaySmokeRequested =
         HasCommandLineSwitch(commandLine, L"--tavern-day-smoke");
+    const bool tavernManagementSmokeRequested =
+        HasCommandLineSwitch(commandLine, L"--tavern-management-smoke");
+    const bool tavernSuppliesSmokeRequested =
+        HasCommandLineSwitch(commandLine, L"--tavern-supplies-smoke");
+    const int tavernSmokeModeCount =
+        static_cast<int>(tavernSmokeRequested) +
+        static_cast<int>(tavernGameplaySmokeRequested) +
+        static_cast<int>(tavernDaySmokeRequested) +
+        static_cast<int>(tavernManagementSmokeRequested) +
+        static_cast<int>(tavernSuppliesSmokeRequested);
     const bool tavernRequested =
         HasCommandLineSwitch(commandLine, L"--tavern") ||
         tavernSmokeRequested || tavernGameplaySmokeRequested ||
-        tavernDaySmokeRequested;
-    const bool dxrSmokeMode =
-        !playerAnimationSmokeRequested && !bossMirrorPickupSmokeRequested &&
-        (dxrSmokeRequested || dxrOverworldSmokeRequested);
+        tavernDaySmokeRequested || tavernManagementSmokeRequested ||
+        tavernSuppliesSmokeRequested;
+    const bool dxrSmokeMode = !playerAnimationSmokeRequested &&
+                              !bossMirrorPickupSmokeRequested &&
+                              (dxrSmokeRequested || dxrOverworldSmokeRequested);
     const bool dxrProofRequested =
         HasCommandLineSwitch(commandLine, L"--dxr-proof") || dxrSmokeRequested;
     const bool launchEditor = kDedicatedEditorBuild ||
@@ -667,6 +678,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       }
     }
     SetUnhandledExceptionFilter(UnhandledExceptionHandler);
+    if (tavernSmokeModeCount > 1) {
+      TraceAppEvent("Tavern smoke: FAIL; select exactly one Tavern smoke mode");
+      return 2;
+    }
 
     Win32Window window;
     SetStartupStage(10);
@@ -695,6 +710,50 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     bool tavernSmokeReturnIssued = false;
     bool tavernGameplaySmokeLogged = false;
     bool tavernDaySmokeLogged = false;
+    bool tavernManagementSmokeFailed = false;
+    bool tavernManagementSmokeCompleted = false;
+    int tavernManagementSmokePhase = 0;
+    int tavernManagementSmokeUpdateFrames = 0;
+    int tavernManagementSmokeLoopFrames = 0;
+    int tavernManagementBaselineGold = 0;
+    int tavernManagementBaselineCompletedCycles = 0;
+    enum class TavernSuppliesSmokePhase {
+      OpenRoot,
+      VerifyRoot,
+      EnterSupplies,
+      VerifyInitialFull,
+      AttemptFullOrder,
+      VerifyFullNoOp,
+      BackToRoot,
+      VerifyBackToRoot,
+      CloseRoot,
+      VerifyClosed,
+      AutomateToCancelablePour,
+      CancelPour,
+      VerifyCancelledPour,
+      AutomateOneService,
+      ReopenRoot,
+      VerifyReopenedRoot,
+      ReenterSupplies,
+      VerifyStockAfterService,
+      SelectOneAle,
+      VerifyOneAleSelected,
+      PurchaseOneAle,
+      VerifyPurchase,
+      SelectUnaffordableAle,
+      VerifyUnaffordableSelection,
+      AttemptUnaffordableOrder,
+      VerifyUnaffordableNoOp,
+    };
+    bool tavernSuppliesSmokeFailed = false;
+    bool tavernSuppliesSmokeCompleted = false;
+    TavernSuppliesSmokePhase tavernSuppliesSmokePhase =
+        TavernSuppliesSmokePhase::OpenRoot;
+    int tavernSuppliesSmokeUpdateFrames = 0;
+    int tavernSuppliesSmokeLoopFrames = 0;
+    int tavernSuppliesPostServeGold = 0;
+    uint64_t tavernSuppliesPurchaseSerialBefore = 0;
+    uint64_t tavernSuppliesPurchaseSerialAfter = 0;
     ReflectionMode reflectionMode =
         (dxrProofRequested || dxrOverworldRequested) &&
                 hybridReflection.IsSupported()
@@ -1026,6 +1085,24 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                    ? AppMode::Game
                    : (launchEditor ? AppMode::Editor : AppMode::Title));
     bool requestQuit = false;
+    const auto failTavernManagementSmoke = [&](const std::string &reason) {
+      if (!tavernManagementSmokeRequested || tavernManagementSmokeFailed)
+        return;
+      tavernManagementSmokeFailed = true;
+      applicationExitCode = 2;
+      requestQuit = true;
+      const std::string message = "Tavern management smoke: FAIL; " + reason;
+      TraceAppEvent(message.c_str());
+    };
+    const auto failTavernSuppliesSmoke = [&](const std::string &reason) {
+      if (!tavernSuppliesSmokeRequested || tavernSuppliesSmokeFailed)
+        return;
+      tavernSuppliesSmokeFailed = true;
+      applicationExitCode = 2;
+      requestQuit = true;
+      const std::string message = "Tavern supplies smoke: FAIL; " + reason;
+      TraceAppEvent(message.c_str());
+    };
     bool bossMirrorPickupSmokeFailed = false;
     bool bossMirrorPickupObserved = false;
     bool bossMirrorPickupSmokeCompleted = false;
@@ -1112,6 +1189,30 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     if (tavernRequested && !playerAnimationSmokeRequested &&
         !bossMirrorPickupSmokeRequested)
       enterTavernMode();
+    if (tavernManagementSmokeRequested) {
+      const DirectX::XMFLOAT3 managementPosition =
+          tavernScene.ManagementInteractionPosition();
+      playerPreview.SetPosition(managementPosition);
+      playerPreview.SetYaw(DirectX::XM_PIDIV2);
+      tavernManagementBaselineGold = tavernScene.Gold();
+      tavernManagementBaselineCompletedCycles = tavernScene.CompletedCycles();
+      TraceAppEvent(
+          "Tavern management smoke: production interaction route ready");
+    }
+    if (tavernSuppliesSmokeRequested) {
+      const DirectX::XMFLOAT3 managementPosition =
+          tavernScene.ManagementInteractionPosition();
+      playerPreview.SetPosition(managementPosition);
+      playerPreview.SetYaw(DirectX::XM_PIDIV2);
+      if (tavernScene.AleStock() != 6 || tavernScene.AleCapacity() != 6 ||
+          tavernScene.AleUnitPrice() != 2 || tavernScene.Gold() != 0) {
+        failTavernSuppliesSmoke(
+            "initial economy was not ALE 6/6 at 2 G each with 0 G");
+      } else {
+        tavernSuppliesPurchaseSerialBefore = tavernScene.SupplyPurchaseSerial();
+        TraceAppEvent("Tavern supplies smoke: initial ALE 6/6 route ready");
+      }
+    }
     TitleScreen titleScreen;
     Scene editorScene;
     SceneEditor sceneEditor;
@@ -1428,18 +1529,20 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
               : (tavernGameplaySmokeRequested ? 12.0f : 1.0f);
       const float worldClockDelta =
           dt * (appMode == AppMode::Tavern ? tavernClockScale : 1.0f);
+      const bool tavernManagementPaused =
+          appMode == AppMode::Tavern && tavernScene.ManagementMenuOpen();
       if ((appMode == AppMode::Game || appMode == AppMode::Tavern) &&
-          gameTimeAuto) {
+          gameTimeAuto && !tavernManagementPaused) {
         gameTimeOfDayHours =
             std::fmod(gameTimeOfDayHours +
                           worldClockDelta * gameHoursPerSecond,
                       24.0f);
       }
       const float gameDaylightT = DaylightTFromHour(gameTimeOfDayHours);
-      const float gameSkyExposure =
-          LerpFloat(0.01f, 0.25f, gameDaylightT); // Sky exposure linear from 0.01 to 0.25
-      const float gamePostExposure =
-          LerpFloat(0.1f, 1.0f, gameDaylightT); // Post exposure linear from 0.1 to 1.0
+      const float gameSkyExposure = LerpFloat(
+          0.01f, 0.25f, gameDaylightT); // Sky exposure linear from 0.01 to 0.25
+      const float gamePostExposure = LerpFloat(
+          0.1f, 1.0f, gameDaylightT); // Post exposure linear from 0.1 to 1.0
       const GameTimeLightingProfile gameLighting =
           BuildGameTimeLighting(gameTimeOfDayHours);
       const GameTimeLightingProfile tavernLighting = BuildTavernLighting();
@@ -1447,6 +1550,22 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
 
       auto &input = window.GetInput();
       input.PollGamepad();
+      if (tavernManagementSmokeRequested && !tavernManagementSmokeCompleted &&
+          !tavernManagementSmokeFailed) {
+        ++tavernManagementSmokeLoopFrames;
+        if (tavernManagementSmokeLoopFrames > 240) {
+          failTavernManagementSmoke(
+              "open/select/close route exceeded the 240-frame watchdog");
+        }
+      }
+      if (tavernSuppliesSmokeRequested && !tavernSuppliesSmokeCompleted &&
+          !tavernSuppliesSmokeFailed) {
+        ++tavernSuppliesSmokeLoopFrames;
+        if (tavernSuppliesSmokeLoopFrames > 600) {
+          failTavernSuppliesSmoke(
+              "full/order/recovery route exceeded the 600-frame watchdog");
+        }
+      }
 
       // The dedicated editor can run the real game full-screen. F1 restores
       // the authoring camera and workspace without restarting the process.
@@ -1588,27 +1707,47 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         prevF10 = f10Now;
       }
 
-      // ---- 設定パネルのトグル（ImGui がキーボードを掴んでいない時のみ ESC で開閉） ----
-      if (!imgui.WantCaptureKeyboard()) {
-        const bool escNow = input.IsKeyDown(VK_ESCAPE);
-        if (escNow && !prevEsc)
-          showSettings = !showSettings;
-        prevEsc = escNow;
+      // ---- 設定パネルのトグル（管理 UI 中の Esc は閉じる操作へ渡す） ----
+      const bool escNow = input.IsKeyDown(VK_ESCAPE);
+      const bool escPressed = escNow && !prevEsc;
+      const bool tavernMenuOpenBeforeUi =
+          appMode == AppMode::Tavern && tavernScene.ManagementMenuOpen();
+      if (!imgui.WantCaptureKeyboard() && !tavernMenuOpenBeforeUi &&
+          escPressed) {
+        showSettings = !showSettings;
       }
+      prevEsc = escNow;
 
       imgui.BeginFrame(dt);
 
       const bool uiWantsMouse = imgui.WantCaptureMouse();
       const bool uiWantsKeyboard = imgui.WantCaptureKeyboard();
       const bool tavernInteractKeyNow = input.IsKeyDown('E');
+      const bool tavernGamepadConfirmPressed =
+          input.GamepadButtonPressed(XINPUT_GAMEPAD_A);
       const bool tavernInteractPressed =
           (tavernInteractKeyNow && !prevTavernInteractKey) ||
-          input.GamepadButtonPressed(XINPUT_GAMEPAD_A);
+          (!tavernMenuOpenBeforeUi && tavernGamepadConfirmPressed);
       prevTavernInteractKey = tavernInteractKeyNow;
       const bool tavernRestartKeyNow = input.IsKeyDown('R');
       const bool tavernRestartPressed =
           tavernRestartKeyNow && !prevTavernRestartKey;
       prevTavernRestartKey = tavernRestartKeyNow;
+      TavernScene::ManagementInput tavernManagementInput;
+      if (tavernMenuOpenBeforeUi) {
+        tavernManagementInput.previousPressed =
+            ImGui::IsKeyPressed(ImGuiKey_LeftArrow, false) ||
+            input.GamepadButtonPressed(XINPUT_GAMEPAD_DPAD_LEFT);
+        tavernManagementInput.nextPressed =
+            ImGui::IsKeyPressed(ImGuiKey_RightArrow, false) ||
+            input.GamepadButtonPressed(XINPUT_GAMEPAD_DPAD_RIGHT);
+        tavernManagementInput.confirmPressed =
+            ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+            ImGui::IsKeyPressed(ImGuiKey_Space, false) ||
+            tavernGamepadConfirmPressed;
+        tavernManagementInput.cancelPressed =
+            escPressed || input.GamepadButtonPressed(XINPUT_GAMEPAD_B);
+      }
 
       bool cursorInEditorViewport = false;
       if (appMode == AppMode::Editor) {
@@ -1842,7 +1981,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         }
       } else if (appMode == AppMode::Tavern && !uiWantsKeyboard &&
                  !gameFreeCameraEnabled) {
-        if (tavernScene.PlayerMovementLocked()) {
+        if (tavernManagementSmokeRequested || tavernSuppliesSmokeRequested ||
+            tavernScene.PlayerMovementLocked()) {
           playerPreview.Update(dt);
         } else {
           playerPreview.Update(dt, input, 12.0f,
@@ -1858,8 +1998,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
                         gameCameraPosition.z);
         cam.SetYawPitch(tavernScene.CameraYaw(), tavernScene.CameraPitch());
-      } else if ((appMode == AppMode::Game ||
-                  appMode == AppMode::BossArena) &&
+      } else if ((appMode == AppMode::Game || appMode == AppMode::BossArena) &&
                  ((!uiWantsKeyboard && !gameFreeCameraEnabled) ||
                   bossMirrorPickupSmokeRequested)) {
         bool inBossArena = appMode == AppMode::BossArena;
@@ -2378,14 +2517,455 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
 
       if (appMode == AppMode::Tavern) {
         const bool automateTavern =
-            tavernGameplaySmokeRequested || tavernDaySmokeRequested;
+            tavernGameplaySmokeRequested || tavernDaySmokeRequested ||
+            (tavernSuppliesSmokeRequested &&
+             (tavernSuppliesSmokePhase ==
+                  TavernSuppliesSmokePhase::AutomateToCancelablePour ||
+              tavernSuppliesSmokePhase ==
+                  TavernSuppliesSmokePhase::AutomateOneService));
+        const bool tavernInputSmokeRequested =
+            tavernManagementSmokeRequested || tavernSuppliesSmokeRequested;
+        bool effectiveTavernInteractPressed =
+            tavernInputSmokeRequested ? false : tavernInteractPressed;
+        bool effectiveTavernPrimaryActionDown =
+            tavernInputSmokeRequested ? false : lbNow;
+        bool effectiveTavernRestartPressed =
+            tavernInputSmokeRequested ? false : tavernRestartPressed;
+        TavernScene::ManagementInput effectiveManagementInput =
+            tavernInputSmokeRequested ? TavernScene::ManagementInput{}
+                                      : tavernManagementInput;
+        float tavernUpdateDelta = dt * (automateTavern ? 12.0f : 1.0f);
+        if (tavernManagementSmokeRequested && !tavernManagementSmokeFailed &&
+            !tavernManagementSmokeCompleted) {
+          tavernUpdateDelta = 0.25f;
+          ++tavernManagementSmokeUpdateFrames;
+          if (tavernManagementSmokePhase == 0 &&
+              tavernManagementSmokeUpdateFrames >= 2) {
+            effectiveTavernInteractPressed = true;
+            tavernManagementSmokePhase = 1;
+          } else if (tavernManagementSmokePhase == 2) {
+            effectiveManagementInput.nextPressed = true;
+            tavernManagementSmokePhase = 3;
+          } else if (tavernManagementSmokePhase == 4) {
+            effectiveManagementInput.confirmPressed = true;
+            tavernManagementSmokePhase = 5;
+          } else if (tavernManagementSmokePhase == 6) {
+            effectiveManagementInput.cancelPressed = true;
+            tavernManagementSmokePhase = 7;
+          } else if (tavernManagementSmokePhase == 8) {
+            effectiveTavernInteractPressed = true;
+            tavernManagementSmokePhase = 9;
+          }
+        }
+        if (tavernSuppliesSmokeRequested && !tavernSuppliesSmokeFailed &&
+            !tavernSuppliesSmokeCompleted) {
+          tavernUpdateDelta = 0.25f;
+          ++tavernSuppliesSmokeUpdateFrames;
+          switch (tavernSuppliesSmokePhase) {
+          case TavernSuppliesSmokePhase::OpenRoot:
+            if (tavernSuppliesSmokeUpdateFrames >= 2) {
+              effectiveTavernInteractPressed = true;
+              tavernSuppliesSmokePhase = TavernSuppliesSmokePhase::VerifyRoot;
+            }
+            break;
+          case TavernSuppliesSmokePhase::EnterSupplies:
+          case TavernSuppliesSmokePhase::ReenterSupplies:
+            effectiveManagementInput.confirmPressed = true;
+            tavernSuppliesSmokePhase =
+                tavernSuppliesSmokePhase ==
+                        TavernSuppliesSmokePhase::EnterSupplies
+                    ? TavernSuppliesSmokePhase::VerifyInitialFull
+                    : TavernSuppliesSmokePhase::VerifyStockAfterService;
+            break;
+          case TavernSuppliesSmokePhase::AttemptFullOrder:
+            effectiveManagementInput.nextPressed = true;
+            effectiveManagementInput.confirmPressed = true;
+            tavernSuppliesSmokePhase = TavernSuppliesSmokePhase::VerifyFullNoOp;
+            break;
+          case TavernSuppliesSmokePhase::BackToRoot:
+            effectiveManagementInput.cancelPressed = true;
+            tavernSuppliesSmokePhase =
+                TavernSuppliesSmokePhase::VerifyBackToRoot;
+            break;
+          case TavernSuppliesSmokePhase::CloseRoot:
+            effectiveManagementInput.cancelPressed = true;
+            tavernSuppliesSmokePhase = TavernSuppliesSmokePhase::VerifyClosed;
+            break;
+          case TavernSuppliesSmokePhase::ReopenRoot:
+            effectiveTavernInteractPressed = true;
+            tavernSuppliesSmokePhase =
+                TavernSuppliesSmokePhase::VerifyReopenedRoot;
+            break;
+          case TavernSuppliesSmokePhase::CancelPour:
+            effectiveTavernInteractPressed = true;
+            tavernSuppliesSmokePhase =
+                TavernSuppliesSmokePhase::VerifyCancelledPour;
+            break;
+          case TavernSuppliesSmokePhase::SelectOneAle:
+            effectiveManagementInput.nextPressed = true;
+            tavernSuppliesSmokePhase =
+                TavernSuppliesSmokePhase::VerifyOneAleSelected;
+            break;
+          case TavernSuppliesSmokePhase::PurchaseOneAle:
+            effectiveManagementInput.confirmPressed = true;
+            tavernSuppliesSmokePhase = TavernSuppliesSmokePhase::VerifyPurchase;
+            break;
+          case TavernSuppliesSmokePhase::SelectUnaffordableAle:
+            effectiveManagementInput.nextPressed = true;
+            tavernSuppliesSmokePhase =
+                TavernSuppliesSmokePhase::VerifyUnaffordableSelection;
+            break;
+          case TavernSuppliesSmokePhase::AttemptUnaffordableOrder:
+            effectiveManagementInput.confirmPressed = true;
+            tavernSuppliesSmokePhase =
+                TavernSuppliesSmokePhase::VerifyUnaffordableNoOp;
+            break;
+          default:
+            break;
+          }
+        }
         tavernScene.SetBusinessHour(gameTimeOfDayHours);
         const TavernScene::Action updateAction = tavernScene.Update(
-            dt * (automateTavern ? 12.0f : 1.0f), playerPreview.Position(),
-            tavernInteractPressed, lbNow, tavernRestartPressed, automateTavern);
+            tavernUpdateDelta, playerPreview.Position(),
+            effectiveTavernInteractPressed, effectiveTavernPrimaryActionDown,
+            effectiveTavernRestartPressed, effectiveManagementInput,
+            automateTavern);
         const TavernScene::Action hudAction =
             tavernScene.DrawHud(static_cast<int>(window.Width()),
                                 static_cast<int>(window.Height()));
+        if (tavernManagementSmokeRequested && !tavernManagementSmokeFailed &&
+            !tavernManagementSmokeCompleted) {
+          const TavernScene::ManagementUiDiagnostics &diagnostics =
+              tavernScene.GetManagementUiDiagnostics();
+          if (tavernManagementSmokePhase == 1) {
+            if (!tavernScene.ManagementMenuOpen() || !diagnostics.menuOpen ||
+                !diagnostics.rootRendered) {
+              failTavernManagementSmoke(
+                  "production E interaction did not open the root menu");
+            } else if (!tavernScene.PlayerMovementLocked()) {
+              failTavernManagementSmoke(
+                  "player movement remained unlocked while the menu was open");
+            } else if (!diagnostics.suppliesCardRendered ||
+                       !diagnostics.upgradesCardRendered) {
+              failTavernManagementSmoke(
+                  "the root menu did not submit both cards");
+            } else if (!diagnostics.labelsInRequestedOrder) {
+              failTavernManagementSmoke(
+                  "Supplies and Upgrades were not submitted in that order");
+            } else if (!diagnostics.visualRegionsValid ||
+                       !diagnostics.cardsDoNotOverlap) {
+              failTavernManagementSmoke(
+                  "card visual regions were invalid or overlapping");
+            } else if (diagnostics.subpageOpen) {
+              failTavernManagementSmoke(
+                  "a deferred management subpage opened unexpectedly");
+            } else if (diagnostics.selectedCardIndex != 0) {
+              failTavernManagementSmoke(
+                  "Supplies was not the default keyboard/gamepad selection");
+            } else if (tavernScene.Gold() != tavernManagementBaselineGold ||
+                       tavernScene.CompletedCycles() !=
+                           tavernManagementBaselineCompletedCycles) {
+              failTavernManagementSmoke(
+                  "opening the root menu changed the Tavern economy");
+            } else {
+              TraceAppEvent("Tavern management smoke: root cards rendered");
+              tavernManagementSmokePhase = 2;
+            }
+          } else if (tavernManagementSmokePhase == 3) {
+            if (!tavernScene.ManagementMenuOpen() || !diagnostics.menuOpen) {
+              failTavernManagementSmoke(
+                  "card navigation unexpectedly closed the root menu");
+            } else if (diagnostics.selectedCardIndex != 1) {
+              failTavernManagementSmoke(
+                  "right navigation did not select the Upgrades card");
+            } else if (diagnostics.subpageOpen ||
+                       diagnostics.activationSerial != 0) {
+              failTavernManagementSmoke(
+                  "navigation activated a deferred page without confirmation");
+            } else if (tavernScene.Gold() != tavernManagementBaselineGold ||
+                       tavernScene.CompletedCycles() !=
+                           tavernManagementBaselineCompletedCycles) {
+              failTavernManagementSmoke(
+                  "card navigation changed the Tavern economy");
+            } else {
+              TraceAppEvent("Tavern management smoke: Upgrades card selected");
+              tavernManagementSmokePhase = 4;
+            }
+          } else if (tavernManagementSmokePhase == 5) {
+            if (!tavernScene.ManagementMenuOpen() || !diagnostics.menuOpen ||
+                diagnostics.selectedCardIndex != 1) {
+              failTavernManagementSmoke(
+                  "confirming Upgrades changed the root selection state");
+            } else if (diagnostics.activationSerial == 0) {
+              failTavernManagementSmoke(
+                  "confirm input did not activate the selected card");
+            } else if (diagnostics.subpageOpen) {
+              failTavernManagementSmoke(
+                  "confirm opened a deferred Upgrades page unexpectedly");
+            } else if (tavernScene.Gold() != tavernManagementBaselineGold ||
+                       tavernScene.CompletedCycles() !=
+                           tavernManagementBaselineCompletedCycles) {
+              failTavernManagementSmoke(
+                  "card confirmation changed the Tavern economy");
+            } else {
+              TraceAppEvent(
+                  "Tavern management smoke: Upgrades card activated in place");
+              tavernManagementSmokePhase = 6;
+            }
+          } else if (tavernManagementSmokePhase == 7) {
+            if (tavernScene.ManagementMenuOpen() || diagnostics.menuOpen) {
+              failTavernManagementSmoke(
+                  "the production cancel path left the menu open");
+            } else if (tavernScene.PlayerMovementLocked()) {
+              failTavernManagementSmoke(
+                  "player movement remained locked after closing the menu");
+            } else if (tavernScene.Gold() != tavernManagementBaselineGold ||
+                       tavernScene.CompletedCycles() !=
+                           tavernManagementBaselineCompletedCycles) {
+              failTavernManagementSmoke(
+                  "closing the root menu changed the Tavern economy");
+            } else {
+              const DirectX::XMFLOAT3 managementPosition =
+                  tavernScene.ManagementInteractionPosition();
+              playerPreview.SetPosition({managementPosition.x + 0.89f,
+                                         managementPosition.y,
+                                         managementPosition.z + 1.10f});
+              tavernManagementSmokePhase = 8;
+            }
+          } else if (tavernManagementSmokePhase == 9) {
+            if (tavernScene.ManagementMenuOpen() || diagnostics.menuOpen) {
+              failTavernManagementSmoke(
+                  "management stole interaction from the nearer TABLE 1");
+            } else if (tavernScene.PlayerMovementLocked()) {
+              failTavernManagementSmoke(
+                  "TABLE 1 priority probe unexpectedly locked movement");
+            } else if (tavernScene.Gold() != tavernManagementBaselineGold ||
+                       tavernScene.CompletedCycles() !=
+                           tavernManagementBaselineCompletedCycles) {
+              failTavernManagementSmoke(
+                  "TABLE 1 priority probe changed the Tavern economy");
+            } else {
+              TraceAppEvent(
+                  "Tavern management smoke: nearer TABLE 1 kept priority");
+              tavernManagementSmokeCompleted = true;
+              requestQuit = true;
+            }
+          }
+        }
+        if (tavernSuppliesSmokeRequested && !tavernSuppliesSmokeFailed &&
+            !tavernSuppliesSmokeCompleted) {
+          const TavernScene::ManagementUiDiagnostics &diagnostics =
+              tavernScene.GetManagementUiDiagnostics();
+          switch (tavernSuppliesSmokePhase) {
+          case TavernSuppliesSmokePhase::VerifyRoot:
+            if (!tavernScene.ManagementMenuOpen() || !diagnostics.menuOpen ||
+                !diagnostics.rootRendered ||
+                diagnostics.selectedCardIndex != 0) {
+              failTavernSuppliesSmoke(
+                  "production interaction did not open Supplies by default");
+            } else {
+              tavernSuppliesSmokePhase =
+                  TavernSuppliesSmokePhase::EnterSupplies;
+            }
+            break;
+          case TavernSuppliesSmokePhase::VerifyInitialFull:
+            if (!diagnostics.suppliesPageRendered ||
+                !diagnostics.aleCardRendered ||
+                !diagnostics.backControlRendered || diagnostics.aleStock != 6 ||
+                diagnostics.aleCapacity != 6 ||
+                diagnostics.orderQuantity != 0 ||
+                diagnostics.orderUnitPrice != 2 ||
+                diagnostics.orderTotal != 0 || diagnostics.orderCanPurchase ||
+                diagnostics.orderBlockReason !=
+                    TavernScene::SupplyOrderBlockReason::Full) {
+              failTavernSuppliesSmoke(
+                  "initial 6/6 Ale card did not expose the full guard");
+            } else {
+              TraceAppEvent(
+                  "Tavern supplies smoke: initial full guard rendered");
+              tavernSuppliesSmokePhase =
+                  TavernSuppliesSmokePhase::AttemptFullOrder;
+            }
+            break;
+          case TavernSuppliesSmokePhase::VerifyFullNoOp:
+            if (tavernScene.AleStock() != 6 || tavernScene.Gold() != 0 ||
+                tavernScene.PendingAleOrderQuantity() != 0 ||
+                tavernScene.SupplyPurchaseSerial() !=
+                    tavernSuppliesPurchaseSerialBefore ||
+                diagnostics.orderCanPurchase ||
+                diagnostics.orderBlockReason !=
+                    TavernScene::SupplyOrderBlockReason::Full) {
+              failTavernSuppliesSmoke(
+                  "ordering while full changed stock, Gold, or purchase state");
+            } else {
+              tavernSuppliesSmokePhase = TavernSuppliesSmokePhase::BackToRoot;
+            }
+            break;
+          case TavernSuppliesSmokePhase::VerifyBackToRoot:
+            if (!tavernScene.ManagementMenuOpen() || !diagnostics.menuOpen ||
+                !diagnostics.rootRendered || diagnostics.subpageOpen) {
+              failTavernSuppliesSmoke(
+                  "B did not return from Order Supplies to the root menu");
+            } else {
+              tavernSuppliesSmokePhase = TavernSuppliesSmokePhase::CloseRoot;
+            }
+            break;
+          case TavernSuppliesSmokePhase::VerifyClosed:
+            if (tavernScene.ManagementMenuOpen() || diagnostics.menuOpen ||
+                tavernScene.PlayerMovementLocked()) {
+              failTavernSuppliesSmoke(
+                  "B did not close the root menu and unlock movement");
+            } else if (tavernScene.AleStock() != 6 || tavernScene.Gold() != 0) {
+              failTavernSuppliesSmoke(
+                  "back/close navigation changed the Tavern economy");
+            } else {
+              tavernSuppliesSmokePhase =
+                  TavernSuppliesSmokePhase::AutomateToCancelablePour;
+            }
+            break;
+          case TavernSuppliesSmokePhase::AutomateToCancelablePour:
+            if (tavernScene.AleStock() != 6 ||
+                tavernScene.ServedCustomers() != 0) {
+              failTavernSuppliesSmoke(
+                  "pre-cancel automation changed Ale or served a customer");
+            } else if (tavernScene.AlePourInProgress()) {
+              tavernSuppliesSmokePhase = TavernSuppliesSmokePhase::CancelPour;
+            }
+            break;
+          case TavernSuppliesSmokePhase::VerifyCancelledPour:
+            if (tavernScene.AlePourInProgress() ||
+                tavernScene.AleStock() != 6 ||
+                tavernScene.ServedCustomers() != 0) {
+              failTavernSuppliesSmoke(
+                  "E cancellation consumed Ale or left pouring active");
+            } else {
+              TraceAppEvent(
+                  "Tavern supplies smoke: cancelled pour consumed no Ale");
+              tavernSuppliesSmokePhase =
+                  TavernSuppliesSmokePhase::AutomateOneService;
+            }
+            break;
+          case TavernSuppliesSmokePhase::AutomateOneService:
+            if (tavernScene.ServedCustomers() > 1 ||
+                tavernScene.AleStock() < 5) {
+              failTavernSuppliesSmoke(
+                  "automation consumed more than one Ale serving");
+            } else if (tavernScene.ServedCustomers() == 1) {
+              if (tavernScene.AleStock() != 5 || tavernScene.Gold() <= 0 ||
+                  tavernScene.SupplyPurchaseSerial() !=
+                      tavernSuppliesPurchaseSerialBefore) {
+                failTavernSuppliesSmoke(
+                    "one completed pour/serve did not consume exactly one Ale");
+              } else {
+                tavernSuppliesPostServeGold = tavernScene.Gold();
+                const DirectX::XMFLOAT3 managementPosition =
+                    tavernScene.ManagementInteractionPosition();
+                playerPreview.SetPosition(managementPosition);
+                TraceAppEvent(
+                    "Tavern supplies smoke: one service consumed ALE 6>5");
+                tavernSuppliesSmokePhase = TavernSuppliesSmokePhase::ReopenRoot;
+              }
+            }
+            break;
+          case TavernSuppliesSmokePhase::VerifyReopenedRoot:
+            if (!tavernScene.ManagementMenuOpen() ||
+                !diagnostics.rootRendered ||
+                diagnostics.selectedCardIndex != 0) {
+              failTavernSuppliesSmoke(
+                  "management root did not reopen after real Ale service");
+            } else {
+              tavernSuppliesSmokePhase =
+                  TavernSuppliesSmokePhase::ReenterSupplies;
+            }
+            break;
+          case TavernSuppliesSmokePhase::VerifyStockAfterService:
+            if (!diagnostics.suppliesPageRendered ||
+                diagnostics.aleStock != 5 || diagnostics.aleCapacity != 6 ||
+                diagnostics.orderQuantity != 0 ||
+                diagnostics.orderBlockReason !=
+                    TavernScene::SupplyOrderBlockReason::ZeroQuantity) {
+              failTavernSuppliesSmoke(
+                  "Order Supplies did not show ALE 5/6 after service");
+            } else {
+              tavernSuppliesSmokePhase = TavernSuppliesSmokePhase::SelectOneAle;
+            }
+            break;
+          case TavernSuppliesSmokePhase::VerifyOneAleSelected:
+            if (diagnostics.orderQuantity != 1 ||
+                diagnostics.orderUnitPrice != 2 ||
+                diagnostics.orderTotal != 2 ||
+                diagnostics.aleStockAfterOrder != 6 ||
+                !diagnostics.orderCanPurchase ||
+                diagnostics.orderBlockReason !=
+                    TavernScene::SupplyOrderBlockReason::None) {
+              failTavernSuppliesSmoke(
+                  "one-Ale selection did not preview an atomic 2 G order");
+            } else {
+              tavernSuppliesSmokePhase =
+                  TavernSuppliesSmokePhase::PurchaseOneAle;
+            }
+            break;
+          case TavernSuppliesSmokePhase::VerifyPurchase:
+            if (tavernScene.AleStock() != 6 ||
+                tavernScene.Gold() != tavernSuppliesPostServeGold - 2 ||
+                tavernScene.PendingAleOrderQuantity() != 0 ||
+                tavernScene.SupplyPurchaseSerial() !=
+                    tavernSuppliesPurchaseSerialBefore + 1) {
+              failTavernSuppliesSmoke(
+                  "one-Ale order was not committed atomically for 2 G");
+            } else {
+              tavernSuppliesPurchaseSerialAfter =
+                  tavernScene.SupplyPurchaseSerial();
+              tavernScene.ConfigureSuppliesSmokeState(5, 1);
+              TraceAppEvent("Tavern supplies smoke: ALE 5>6 purchased for 2 G");
+              tavernSuppliesSmokePhase =
+                  TavernSuppliesSmokePhase::SelectUnaffordableAle;
+            }
+            break;
+          case TavernSuppliesSmokePhase::VerifyUnaffordableSelection:
+            if (diagnostics.aleStock != 5 || diagnostics.orderQuantity != 1 ||
+                diagnostics.orderTotal != 2 || diagnostics.orderCanPurchase ||
+                diagnostics.orderBlockReason !=
+                    TavernScene::SupplyOrderBlockReason::InsufficientGold) {
+              failTavernSuppliesSmoke(
+                  "1 G did not disable the selected 2 G Ale order");
+            } else {
+              tavernSuppliesSmokePhase =
+                  TavernSuppliesSmokePhase::AttemptUnaffordableOrder;
+            }
+            break;
+          case TavernSuppliesSmokePhase::VerifyUnaffordableNoOp:
+            if (tavernScene.AleStock() != 5 || tavernScene.Gold() != 1 ||
+                tavernScene.PendingAleOrderQuantity() != 1 ||
+                tavernScene.SupplyPurchaseSerial() !=
+                    tavernSuppliesPurchaseSerialAfter) {
+              failTavernSuppliesSmoke(
+                  "insufficient-Gold confirmation changed economy state");
+            } else {
+              tavernScene.ConfigureSuppliesSmokeState(0, 1);
+              tavernScene.BeginNextDay(5.0f);
+              if (tavernScene.AleStock() != 2 || tavernScene.Gold() != 1) {
+                failTavernSuppliesSmoke(
+                    "next day did not restore the 2-Ale recovery floor");
+                break;
+              }
+              tavernScene.ConfigureSuppliesSmokeState(0, 2);
+              tavernScene.BeginNextDay(5.0f);
+              if (tavernScene.AleStock() != 0 || tavernScene.Gold() != 2) {
+                failTavernSuppliesSmoke(
+                    "recovery floor incorrectly triggered with affordable Ale");
+                break;
+              }
+              TraceAppEvent("Tavern supplies smoke: insufficient and recovery "
+                            "guards passed");
+              tavernSuppliesSmokeCompleted = true;
+              requestQuit = true;
+            }
+            break;
+          default:
+            break;
+          }
+        }
         if (updateAction == TavernScene::Action::SleepUntilMorning ||
             hudAction == TavernScene::Action::SleepUntilMorning) {
           gameTimeOfDayHours = 5.0f;
@@ -3009,6 +3589,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       failBossMirrorPickupSmoke(
           "application ended before pickup verification completed");
     }
+    if (tavernManagementSmokeRequested && !tavernManagementSmokeCompleted &&
+        !tavernManagementSmokeFailed) {
+      failTavernManagementSmoke(
+          "application ended before the open/render/close route completed");
+    }
+    if (tavernSuppliesSmokeRequested && !tavernSuppliesSmokeCompleted &&
+        !tavernSuppliesSmokeFailed) {
+      failTavernSuppliesSmoke(
+          "application ended before the supplies economy route completed");
+    }
 
     // ---- Shutdown (reverse init order) ----
     dx.WaitForGpu(); // Flush GPU before releasing any resources
@@ -3019,11 +3609,46 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         dx.DumpDebugMessages(debugLog);
     }
     if (tavernSmokeRequested || tavernGameplaySmokeRequested ||
-        tavernDaySmokeRequested) {
+        tavernDaySmokeRequested || tavernManagementSmokeRequested ||
+        tavernSuppliesSmokeRequested) {
       std::ofstream debugLog("tavern_smoke_debug_log.txt",
                              std::ios::out | std::ios::trunc);
       if (debugLog)
         dx.DumpDebugMessages(debugLog);
+    }
+    if (tavernManagementSmokeRequested) {
+      std::ostringstream debugReport;
+      dx.DumpDebugMessages(debugReport);
+      const std::string debugReportText = debugReport.str();
+      if (debugReportText.find(
+              "D3D12 Error/Corruption messages:\n  (none)\n") ==
+          std::string::npos) {
+        failTavernManagementSmoke(
+            "D3D12 debug layer reported an error/corruption message");
+      } else if (tavernManagementSmokeCompleted &&
+                 !tavernManagementSmokeFailed) {
+        TraceAppEvent("Tavern management smoke: PASS; menu=open cards=2 "
+                      "order=Supplies,Upgrades selection=Upgrades activated=1 "
+                      "subpages=0 tablePriority=nearer economyDelta=0 "
+                      "close=unlocked d3dErrors=0");
+      }
+    }
+    if (tavernSuppliesSmokeRequested) {
+      std::ostringstream debugReport;
+      dx.DumpDebugMessages(debugReport);
+      const std::string debugReportText = debugReport.str();
+      if (debugReportText.find(
+              "D3D12 Error/Corruption messages:\n  (none)\n") ==
+          std::string::npos) {
+        failTavernSuppliesSmoke(
+            "D3D12 debug layer reported an error/corruption message");
+      } else if (tavernSuppliesSmokeCompleted && !tavernSuppliesSmokeFailed) {
+        TraceAppEvent("Tavern supplies smoke: PASS; initial=6/6 fullGuard=1 "
+                      "navigation=B>B cancelNoCost=1 serviceConsumption=1 "
+                      "purchase=1@2G "
+                      "insufficientNoOp=1 recoveryFloor=2 affordableFloor=0 "
+                      "d3dErrors=0");
+      }
     }
     if (playerAnimationSmokeRequested) {
       std::ostringstream debugReport;

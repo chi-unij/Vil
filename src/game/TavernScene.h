@@ -19,13 +19,56 @@ public:
     SleepUntilMorning,
   };
 
+  enum class SupplyOrderBlockReason {
+    None,
+    Full,
+    ZeroQuantity,
+    InsufficientGold,
+  };
+
+  struct ManagementUiDiagnostics {
+    bool menuOpen = false;
+    bool rootRendered = false;
+    bool suppliesCardRendered = false;
+    bool upgradesCardRendered = false;
+    bool suppliesPageRendered = false;
+    bool aleCardRendered = false;
+    bool backControlRendered = false;
+    bool labelsInRequestedOrder = false;
+    bool visualRegionsValid = false;
+    bool cardsDoNotOverlap = false;
+    bool subpageOpen = false;
+    bool orderCanPurchase = false;
+    int selectedCardIndex = -1;
+    int aleStock = 0;
+    int aleCapacity = 0;
+    int orderQuantity = 0;
+    int orderUnitPrice = 0;
+    int orderTotal = 0;
+    int aleStockAfterOrder = 0;
+    SupplyOrderBlockReason orderBlockReason =
+        SupplyOrderBlockReason::ZeroQuantity;
+    uint64_t activationSerial = 0;
+    uint64_t purchaseSerial = 0;
+    uint64_t renderedFrameSerial = 0;
+  };
+
+  struct ManagementInput {
+    bool previousPressed = false;
+    bool nextPressed = false;
+    bool confirmPressed = false;
+    bool cancelPressed = false;
+  };
+
   void Initialize(DxContext &dx);
   void Reset(float startingHour = 5.0f);
   void BeginNextDay(float startingHour = 5.0f);
   void SetBusinessHour(float hour);
   Action Update(float deltaSeconds, const DirectX::XMFLOAT3 &playerPosition,
                 bool interactPressed, bool primaryActionDown,
-                bool restartPressed, bool automateGameplay = false);
+                bool restartPressed,
+                const ManagementInput &managementInput = {},
+                bool automateGameplay = false);
   void BuildFrame(FrameData &frame) const;
   Action DrawHud(int viewportWidth, int viewportHeight);
   void DrawDebugPanel(float &timeOfDayHours, bool &automaticTime);
@@ -38,9 +81,21 @@ public:
   bool DayCycleSmokeComplete() const {
     return m_completedDays >= 1 && GameplaySmokeComplete();
   }
-  bool PlayerMovementLocked() const { return m_workState != WorkState::None; }
+  bool PlayerMovementLocked() const;
+  bool ManagementMenuOpen() const;
+  DirectX::XMFLOAT3 ManagementInteractionPosition() const;
+  const ManagementUiDiagnostics &GetManagementUiDiagnostics() const {
+    return m_managementUiDiagnostics;
+  }
   int CompletedCycles() const { return m_completedCycles; }
   int Gold() const { return m_gold; }
+  int AleStock() const;
+  int AleCapacity() const;
+  bool AlePourInProgress() const;
+  int PendingAleOrderQuantity() const { return m_aleOrderQuantity; }
+  int AleUnitPrice() const;
+  uint64_t SupplyPurchaseSerial() const { return m_supplyPurchaseSerial; }
+  void ConfigureSuppliesSmokeState(int aleStock, int gold);
   int ServedCustomers() const { return m_servedCustomers; }
   int Walkouts() const { return m_walkouts; }
   float BusinessHour() const { return m_businessHour; }
@@ -65,6 +120,9 @@ private:
   };
   enum class HeldItem { None, EmptyMug, FilledMug, DirtyMug };
   enum class WorkState { None, PouringAle, WashingMug };
+  enum class ManagementPage { Closed, Root, Supplies, Upgrades };
+  enum class ManagementSelection { None, Supplies, Upgrades };
+  enum class SupplyType : std::size_t { Ale, Count };
   enum class TavernAsset : std::size_t {
     Barrel,
     Crate,
@@ -113,6 +171,11 @@ private:
     bool lastPourPerfect = false;
   };
 
+  struct SupplyState {
+    int current = 0;
+    int capacity = 0;
+  };
+
   static const char *GetTableStateName(TableState state);
   static const char *GetHeldItemName(HeldItem item);
   void SpawnCustomer(int tableIndex);
@@ -131,6 +194,7 @@ private:
   void RunAutomation();
   void UpdateNearbyPrompt();
   int NearestEnabledTable(float maximumDistance) const;
+  bool ManagementInteractionHasPriority() const;
   int FindTableInState(TableState state) const;
   int FindMostUrgentWaitingAleTable() const;
   int NearestCounterMugSlot(float maximumDistance) const;
@@ -140,6 +204,19 @@ private:
   const char *CustomerTrafficName() const;
   bool CanServeCustomers() const;
   uint32_t MugMeshForState(HeldItem item) const;
+  SupplyState &AleSupply();
+  const SupplyState &AleSupply() const;
+  int MaximumAleOrderQuantity() const;
+  SupplyOrderBlockReason CurrentAleOrderBlockReason() const;
+  void AdjustAleOrderQuantity(int delta);
+  bool TryOrderAle();
+  void OpenManagementMenu();
+  void OpenSuppliesPage();
+  void BackToManagementRoot();
+  void CloseManagementMenu();
+  void DrawManagementUi(int viewportWidth, int viewportHeight);
+  void DrawManagementRoot(int viewportWidth, int viewportHeight);
+  void DrawSuppliesPage(int viewportWidth, int viewportHeight);
 
   uint32_t m_floorMeshId = UINT32_MAX;
   uint32_t m_wallMeshId = UINT32_MAX;
@@ -166,6 +243,11 @@ private:
   std::array<MugState, 2> m_counterMugs{};
   HeldItem m_heldItem = HeldItem::None;
   WorkState m_workState = WorkState::None;
+  ManagementPage m_managementPage = ManagementPage::Closed;
+  ManagementSelection m_managementSelection = ManagementSelection::None;
+  ManagementUiDiagnostics m_managementUiDiagnostics{};
+  uint64_t m_managementActivationSerial = 0;
+  uint64_t m_supplyPurchaseSerial = 0;
   TutorialStep m_tutorialStep = TutorialStep::TakeOrder;
   DirectX::XMFLOAT3 m_playerPosition = {0.0f, 0.0f, -0.35f};
   std::vector<CollisionSystem::Collider> m_collisionColliders;
@@ -174,6 +256,9 @@ private:
   float m_businessHour = 5.0f;
   std::array<float, 3> m_spawnTimers{};
   std::array<int, 3> m_tableCompletedCycles{};
+  std::array<SupplyState, static_cast<std::size_t>(SupplyType::Count)>
+      m_supplies{};
+  int m_aleOrderQuantity = 0;
   float m_aleFill = 0.0f;
   float m_aleFoam = 0.0f;
   float m_aleOverflow = 0.0f;
