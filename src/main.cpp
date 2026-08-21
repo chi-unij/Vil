@@ -647,17 +647,20 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         HasCommandLineSwitch(commandLine, L"--tavern-management-smoke");
     const bool tavernSuppliesSmokeRequested =
         HasCommandLineSwitch(commandLine, L"--tavern-supplies-smoke");
+    const bool tavernUpgradesSmokeRequested =
+        HasCommandLineSwitch(commandLine, L"--tavern-upgrades-smoke");
     const int tavernSmokeModeCount =
         static_cast<int>(tavernSmokeRequested) +
         static_cast<int>(tavernGameplaySmokeRequested) +
         static_cast<int>(tavernDaySmokeRequested) +
         static_cast<int>(tavernManagementSmokeRequested) +
-        static_cast<int>(tavernSuppliesSmokeRequested);
+        static_cast<int>(tavernSuppliesSmokeRequested) +
+        static_cast<int>(tavernUpgradesSmokeRequested);
     const bool tavernRequested =
         HasCommandLineSwitch(commandLine, L"--tavern") ||
         tavernSmokeRequested || tavernGameplaySmokeRequested ||
         tavernDaySmokeRequested || tavernManagementSmokeRequested ||
-        tavernSuppliesSmokeRequested;
+        tavernSuppliesSmokeRequested || tavernUpgradesSmokeRequested;
     const bool dxrSmokeMode = !playerAnimationSmokeRequested &&
                               !bossMirrorPickupSmokeRequested &&
                               (dxrSmokeRequested || dxrOverworldSmokeRequested);
@@ -754,6 +757,61 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     int tavernSuppliesPostServeGold = 0;
     uint64_t tavernSuppliesPurchaseSerialBefore = 0;
     uint64_t tavernSuppliesPurchaseSerialAfter = 0;
+    enum class TavernUpgradesSmokePhase {
+      OpenRoot,
+      VerifyRoot,
+      SelectUpgrades,
+      VerifyUpgradesSelected,
+      EnterUpgrades,
+      VerifyInitialPage,
+      VerifyEmergencyReserve,
+      AttemptEmergencyReservePurchase,
+      VerifyEmergencyReserveNoOp,
+      VerifyRestoredInitialPage,
+      OpenExtraMugConfirmation,
+      VerifyExtraMugConfirmation,
+      CancelExtraMugConfirmation,
+      VerifyExtraMugCancellation,
+      ReopenExtraMugConfirmation,
+      VerifyReopenedExtraMugConfirmation,
+      PurchaseExtraMug,
+      VerifyExtraMugPurchase,
+      AttemptOwnedExtraMug,
+      VerifyOwnedExtraMugNoOp,
+      SelectAleCapacity,
+      VerifyAleCapacitySelection,
+      OpenAleCapacityConfirmation,
+      VerifyAleCapacityConfirmation,
+      PurchaseAleCapacity,
+      VerifyAleCapacityPurchase,
+      AttemptMaxedAleCapacity,
+      VerifyMaxedAleCapacityNoOp,
+      SelectTable3,
+      VerifyTable3Selection,
+      OpenTable3Confirmation,
+      VerifyTable3Confirmation,
+      PurchaseTable3,
+      VerifyTable3Purchase,
+      AttemptOwnedTable3,
+      VerifyOwnedTable3NoOp,
+      BackToRoot,
+      VerifyBackToRoot,
+      CloseRoot,
+      VerifyClosed,
+      VerifyNextDayPersistence,
+      VerifyReentryPersistence,
+      AutomateTable3Cycle,
+    };
+    bool tavernUpgradesSmokeFailed = false;
+    bool tavernUpgradesSmokeCompleted = false;
+    TavernUpgradesSmokePhase tavernUpgradesSmokePhase =
+        TavernUpgradesSmokePhase::OpenRoot;
+    int tavernUpgradesSmokeUpdateFrames = 0;
+    int tavernUpgradesSmokeLoopFrames = 0;
+    int tavernUpgradesExpectedGold = 200;
+    int tavernUpgradesExpectedAleLevel = 0;
+    int tavernUpgradesExpectedAlePrice = 20;
+    uint64_t tavernUpgradesPurchaseSerialBefore = 0;
     ReflectionMode reflectionMode =
         (dxrProofRequested || dxrOverworldRequested) &&
                 hybridReflection.IsSupported()
@@ -946,8 +1004,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       if (!playerAnimationSmokeFailed) {
         std::ostringstream readyMessage;
         readyMessage << "Player animation smoke: diagnostics ready; parts="
-                     << materialPartCount << " opaque="
-                     << playerPreview.OpaqueMaterialPartCount()
+                     << materialPartCount
+                     << " opaque=" << playerPreview.OpaqueMaterialPartCount()
                      << " transparent="
                      << playerPreview.TransparentMaterialPartCount()
                      << " doubleSided="
@@ -965,7 +1023,6 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     TraceAppEvent("startup: overworld ready");
     TavernScene tavernScene;
     tavernScene.Initialize(dx);
-    tavernScene.Reset();
     TraceAppEvent(tavernScene.ImportedArtReady()
                       ? "startup: reconstructed tavern art ready"
                       : "startup: tavern procedural fallback ready");
@@ -1103,6 +1160,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       const std::string message = "Tavern supplies smoke: FAIL; " + reason;
       TraceAppEvent(message.c_str());
     };
+    const auto failTavernUpgradesSmoke = [&](const std::string &reason) {
+      if (!tavernUpgradesSmokeRequested || tavernUpgradesSmokeFailed)
+        return;
+      tavernUpgradesSmokeFailed = true;
+      applicationExitCode = 2;
+      requestQuit = true;
+      const std::string message = "Tavern upgrades smoke: FAIL; " + reason;
+      TraceAppEvent(message.c_str());
+    };
     bool bossMirrorPickupSmokeFailed = false;
     bool bossMirrorPickupObserved = false;
     bool bossMirrorPickupSmokeCompleted = false;
@@ -1157,7 +1223,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       showSettings = false;
       gameFreeCameraEnabled = false;
       gameRuntimeSeconds = 0.0f;
-      tavernScene.Reset(gameTimeOfDayHours);
+      tavernScene.SetBusinessHour(gameTimeOfDayHours);
       playerPreview.SetPosition(tavernScene.PlayerSpawnPosition());
       playerPreview.SetYaw(0.0f);
       const DirectX::XMFLOAT3 cameraPosition = tavernScene.CameraPosition();
@@ -1211,6 +1277,25 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       } else {
         tavernSuppliesPurchaseSerialBefore = tavernScene.SupplyPurchaseSerial();
         TraceAppEvent("Tavern supplies smoke: initial ALE 6/6 route ready");
+      }
+    }
+    if (tavernUpgradesSmokeRequested) {
+      const DirectX::XMFLOAT3 managementPosition =
+          tavernScene.ManagementInteractionPosition();
+      playerPreview.SetPosition(managementPosition);
+      playerPreview.SetYaw(DirectX::XM_PIDIV2);
+      tavernScene.ConfigureUpgradesSmokeState(200, 6, true);
+      if (tavernScene.Gold() != 200 || tavernScene.AleStock() != 6 ||
+          tavernScene.AleCapacity() != 6 ||
+          tavernScene.AleCapacityLevel() != 0 || tavernScene.TotalMugs() != 2 ||
+          tavernScene.ExtraMugOwned() || tavernScene.Table3Unlocked() ||
+          tavernScene.Table3Enabled()) {
+        failTavernUpgradesSmoke("initial progression was not 200 G, 2 mugs, "
+                                "ALE 6/6, and Table 3 closed");
+      } else {
+        tavernUpgradesPurchaseSerialBefore =
+            tavernScene.UpgradePurchaseSerial();
+        TraceAppEvent("Tavern upgrades smoke: 200 G progression route ready");
       }
     }
     TitleScreen titleScreen;
@@ -1564,6 +1649,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         if (tavernSuppliesSmokeLoopFrames > 600) {
           failTavernSuppliesSmoke(
               "full/order/recovery route exceeded the 600-frame watchdog");
+        }
+      }
+      if (tavernUpgradesSmokeRequested && !tavernUpgradesSmokeCompleted &&
+          !tavernUpgradesSmokeFailed) {
+        ++tavernUpgradesSmokeLoopFrames;
+        if (tavernUpgradesSmokeLoopFrames > 900) {
+          failTavernUpgradesSmoke("purchase/persistence/Table 3 route exceeded "
+                                  "the 900-frame watchdog");
         }
       }
 
@@ -1982,6 +2075,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       } else if (appMode == AppMode::Tavern && !uiWantsKeyboard &&
                  !gameFreeCameraEnabled) {
         if (tavernManagementSmokeRequested || tavernSuppliesSmokeRequested ||
+            tavernUpgradesSmokeRequested ||
             tavernScene.PlayerMovementLocked()) {
           playerPreview.Update(dt);
         } else {
@@ -2181,6 +2275,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
           TraceAppEvent("title action: start");
           appMode = AppMode::Game;
           gameRuntimeSeconds = 0.0f;
+          tavernScene.Reset(gameTimeOfDayHours);
           playerPreview.SetPosition(overworldScene.PlayerSpawnPosition());
           playerPreview.SetYaw(0.0f);
           {
@@ -2522,9 +2617,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
              (tavernSuppliesSmokePhase ==
                   TavernSuppliesSmokePhase::AutomateToCancelablePour ||
               tavernSuppliesSmokePhase ==
-                  TavernSuppliesSmokePhase::AutomateOneService));
-        const bool tavernInputSmokeRequested =
-            tavernManagementSmokeRequested || tavernSuppliesSmokeRequested;
+                  TavernSuppliesSmokePhase::AutomateOneService)) ||
+            (tavernUpgradesSmokeRequested &&
+             tavernUpgradesSmokePhase ==
+                 TavernUpgradesSmokePhase::AutomateTable3Cycle);
+        const bool tavernInputSmokeRequested = tavernManagementSmokeRequested ||
+                                               tavernSuppliesSmokeRequested ||
+                                               tavernUpgradesSmokeRequested;
         bool effectiveTavernInteractPressed =
             tavernInputSmokeRequested ? false : tavernInteractPressed;
         bool effectiveTavernPrimaryActionDown =
@@ -2553,8 +2652,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
             effectiveManagementInput.cancelPressed = true;
             tavernManagementSmokePhase = 7;
           } else if (tavernManagementSmokePhase == 8) {
-            effectiveTavernInteractPressed = true;
+            effectiveManagementInput.cancelPressed = true;
             tavernManagementSmokePhase = 9;
+          } else if (tavernManagementSmokePhase == 10) {
+            effectiveTavernInteractPressed = true;
+            tavernManagementSmokePhase = 11;
           }
         }
         if (tavernSuppliesSmokeRequested && !tavernSuppliesSmokeFailed &&
@@ -2624,6 +2726,110 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
             break;
           }
         }
+        if (tavernUpgradesSmokeRequested && !tavernUpgradesSmokeFailed &&
+            !tavernUpgradesSmokeCompleted) {
+          tavernUpdateDelta = 0.25f;
+          ++tavernUpgradesSmokeUpdateFrames;
+          switch (tavernUpgradesSmokePhase) {
+          case TavernUpgradesSmokePhase::OpenRoot:
+            if (tavernUpgradesSmokeUpdateFrames >= 2) {
+              effectiveTavernInteractPressed = true;
+              tavernUpgradesSmokePhase = TavernUpgradesSmokePhase::VerifyRoot;
+            }
+            break;
+          case TavernUpgradesSmokePhase::SelectUpgrades:
+            effectiveManagementInput.nextPressed = true;
+            tavernUpgradesSmokePhase =
+                TavernUpgradesSmokePhase::VerifyUpgradesSelected;
+            break;
+          case TavernUpgradesSmokePhase::EnterUpgrades:
+            effectiveManagementInput.confirmPressed = true;
+            tavernUpgradesSmokePhase =
+                TavernUpgradesSmokePhase::VerifyInitialPage;
+            break;
+          case TavernUpgradesSmokePhase::AttemptEmergencyReservePurchase:
+            effectiveManagementInput.confirmPressed = true;
+            tavernUpgradesSmokePhase =
+                TavernUpgradesSmokePhase::VerifyEmergencyReserveNoOp;
+            break;
+          case TavernUpgradesSmokePhase::OpenExtraMugConfirmation:
+            effectiveManagementInput.confirmPressed = true;
+            tavernUpgradesSmokePhase =
+                TavernUpgradesSmokePhase::VerifyExtraMugConfirmation;
+            break;
+          case TavernUpgradesSmokePhase::CancelExtraMugConfirmation:
+            effectiveManagementInput.cancelPressed = true;
+            tavernUpgradesSmokePhase =
+                TavernUpgradesSmokePhase::VerifyExtraMugCancellation;
+            break;
+          case TavernUpgradesSmokePhase::ReopenExtraMugConfirmation:
+            effectiveManagementInput.confirmPressed = true;
+            tavernUpgradesSmokePhase =
+                TavernUpgradesSmokePhase::VerifyReopenedExtraMugConfirmation;
+            break;
+          case TavernUpgradesSmokePhase::PurchaseExtraMug:
+            effectiveManagementInput.confirmPressed = true;
+            tavernUpgradesSmokePhase =
+                TavernUpgradesSmokePhase::VerifyExtraMugPurchase;
+            break;
+          case TavernUpgradesSmokePhase::AttemptOwnedExtraMug:
+            effectiveManagementInput.confirmPressed = true;
+            tavernUpgradesSmokePhase =
+                TavernUpgradesSmokePhase::VerifyOwnedExtraMugNoOp;
+            break;
+          case TavernUpgradesSmokePhase::SelectAleCapacity:
+            effectiveManagementInput.nextPressed = true;
+            tavernUpgradesSmokePhase =
+                TavernUpgradesSmokePhase::VerifyAleCapacitySelection;
+            break;
+          case TavernUpgradesSmokePhase::OpenAleCapacityConfirmation:
+            effectiveManagementInput.confirmPressed = true;
+            tavernUpgradesSmokePhase =
+                TavernUpgradesSmokePhase::VerifyAleCapacityConfirmation;
+            break;
+          case TavernUpgradesSmokePhase::PurchaseAleCapacity:
+            effectiveManagementInput.confirmPressed = true;
+            tavernUpgradesSmokePhase =
+                TavernUpgradesSmokePhase::VerifyAleCapacityPurchase;
+            break;
+          case TavernUpgradesSmokePhase::AttemptMaxedAleCapacity:
+            effectiveManagementInput.confirmPressed = true;
+            tavernUpgradesSmokePhase =
+                TavernUpgradesSmokePhase::VerifyMaxedAleCapacityNoOp;
+            break;
+          case TavernUpgradesSmokePhase::SelectTable3:
+            effectiveManagementInput.nextPressed = true;
+            tavernUpgradesSmokePhase =
+                TavernUpgradesSmokePhase::VerifyTable3Selection;
+            break;
+          case TavernUpgradesSmokePhase::OpenTable3Confirmation:
+            effectiveManagementInput.confirmPressed = true;
+            tavernUpgradesSmokePhase =
+                TavernUpgradesSmokePhase::VerifyTable3Confirmation;
+            break;
+          case TavernUpgradesSmokePhase::PurchaseTable3:
+            effectiveManagementInput.confirmPressed = true;
+            tavernUpgradesSmokePhase =
+                TavernUpgradesSmokePhase::VerifyTable3Purchase;
+            break;
+          case TavernUpgradesSmokePhase::AttemptOwnedTable3:
+            effectiveManagementInput.confirmPressed = true;
+            tavernUpgradesSmokePhase =
+                TavernUpgradesSmokePhase::VerifyOwnedTable3NoOp;
+            break;
+          case TavernUpgradesSmokePhase::BackToRoot:
+            effectiveManagementInput.cancelPressed = true;
+            tavernUpgradesSmokePhase =
+                TavernUpgradesSmokePhase::VerifyBackToRoot;
+            break;
+          case TavernUpgradesSmokePhase::CloseRoot:
+            effectiveManagementInput.cancelPressed = true;
+            tavernUpgradesSmokePhase = TavernUpgradesSmokePhase::VerifyClosed;
+            break;
+          default:
+            break;
+          }
+        }
         tavernScene.SetBusinessHour(gameTimeOfDayHours);
         const TavernScene::Action updateAction = tavernScene.Update(
             tavernUpdateDelta, playerPreview.Position(),
@@ -2681,7 +2887,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
             } else if (diagnostics.subpageOpen ||
                        diagnostics.activationSerial != 0) {
               failTavernManagementSmoke(
-                  "navigation activated a deferred page without confirmation");
+                  "navigation opened Upgrades without confirmation");
             } else if (tavernScene.Gold() != tavernManagementBaselineGold ||
                        tavernScene.CompletedCycles() !=
                            tavernManagementBaselineCompletedCycles) {
@@ -2693,32 +2899,58 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
             }
           } else if (tavernManagementSmokePhase == 5) {
             if (!tavernScene.ManagementMenuOpen() || !diagnostics.menuOpen ||
+                !diagnostics.subpageOpen || !diagnostics.upgradesPageRendered ||
                 diagnostics.selectedCardIndex != 1) {
               failTavernManagementSmoke(
-                  "confirming Upgrades changed the root selection state");
+                  "confirm did not open the real Upgrades page");
             } else if (diagnostics.activationSerial == 0) {
               failTavernManagementSmoke(
                   "confirm input did not activate the selected card");
-            } else if (diagnostics.subpageOpen) {
+            } else if (!diagnostics.upgradeCardsRendered ||
+                       !diagnostics.backControlRendered ||
+                       !diagnostics.visualRegionsValid ||
+                       !diagnostics.cardsDoNotOverlap) {
               failTavernManagementSmoke(
-                  "confirm opened a deferred Upgrades page unexpectedly");
+                  "the Upgrades page did not submit three valid cards");
+            } else if (diagnostics.upgradeConfirmationRendered) {
+              failTavernManagementSmoke(
+                  "opening Upgrades unexpectedly opened a confirmation");
             } else if (tavernScene.Gold() != tavernManagementBaselineGold ||
                        tavernScene.CompletedCycles() !=
                            tavernManagementBaselineCompletedCycles) {
               failTavernManagementSmoke(
                   "card confirmation changed the Tavern economy");
             } else {
-              TraceAppEvent(
-                  "Tavern management smoke: Upgrades card activated in place");
+              TraceAppEvent("Tavern management smoke: Upgrades page rendered");
               tavernManagementSmokePhase = 6;
             }
           } else if (tavernManagementSmokePhase == 7) {
-            if (tavernScene.ManagementMenuOpen() || diagnostics.menuOpen) {
+            if (!tavernScene.ManagementMenuOpen() || !diagnostics.menuOpen ||
+                !diagnostics.rootRendered || diagnostics.subpageOpen) {
               failTavernManagementSmoke(
-                  "the production cancel path left the menu open");
+                  "the first B did not return Upgrades to the root menu");
+            } else if (!tavernScene.PlayerMovementLocked()) {
+              failTavernManagementSmoke(
+                  "player movement unlocked before the root menu closed");
+            } else if (diagnostics.selectedCardIndex != 1) {
+              failTavernManagementSmoke(
+                  "returning to the root did not preserve Upgrades selection");
+            } else if (tavernScene.Gold() != tavernManagementBaselineGold ||
+                       tavernScene.CompletedCycles() !=
+                           tavernManagementBaselineCompletedCycles) {
+              failTavernManagementSmoke(
+                  "returning from Upgrades changed the Tavern economy");
+            } else {
+              TraceAppEvent(
+                  "Tavern management smoke: B returned Upgrades to root");
+              tavernManagementSmokePhase = 8;
+            }
+          } else if (tavernManagementSmokePhase == 9) {
+            if (tavernScene.ManagementMenuOpen() || diagnostics.menuOpen) {
+              failTavernManagementSmoke("the second B left the root menu open");
             } else if (tavernScene.PlayerMovementLocked()) {
               failTavernManagementSmoke(
-                  "player movement remained locked after closing the menu");
+                  "player movement remained locked after closing the root");
             } else if (tavernScene.Gold() != tavernManagementBaselineGold ||
                        tavernScene.CompletedCycles() !=
                            tavernManagementBaselineCompletedCycles) {
@@ -2730,9 +2962,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
               playerPreview.SetPosition({managementPosition.x + 0.89f,
                                          managementPosition.y,
                                          managementPosition.z + 1.10f});
-              tavernManagementSmokePhase = 8;
+              tavernManagementSmokePhase = 10;
             }
-          } else if (tavernManagementSmokePhase == 9) {
+          } else if (tavernManagementSmokePhase == 11) {
             if (tavernScene.ManagementMenuOpen() || diagnostics.menuOpen) {
               failTavernManagementSmoke(
                   "management stole interaction from the nearer TABLE 1");
@@ -2959,6 +3191,464 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
               TraceAppEvent("Tavern supplies smoke: insufficient and recovery "
                             "guards passed");
               tavernSuppliesSmokeCompleted = true;
+              requestQuit = true;
+            }
+            break;
+          default:
+            break;
+          }
+        }
+        if (tavernUpgradesSmokeRequested && !tavernUpgradesSmokeFailed &&
+            !tavernUpgradesSmokeCompleted) {
+          const TavernScene::ManagementUiDiagnostics &diagnostics =
+              tavernScene.GetManagementUiDiagnostics();
+          switch (tavernUpgradesSmokePhase) {
+          case TavernUpgradesSmokePhase::VerifyRoot:
+            if (!tavernScene.ManagementMenuOpen() || !diagnostics.menuOpen ||
+                !diagnostics.rootRendered || diagnostics.subpageOpen ||
+                diagnostics.selectedCardIndex != 0) {
+              failTavernUpgradesSmoke("production interaction did not open the "
+                                      "management root on Supplies");
+            } else if (tavernScene.Gold() != 200 ||
+                       tavernScene.UpgradePurchaseSerial() !=
+                           tavernUpgradesPurchaseSerialBefore) {
+              failTavernUpgradesSmoke(
+                  "opening the management root changed progression state");
+            } else {
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::SelectUpgrades;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyUpgradesSelected:
+            if (!diagnostics.rootRendered || diagnostics.subpageOpen ||
+                diagnostics.selectedCardIndex != 1 ||
+                diagnostics.activationSerial != 0) {
+              failTavernUpgradesSmoke("right navigation did not select "
+                                      "Upgrades without activating it");
+            } else if (tavernScene.Gold() != 200 ||
+                       tavernScene.UpgradePurchaseSerial() !=
+                           tavernUpgradesPurchaseSerialBefore) {
+              failTavernUpgradesSmoke(
+                  "selecting Upgrades changed progression state");
+            } else {
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::EnterUpgrades;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyInitialPage:
+            if (!diagnostics.menuOpen || !diagnostics.subpageOpen ||
+                !diagnostics.upgradesPageRendered ||
+                !diagnostics.upgradeCardsRendered ||
+                !diagnostics.backControlRendered ||
+                !diagnostics.visualRegionsValid ||
+                !diagnostics.cardsDoNotOverlap ||
+                diagnostics.upgradeConfirmationRendered) {
+              failTavernUpgradesSmoke(
+                  "the Upgrades page did not render three valid cards");
+            } else if (diagnostics.selectedUpgradeIndex != 0 ||
+                       diagnostics.selectedUpgradePrice != 25 ||
+                       diagnostics.selectedUpgradeLevel != 0 ||
+                       diagnostics.extraMugCapacity != 2 ||
+                       diagnostics.aleCapacityLevel != 0 ||
+                       diagnostics.table3Unlocked ||
+                       !diagnostics.upgradeCanPurchase ||
+                       diagnostics.upgradeBlockReason !=
+                           TavernScene::UpgradePurchaseBlockReason::None) {
+              failTavernUpgradesSmoke("initial Extra Mug card was not a "
+                                      "purchasable 25 G 2-to-3 upgrade");
+            } else if (diagnostics.upgradePurchaseSerial !=
+                           tavernUpgradesPurchaseSerialBefore ||
+                       tavernScene.Gold() != 200) {
+              failTavernUpgradesSmoke(
+                  "opening Upgrades changed Gold or purchase serial");
+            } else {
+              TraceAppEvent("Tavern upgrades smoke: three-card page rendered");
+              tavernScene.ConfigureUpgradesSmokeState(26, 0, true);
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::VerifyEmergencyReserve;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyEmergencyReserve:
+            if (!diagnostics.upgradesPageRendered ||
+                diagnostics.upgradeConfirmationRendered ||
+                diagnostics.selectedUpgradeIndex != 0 ||
+                diagnostics.selectedUpgradePrice != 25 ||
+                diagnostics.upgradeCanPurchase ||
+                diagnostics.upgradeBlockReason !=
+                    TavernScene::UpgradePurchaseBlockReason::
+                        EmergencyAleReserve) {
+              failTavernUpgradesSmoke(
+                  "zero Ale did not preserve the 2 G emergency reserve");
+            } else if (tavernScene.Gold() != 26 ||
+                       tavernScene.AleStock() != 0 ||
+                       tavernScene.TotalMugs() != 2 ||
+                       tavernScene.ExtraMugOwned() ||
+                       tavernScene.UpgradePurchaseSerial() !=
+                           tavernUpgradesPurchaseSerialBefore) {
+              failTavernUpgradesSmoke(
+                  "emergency reserve setup changed upgrade progression");
+            } else {
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::AttemptEmergencyReservePurchase;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyEmergencyReserveNoOp:
+            if (diagnostics.upgradeConfirmationRendered ||
+                diagnostics.upgradeBlockReason !=
+                    TavernScene::UpgradePurchaseBlockReason::
+                        EmergencyAleReserve ||
+                tavernScene.Gold() != 26 || tavernScene.AleStock() != 0 ||
+                tavernScene.TotalMugs() != 2 || tavernScene.ExtraMugOwned() ||
+                tavernScene.UpgradePurchaseSerial() !=
+                    tavernUpgradesPurchaseSerialBefore) {
+              failTavernUpgradesSmoke(
+                  "blocked emergency-reserve purchase changed progression");
+            } else {
+              TraceAppEvent("Tavern upgrades smoke: emergency Ale reserve "
+                            "blocked unsafe spending");
+              tavernScene.ConfigureUpgradesSmokeState(200, 6, true);
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::VerifyRestoredInitialPage;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyRestoredInitialPage:
+            if (!diagnostics.upgradesPageRendered ||
+                diagnostics.upgradeConfirmationRendered ||
+                diagnostics.selectedUpgradeIndex != 0 ||
+                diagnostics.selectedUpgradePrice != 25 ||
+                !diagnostics.upgradeCanPurchase ||
+                diagnostics.upgradeBlockReason !=
+                    TavernScene::UpgradePurchaseBlockReason::None ||
+                tavernScene.Gold() != 200 || tavernScene.AleStock() != 6 ||
+                tavernScene.TotalMugs() != 2 ||
+                tavernScene.UpgradePurchaseSerial() !=
+                    tavernUpgradesPurchaseSerialBefore) {
+              failTavernUpgradesSmoke(
+                  "upgrade fixture did not restore after reserve test");
+            } else {
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::OpenExtraMugConfirmation;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyExtraMugConfirmation:
+          case TavernUpgradesSmokePhase::VerifyReopenedExtraMugConfirmation:
+            if (!diagnostics.upgradesPageRendered ||
+                !diagnostics.upgradeConfirmationRendered ||
+                diagnostics.selectedUpgradeIndex != 0 ||
+                diagnostics.selectedUpgradePrice != 25 ||
+                diagnostics.selectedUpgradeLevel != 0 ||
+                !diagnostics.upgradeCanPurchase) {
+              failTavernUpgradesSmoke("Extra Mug confirmation did not preserve "
+                                      "the 25 G purchase preview");
+            } else if (tavernScene.Gold() != 200 ||
+                       tavernScene.TotalMugs() != 2 ||
+                       tavernScene.ExtraMugOwned() ||
+                       tavernScene.UpgradePurchaseSerial() !=
+                           tavernUpgradesPurchaseSerialBefore) {
+              failTavernUpgradesSmoke(
+                  "opening Extra Mug confirmation mutated progression");
+            } else {
+              tavernUpgradesSmokePhase =
+                  tavernUpgradesSmokePhase ==
+                          TavernUpgradesSmokePhase::VerifyExtraMugConfirmation
+                      ? TavernUpgradesSmokePhase::CancelExtraMugConfirmation
+                      : TavernUpgradesSmokePhase::PurchaseExtraMug;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyExtraMugCancellation:
+            if (!diagnostics.upgradesPageRendered ||
+                diagnostics.upgradeConfirmationRendered ||
+                diagnostics.selectedUpgradeIndex != 0 ||
+                tavernScene.Gold() != 200 || tavernScene.TotalMugs() != 2 ||
+                tavernScene.ExtraMugOwned() ||
+                tavernScene.UpgradePurchaseSerial() !=
+                    tavernUpgradesPurchaseSerialBefore) {
+              failTavernUpgradesSmoke(
+                  "B did not cancel Extra Mug confirmation without cost");
+            } else {
+              TraceAppEvent("Tavern upgrades smoke: confirmation cancellation "
+                            "preserved state");
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::ReopenExtraMugConfirmation;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyExtraMugPurchase:
+            tavernUpgradesExpectedGold = 175;
+            if (diagnostics.upgradeConfirmationRendered ||
+                diagnostics.selectedUpgradeIndex != 0 ||
+                diagnostics.selectedUpgradeLevel != 1 ||
+                diagnostics.extraMugCapacity != 3 ||
+                diagnostics.upgradeCanPurchase ||
+                diagnostics.upgradeBlockReason !=
+                    TavernScene::UpgradePurchaseBlockReason::Owned ||
+                tavernScene.Gold() != tavernUpgradesExpectedGold ||
+                tavernScene.TotalMugs() != 3 || !tavernScene.ExtraMugOwned() ||
+                tavernScene.UpgradePurchaseSerial() !=
+                    tavernUpgradesPurchaseSerialBefore + 1) {
+              failTavernUpgradesSmoke(
+                  "Extra Mug was not purchased atomically for 25 G");
+            } else {
+              TraceAppEvent("Tavern upgrades smoke: mugs 2>3 purchased");
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::AttemptOwnedExtraMug;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyOwnedExtraMugNoOp:
+            if (diagnostics.upgradeConfirmationRendered ||
+                diagnostics.upgradeBlockReason !=
+                    TavernScene::UpgradePurchaseBlockReason::Owned ||
+                tavernScene.Gold() != tavernUpgradesExpectedGold ||
+                tavernScene.TotalMugs() != 3 ||
+                tavernScene.UpgradePurchaseSerial() !=
+                    tavernUpgradesPurchaseSerialBefore + 1) {
+              failTavernUpgradesSmoke(
+                  "confirming an owned Extra Mug changed progression");
+            } else {
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::SelectAleCapacity;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyAleCapacitySelection:
+            if (diagnostics.selectedUpgradeIndex != 1 ||
+                diagnostics.selectedUpgradePrice != 20 ||
+                diagnostics.selectedUpgradeLevel != 0 ||
+                diagnostics.aleCapacityLevel != 0 ||
+                !diagnostics.upgradeCanPurchase ||
+                diagnostics.upgradeBlockReason !=
+                    TavernScene::UpgradePurchaseBlockReason::None) {
+              failTavernUpgradesSmoke(
+                  "Ale Capacity did not begin at level 0 for 20 G");
+            } else {
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::OpenAleCapacityConfirmation;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyAleCapacityConfirmation:
+            if (!diagnostics.upgradeConfirmationRendered ||
+                diagnostics.selectedUpgradeIndex != 1 ||
+                diagnostics.selectedUpgradePrice !=
+                    tavernUpgradesExpectedAlePrice ||
+                diagnostics.selectedUpgradeLevel !=
+                    tavernUpgradesExpectedAleLevel ||
+                !diagnostics.upgradeCanPurchase ||
+                tavernScene.Gold() != tavernUpgradesExpectedGold ||
+                tavernScene.AleStock() != 6 ||
+                tavernScene.AleCapacity() !=
+                    6 + tavernUpgradesExpectedAleLevel) {
+              failTavernUpgradesSmoke(
+                  "Ale Capacity confirmation showed the wrong level or price");
+            } else {
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::PurchaseAleCapacity;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyAleCapacityPurchase: {
+            const int purchasedPrice = tavernUpgradesExpectedAlePrice;
+            const int purchasedLevel = tavernUpgradesExpectedAleLevel + 1;
+            const int expectedGold =
+                tavernUpgradesExpectedGold - purchasedPrice;
+            const int expectedNextPrice =
+                purchasedLevel < 3 ? 20 + purchasedLevel * 10 : 0;
+            const uint64_t expectedSerial =
+                tavernUpgradesPurchaseSerialBefore + 1 + purchasedLevel;
+            if (diagnostics.upgradeConfirmationRendered ||
+                diagnostics.selectedUpgradeIndex != 1 ||
+                diagnostics.selectedUpgradeLevel != purchasedLevel ||
+                diagnostics.selectedUpgradePrice != expectedNextPrice ||
+                diagnostics.aleCapacityLevel != purchasedLevel ||
+                tavernScene.AleCapacityLevel() != purchasedLevel ||
+                tavernScene.AleCapacity() != 6 + purchasedLevel ||
+                tavernScene.AleStock() != 6 ||
+                tavernScene.Gold() != expectedGold ||
+                tavernScene.UpgradePurchaseSerial() != expectedSerial) {
+              failTavernUpgradesSmoke("Ale Capacity purchase changed the wrong "
+                                      "level, Gold, stock, or serial");
+              break;
+            }
+            tavernUpgradesExpectedAleLevel = purchasedLevel;
+            tavernUpgradesExpectedAlePrice = expectedNextPrice;
+            tavernUpgradesExpectedGold = expectedGold;
+            if (purchasedLevel < 3) {
+              if (!diagnostics.upgradeCanPurchase ||
+                  diagnostics.upgradeBlockReason !=
+                      TavernScene::UpgradePurchaseBlockReason::None) {
+                failTavernUpgradesSmoke(
+                    "the next Ale Capacity level was not purchasable");
+              } else {
+                tavernUpgradesSmokePhase =
+                    TavernUpgradesSmokePhase::OpenAleCapacityConfirmation;
+              }
+            } else if (diagnostics.upgradeCanPurchase ||
+                       diagnostics.upgradeBlockReason !=
+                           TavernScene::UpgradePurchaseBlockReason::Maxed) {
+              failTavernUpgradesSmoke(
+                  "Ale Capacity level 3 was not marked MAXED");
+            } else {
+              TraceAppEvent(
+                  "Tavern upgrades smoke: ALE capacity 6>7>8>9 without refill");
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::AttemptMaxedAleCapacity;
+            }
+            break;
+          }
+          case TavernUpgradesSmokePhase::VerifyMaxedAleCapacityNoOp:
+            if (diagnostics.upgradeConfirmationRendered ||
+                diagnostics.upgradeBlockReason !=
+                    TavernScene::UpgradePurchaseBlockReason::Maxed ||
+                tavernScene.AleCapacity() != 9 || tavernScene.AleStock() != 6 ||
+                tavernScene.Gold() != tavernUpgradesExpectedGold ||
+                tavernScene.UpgradePurchaseSerial() !=
+                    tavernUpgradesPurchaseSerialBefore + 4) {
+              failTavernUpgradesSmoke(
+                  "confirming maxed Ale Capacity changed progression");
+            } else {
+              tavernUpgradesSmokePhase = TavernUpgradesSmokePhase::SelectTable3;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyTable3Selection:
+            if (diagnostics.selectedUpgradeIndex != 2 ||
+                diagnostics.selectedUpgradePrice != 60 ||
+                diagnostics.selectedUpgradeLevel != 0 ||
+                diagnostics.table3Unlocked || !diagnostics.upgradeCanPurchase ||
+                diagnostics.upgradeBlockReason !=
+                    TavernScene::UpgradePurchaseBlockReason::None ||
+                tavernScene.Table3Unlocked() || tavernScene.Table3Enabled()) {
+              failTavernUpgradesSmoke(
+                  "Open Table 3 was not a purchasable 60 G upgrade");
+            } else {
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::OpenTable3Confirmation;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyTable3Confirmation:
+            if (!diagnostics.upgradeConfirmationRendered ||
+                diagnostics.selectedUpgradeIndex != 2 ||
+                diagnostics.selectedUpgradePrice != 60 ||
+                diagnostics.selectedUpgradeLevel != 0 ||
+                tavernScene.Gold() != tavernUpgradesExpectedGold ||
+                tavernScene.Table3Unlocked() || tavernScene.Table3Enabled()) {
+              failTavernUpgradesSmoke(
+                  "Table 3 confirmation did not preserve the 60 G preview");
+            } else {
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::PurchaseTable3;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyTable3Purchase:
+            tavernUpgradesExpectedGold -= 60;
+            if (diagnostics.upgradeConfirmationRendered ||
+                diagnostics.selectedUpgradeIndex != 2 ||
+                diagnostics.selectedUpgradeLevel != 1 ||
+                !diagnostics.table3Unlocked || diagnostics.upgradeCanPurchase ||
+                diagnostics.upgradeBlockReason !=
+                    TavernScene::UpgradePurchaseBlockReason::Owned ||
+                tavernScene.Gold() != tavernUpgradesExpectedGold ||
+                tavernUpgradesExpectedGold != 25 ||
+                !tavernScene.Table3Unlocked() || !tavernScene.Table3Enabled() ||
+                tavernScene.UpgradePurchaseSerial() !=
+                    tavernUpgradesPurchaseSerialBefore + 5) {
+              failTavernUpgradesSmoke(
+                  "Table 3 was not opened atomically for 60 G");
+            } else {
+              TraceAppEvent("Tavern upgrades smoke: Table 3 opened");
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::AttemptOwnedTable3;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyOwnedTable3NoOp:
+            if (diagnostics.upgradeConfirmationRendered ||
+                diagnostics.upgradeBlockReason !=
+                    TavernScene::UpgradePurchaseBlockReason::Owned ||
+                tavernScene.Gold() != 25 || !tavernScene.Table3Unlocked() ||
+                !tavernScene.Table3Enabled() ||
+                tavernScene.UpgradePurchaseSerial() !=
+                    tavernUpgradesPurchaseSerialBefore + 5) {
+              failTavernUpgradesSmoke(
+                  "confirming owned Table 3 changed progression");
+            } else {
+              tavernUpgradesSmokePhase = TavernUpgradesSmokePhase::BackToRoot;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyBackToRoot:
+            if (!tavernScene.ManagementMenuOpen() || !diagnostics.menuOpen ||
+                !diagnostics.rootRendered || diagnostics.subpageOpen ||
+                diagnostics.selectedCardIndex != 1 ||
+                !tavernScene.PlayerMovementLocked()) {
+              failTavernUpgradesSmoke(
+                  "B did not return Upgrades to the management root");
+            } else if (tavernScene.Gold() != 25 ||
+                       tavernScene.UpgradePurchaseSerial() !=
+                           tavernUpgradesPurchaseSerialBefore + 5) {
+              failTavernUpgradesSmoke(
+                  "returning to the root changed purchased upgrades");
+            } else {
+              tavernUpgradesSmokePhase = TavernUpgradesSmokePhase::CloseRoot;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyClosed:
+            if (tavernScene.ManagementMenuOpen() || diagnostics.menuOpen ||
+                tavernScene.PlayerMovementLocked()) {
+              failTavernUpgradesSmoke(
+                  "the second B did not close management and unlock movement");
+            } else if (tavernScene.Gold() != 25 ||
+                       tavernScene.TotalMugs() != 3 ||
+                       tavernScene.AleStock() != 6 ||
+                       tavernScene.AleCapacity() != 9 ||
+                       !tavernScene.Table3Unlocked() ||
+                       !tavernScene.Table3Enabled()) {
+              failTavernUpgradesSmoke(
+                  "closing management changed purchased progression");
+            } else {
+              gameTimeOfDayHours = 5.0f;
+              tavernScene.BeginNextDay(gameTimeOfDayHours);
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::VerifyNextDayPersistence;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyNextDayPersistence:
+            if (tavernScene.Gold() != 25 || tavernScene.TotalMugs() != 3 ||
+                !tavernScene.ExtraMugOwned() || tavernScene.AleStock() != 6 ||
+                tavernScene.AleCapacity() != 9 ||
+                tavernScene.AleCapacityLevel() != 3 ||
+                !tavernScene.Table3Unlocked() || !tavernScene.Table3Enabled() ||
+                tavernScene.UpgradePurchaseSerial() !=
+                    tavernUpgradesPurchaseSerialBefore + 5) {
+              failTavernUpgradesSmoke(
+                  "upgrades did not persist across BeginNextDay");
+            } else {
+              TraceAppEvent(
+                  "Tavern upgrades smoke: next-day persistence passed");
+              returnFromTavern();
+              enterTavernMode();
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::VerifyReentryPersistence;
+            }
+            break;
+          case TavernUpgradesSmokePhase::VerifyReentryPersistence:
+            if (appMode != AppMode::Tavern || tavernScene.Gold() != 25 ||
+                tavernScene.TotalMugs() != 3 || !tavernScene.ExtraMugOwned() ||
+                tavernScene.AleStock() != 6 || tavernScene.AleCapacity() != 9 ||
+                tavernScene.AleCapacityLevel() != 3 ||
+                !tavernScene.Table3Unlocked() || !tavernScene.Table3Enabled() ||
+                tavernScene.UpgradePurchaseSerial() !=
+                    tavernUpgradesPurchaseSerialBefore + 5) {
+              failTavernUpgradesSmoke("upgrades did not persist after leaving "
+                                      "and re-entering Tavern");
+            } else {
+              TraceAppEvent(
+                  "Tavern upgrades smoke: Tavern re-entry persistence passed");
+              tavernUpgradesSmokePhase =
+                  TavernUpgradesSmokePhase::AutomateTable3Cycle;
+            }
+            break;
+          case TavernUpgradesSmokePhase::AutomateTable3Cycle:
+            if (!tavernScene.Table3Unlocked() || !tavernScene.Table3Enabled()) {
+              failTavernUpgradesSmoke(
+                  "Table 3 became disabled during the production probe");
+            } else if (tavernScene.TableCompletedCycles(2) >= 1) {
+              TraceAppEvent("Tavern upgrades smoke: Table 3 completed a "
+                            "service and wash cycle");
+              tavernUpgradesSmokeCompleted = true;
               requestQuit = true;
             }
             break;
@@ -3591,13 +4281,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     }
     if (tavernManagementSmokeRequested && !tavernManagementSmokeCompleted &&
         !tavernManagementSmokeFailed) {
-      failTavernManagementSmoke(
-          "application ended before the open/render/close route completed");
+      failTavernManagementSmoke("application ended before the "
+                                "root/Upgrades/back/close route completed");
     }
     if (tavernSuppliesSmokeRequested && !tavernSuppliesSmokeCompleted &&
         !tavernSuppliesSmokeFailed) {
       failTavernSuppliesSmoke(
           "application ended before the supplies economy route completed");
+    }
+    if (tavernUpgradesSmokeRequested && !tavernUpgradesSmokeCompleted &&
+        !tavernUpgradesSmokeFailed) {
+      failTavernUpgradesSmoke(
+          "application ended before the upgrade progression route completed");
     }
 
     // ---- Shutdown (reverse init order) ----
@@ -3610,7 +4305,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     }
     if (tavernSmokeRequested || tavernGameplaySmokeRequested ||
         tavernDaySmokeRequested || tavernManagementSmokeRequested ||
-        tavernSuppliesSmokeRequested) {
+        tavernSuppliesSmokeRequested || tavernUpgradesSmokeRequested) {
       std::ofstream debugLog("tavern_smoke_debug_log.txt",
                              std::ios::out | std::ios::trunc);
       if (debugLog)
@@ -3629,8 +4324,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                  !tavernManagementSmokeFailed) {
         TraceAppEvent("Tavern management smoke: PASS; menu=open cards=2 "
                       "order=Supplies,Upgrades selection=Upgrades activated=1 "
-                      "subpages=0 tablePriority=nearer economyDelta=0 "
-                      "close=unlocked d3dErrors=0");
+                      "upgradesPage=1 navigation=B>B "
+                      "tablePriority=nearer economyDelta=0 close=unlocked "
+                      "d3dErrors=0");
       }
     }
     if (tavernSuppliesSmokeRequested) {
@@ -3648,6 +4344,28 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                       "purchase=1@2G "
                       "insufficientNoOp=1 recoveryFloor=2 affordableFloor=0 "
                       "d3dErrors=0");
+      }
+    }
+    if (tavernUpgradesSmokeRequested) {
+      std::ostringstream debugReport;
+      dx.DumpDebugMessages(debugReport);
+      const std::string debugReportText = debugReport.str();
+      if (debugReportText.find(
+              "D3D12 Error/Corruption messages:\n  (none)\n") ==
+          std::string::npos) {
+        failTavernUpgradesSmoke(
+            "D3D12 debug layer reported an error/corruption message");
+      } else if (tavernUpgradesSmokeCompleted && !tavernUpgradesSmokeFailed) {
+        std::ostringstream passMessage;
+        passMessage << "Tavern upgrades smoke: PASS; cards=3 confirmCancel=1 "
+                       "emergencyReserve=1 "
+                       "mugs=2>3 aleCapacity=6>7>8>9 noRefill=1 table3=open "
+                       "ownedMaxedNoOp=1 nextDay=preserved reentry=preserved "
+                       "table3Cycles="
+                    << tavernScene.TableCompletedCycles(2)
+                    << " purchases=5 goldBeforeService="
+                    << tavernUpgradesExpectedGold << " d3dErrors=0";
+        TraceAppEvent(passMessage.str().c_str());
       }
     }
     if (playerAnimationSmokeRequested) {

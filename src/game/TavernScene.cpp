@@ -36,12 +36,15 @@ constexpr float kCounterMugInteractionRange = 0.58f;
 constexpr float kTableInteractionRange = 2.05f;
 constexpr float kPerfectPourMinimum = 0.82f;
 constexpr float kPerfectPourMaximum = 0.96f;
-constexpr int kActiveTableCount = 2;
-constexpr int kTotalMugs = 2;
+constexpr int kBaseTableCount = 2;
+constexpr int kInitialMugCapacity = 2;
 constexpr int kInitialAleStock = 6;
 constexpr int kInitialAleCapacity = 6;
 constexpr int kAleSupplyUnitPrice = 2;
 constexpr int kEmergencyAleFloor = 2;
+constexpr int kExtraMugPrice = 25;
+constexpr int kOpenTable3Price = 60;
+constexpr int kMaximumAleCapacityLevel = 3;
 constexpr float kBusinessOpenHour = 5.0f;
 constexpr float kMugScaleXZ = 0.345f;
 constexpr float kMugScaleY = 0.465f;
@@ -210,12 +213,16 @@ ManagementButtonResult DrawManagementButton(ImDrawList *draw, const char *id,
                                             const ImVec2 &minimum,
                                             const ImVec2 &maximum, bool enabled,
                                             ImU32 accent = 0) {
-  ImGui::PushID(id);
-  ImGui::SetCursorScreenPos(minimum);
-  const bool submitted = ImGui::InvisibleButton(
-      "##button", ImVec2(maximum.x - minimum.x, maximum.y - minimum.y));
-  const bool hovered = ImGui::IsItemHovered();
-  ImGui::PopID();
+  bool submitted = false;
+  bool hovered = false;
+  if (enabled) {
+    ImGui::PushID(id);
+    ImGui::SetCursorScreenPos(minimum);
+    submitted = ImGui::InvisibleButton(
+        "##button", ImVec2(maximum.x - minimum.x, maximum.y - minimum.y));
+    hovered = ImGui::IsItemHovered();
+    ImGui::PopID();
+  }
 
   if (accent == 0)
     accent = TavernUiColor(0.96f, 0.56f, 0.20f, 1.0f);
@@ -303,6 +310,194 @@ void DrawUpgradeIllustration(ImDrawList *draw, const ImVec2 &minimum,
       ImVec2(arrowX, arrowTop - height * 0.055f),
       ImVec2(arrowX - width * 0.060f, arrowTop + height * 0.035f),
       ImVec2(arrowX + width * 0.060f, arrowTop + height * 0.035f), teal);
+}
+
+enum class UpgradeArtwork { Mug, AleCapacity, Table };
+
+void DrawUpgradeCardIllustration(ImDrawList *draw, UpgradeArtwork artwork,
+                                 const ImVec2 &minimum, const ImVec2 &maximum,
+                                 int level) {
+  const float width = maximum.x - minimum.x;
+  const float height = maximum.y - minimum.y;
+  const ImU32 teal = TavernUiColor(0.28f, 0.88f, 0.70f, 1.0f);
+  const ImU32 tealSoft = TavernUiColor(0.22f, 0.66f, 0.54f, 0.32f);
+  const ImU32 gold = TavernUiColor(1.0f, 0.62f, 0.18f, 1.0f);
+  const ImU32 wood = TavernUiColor(0.55f, 0.27f, 0.085f, 1.0f);
+  const ImU32 darkWood = TavernUiColor(0.12f, 0.055f, 0.025f, 1.0f);
+  const ImU32 metal = TavernUiColor(0.66f, 0.72f, 0.70f, 1.0f);
+  draw->AddRectFilledMultiColor(minimum, maximum,
+                                TavernUiColor(0.045f, 0.075f, 0.070f, 1.0f),
+                                TavernUiColor(0.080f, 0.145f, 0.125f, 1.0f),
+                                TavernUiColor(0.020f, 0.032f, 0.030f, 1.0f),
+                                TavernUiColor(0.028f, 0.058f, 0.050f, 1.0f));
+  draw->AddCircleFilled(
+      ImVec2(minimum.x + width * 0.50f, minimum.y + height * 0.50f),
+      std::min(width, height) * 0.34f, tealSoft, 40);
+
+  if (artwork == UpgradeArtwork::Mug) {
+    const float mugWidth = width * 0.18f;
+    const float mugHeight = height * 0.42f;
+    for (int mug = 0; mug < 3; ++mug) {
+      const float centerX = minimum.x + width * (0.27f + mug * 0.23f);
+      const float top = minimum.y + height * (mug == 1 ? 0.25f : 0.34f);
+      const ImVec2 mugMin(centerX - mugWidth * 0.5f, top);
+      const ImVec2 mugMax(centerX + mugWidth * 0.5f, top + mugHeight);
+      const bool unlocked = mug < 2 || level > 0;
+      draw->AddRectFilled(mugMin, mugMax,
+                          unlocked ? TavernUiColor(0.82f, 0.78f, 0.64f, 0.94f)
+                                   : TavernUiColor(0.08f, 0.12f, 0.11f, 0.86f),
+                          7.0f);
+      draw->AddRect(mugMin, mugMax, unlocked ? metal : teal, 7.0f, 0, 2.4f);
+      draw->AddCircle(
+          ImVec2(mugMax.x + mugWidth * 0.23f, (mugMin.y + mugMax.y) * 0.52f),
+          mugWidth * 0.31f, unlocked ? metal : teal, 24, 2.4f);
+    }
+    if (level == 0) {
+      const float arrowY = minimum.y + height * 0.20f;
+      draw->AddLine(ImVec2(minimum.x + width * 0.58f, arrowY),
+                    ImVec2(minimum.x + width * 0.78f, arrowY), teal, 4.0f);
+      draw->AddTriangleFilled(
+          ImVec2(minimum.x + width * 0.81f, arrowY),
+          ImVec2(minimum.x + width * 0.74f, arrowY - height * 0.055f),
+          ImVec2(minimum.x + width * 0.74f, arrowY + height * 0.055f), teal);
+    }
+    return;
+  }
+
+  if (artwork == UpgradeArtwork::AleCapacity) {
+    const ImVec2 barrelMin(minimum.x + width * 0.23f,
+                           minimum.y + height * 0.18f);
+    const ImVec2 barrelMax(minimum.x + width * 0.73f,
+                           minimum.y + height * 0.82f);
+    draw->AddRectFilled(barrelMin, barrelMax, wood, width * 0.09f);
+    draw->AddRect(barrelMin, barrelMax, darkWood, width * 0.09f, 0, 2.4f);
+    for (const float yScale : {0.18f, 0.50f, 0.82f}) {
+      const float y = barrelMin.y + (barrelMax.y - barrelMin.y) * yScale;
+      draw->AddLine(ImVec2(barrelMin.x + 4.0f, y),
+                    ImVec2(barrelMax.x - 4.0f, y), metal, 3.0f);
+    }
+    const ImVec2 tap(barrelMax.x, minimum.y + height * 0.55f);
+    draw->AddRectFilled(ImVec2(tap.x, tap.y - 5.0f),
+                        ImVec2(tap.x + width * 0.13f, tap.y + 5.0f), metal,
+                        3.0f);
+    for (int pip = 0; pip < kMaximumAleCapacityLevel; ++pip) {
+      const bool filled = pip < level;
+      const ImVec2 center(minimum.x + width * 0.33f + pip * width * 0.17f,
+                          minimum.y + height * 0.90f);
+      draw->AddCircleFilled(
+          center, std::min(width, height) * 0.028f,
+          filled ? gold : TavernUiColor(0.13f, 0.17f, 0.15f, 1.0f), 20);
+      draw->AddCircle(center, std::min(width, height) * 0.028f, teal, 20, 1.4f);
+    }
+    return;
+  }
+
+  const float tableY = minimum.y + height * 0.54f;
+  draw->AddRectFilled(
+      ImVec2(minimum.x + width * 0.16f, tableY),
+      ImVec2(minimum.x + width * 0.84f, tableY + height * 0.14f), wood, 6.0f);
+  draw->AddRect(ImVec2(minimum.x + width * 0.16f, tableY),
+                ImVec2(minimum.x + width * 0.84f, tableY + height * 0.14f),
+                darkWood, 6.0f, 0, 2.4f);
+  for (const float xScale : {0.23f, 0.77f}) {
+    draw->AddRectFilled(
+        ImVec2(minimum.x + width * xScale, tableY + height * 0.13f),
+        ImVec2(minimum.x + width * (xScale + 0.07f),
+               minimum.y + height * 0.88f),
+        darkWood, 3.0f);
+  }
+  for (const float offset : {-0.15f, 0.15f}) {
+    const float benchY = tableY + offset * height;
+    draw->AddRectFilled(
+        ImVec2(minimum.x + width * 0.21f, benchY),
+        ImVec2(minimum.x + width * 0.79f, benchY + height * 0.065f), darkWood,
+        4.0f);
+  }
+  const ImVec2 candle(minimum.x + width * 0.50f, minimum.y + height * 0.37f);
+  draw->AddCircleFilled(candle, std::min(width, height) * 0.17f,
+                        level > 0 ? TavernUiColor(1.0f, 0.56f, 0.14f, 0.26f)
+                                  : TavernUiColor(0.0f, 0.0f, 0.0f, 0.0f),
+                        32);
+  draw->AddRectFilled(ImVec2(candle.x - 4.0f, candle.y),
+                      ImVec2(candle.x + 4.0f, candle.y + height * 0.16f),
+                      TavernUiColor(0.84f, 0.75f, 0.56f, 1.0f), 3.0f);
+  draw->AddCircleFilled(candle, 6.0f, level > 0 ? gold : metal, 18);
+}
+
+struct UpgradeCardResult {
+  bool clicked = false;
+  bool submitted = false;
+};
+
+UpgradeCardResult DrawUpgradeCard(ImDrawList *draw, const char *id,
+                                  const char *title, const char *effect,
+                                  const char *note, const char *status,
+                                  UpgradeArtwork artwork, int artworkLevel,
+                                  const ImVec2 &minimum, const ImVec2 &maximum,
+                                  bool selected, bool purchasable,
+                                  bool interactive) {
+  bool clicked = false;
+  bool hovered = false;
+  if (interactive) {
+    ImGui::PushID(id);
+    ImGui::SetCursorScreenPos(minimum);
+    clicked = ImGui::InvisibleButton(
+        "##upgrade-card", ImVec2(maximum.x - minimum.x, maximum.y - minimum.y));
+    hovered = ImGui::IsItemHovered();
+    ImGui::PopID();
+  }
+
+  const bool highlighted = selected || hovered;
+  const ImU32 accent = purchasable ? TavernUiColor(0.30f, 0.90f, 0.72f, 1.0f)
+                                   : TavernUiColor(0.46f, 0.43f, 0.38f, 0.86f);
+  draw->AddRectFilled(minimum, maximum,
+                      selected ? TavernUiColor(0.075f, 0.13f, 0.115f, 0.99f)
+                               : TavernUiColor(0.040f, 0.030f, 0.024f, 0.99f),
+                      13.0f);
+  draw->AddRect(minimum, maximum, accent, 13.0f, 0, highlighted ? 3.0f : 1.4f);
+
+  const float width = maximum.x - minimum.x;
+  const float height = maximum.y - minimum.y;
+  const ImVec2 imageMin(minimum.x + 12.0f, minimum.y + 12.0f);
+  const ImVec2 imageMax(maximum.x - 12.0f, minimum.y + height * 0.48f);
+  draw->PushClipRect(imageMin, imageMax, true);
+  DrawUpgradeCardIllustration(draw, artwork, imageMin, imageMax, artworkLevel);
+  draw->PopClipRect();
+  draw->AddRect(imageMin, imageMax, TavernUiColor(0.25f, 0.52f, 0.44f, 0.84f),
+                7.0f, 0, 1.2f);
+
+  ImFont *font = ImGui::GetFont();
+  const float titleSizePx = std::clamp(width * 0.075f, 24.0f, 33.0f);
+  const ImVec2 titleSize =
+      font->CalcTextSizeA(titleSizePx, FLT_MAX, 0.0f, title);
+  draw->AddText(font, titleSizePx,
+                ImVec2((minimum.x + maximum.x - titleSize.x) * 0.5f,
+                       minimum.y + height * 0.515f),
+                TavernUiColor(1.0f, 0.90f, 0.72f, 1.0f), title);
+  const ImVec2 effectSize = ImGui::CalcTextSize(effect);
+  draw->AddText(ImVec2((minimum.x + maximum.x - effectSize.x) * 0.5f,
+                       minimum.y + height * 0.635f),
+                TavernUiColor(0.82f, 0.91f, 0.85f, 1.0f), effect);
+  const ImVec2 noteSize = ImGui::CalcTextSize(note);
+  draw->AddText(ImVec2((minimum.x + maximum.x - noteSize.x) * 0.5f,
+                       minimum.y + height * 0.705f),
+                TavernUiColor(0.62f, 0.67f, 0.63f, 1.0f), note);
+
+  const ImVec2 statusMin(minimum.x + 18.0f, minimum.y + height * 0.805f);
+  const ImVec2 statusMax(maximum.x - 18.0f, maximum.y - 18.0f);
+  draw->AddRectFilled(statusMin, statusMax,
+                      purchasable
+                          ? TavernUiColor(0.08f, 0.22f, 0.17f, 0.98f)
+                          : TavernUiColor(0.065f, 0.055f, 0.048f, 0.96f),
+                      7.0f);
+  draw->AddRect(statusMin, statusMax, accent, 7.0f, 0, 1.3f);
+  const ImVec2 statusSize = ImGui::CalcTextSize(status);
+  draw->AddText(ImVec2((statusMin.x + statusMax.x - statusSize.x) * 0.5f,
+                       (statusMin.y + statusMax.y - statusSize.y) * 0.5f),
+                purchasable ? TavernUiColor(0.72f, 1.0f, 0.88f, 1.0f)
+                            : TavernUiColor(0.62f, 0.58f, 0.52f, 1.0f),
+                status);
+  return {clicked, true};
 }
 
 struct ManagementCardResult {
@@ -494,6 +689,19 @@ int TavernScene::AleStock() const { return AleSupply().current; }
 
 int TavernScene::AleCapacity() const { return AleSupply().capacity; }
 
+int TavernScene::AleCapacityLevel() const {
+  return std::clamp(AleCapacity() - kInitialAleCapacity, 0,
+                    kMaximumAleCapacityLevel);
+}
+
+int TavernScene::TotalMugs() const {
+  return kInitialMugCapacity + std::clamp(m_extraMugLevel, 0, 1);
+}
+
+int TavernScene::CustomerTableCount() const {
+  return m_table3Unlocked ? static_cast<int>(m_tables.size()) : kBaseTableCount;
+}
+
 bool TavernScene::AlePourInProgress() const {
   return m_workState == WorkState::PouringAle;
 }
@@ -539,16 +747,160 @@ bool TavernScene::TryOrderAle() {
   return true;
 }
 
+int TavernScene::UpgradeLevel(UpgradeId upgrade) const {
+  switch (upgrade) {
+  case UpgradeId::ExtraMug:
+    return std::clamp(m_extraMugLevel, 0, 1);
+  case UpgradeId::AleCapacity:
+    return AleCapacityLevel();
+  case UpgradeId::OpenTable3:
+    return m_table3Unlocked ? 1 : 0;
+  case UpgradeId::Count:
+    break;
+  }
+  return 0;
+}
+
+int TavernScene::UpgradeMaximumLevel(UpgradeId upgrade) const {
+  return upgrade == UpgradeId::AleCapacity ? kMaximumAleCapacityLevel : 1;
+}
+
+int TavernScene::UpgradePrice(UpgradeId upgrade) const {
+  if (UpgradeLevel(upgrade) >= UpgradeMaximumLevel(upgrade))
+    return 0;
+  switch (upgrade) {
+  case UpgradeId::ExtraMug:
+    return kExtraMugPrice;
+  case UpgradeId::AleCapacity:
+    return 20 + UpgradeLevel(upgrade) * 10;
+  case UpgradeId::OpenTable3:
+    return kOpenTable3Price;
+  case UpgradeId::Count:
+    break;
+  }
+  return 0;
+}
+
+TavernScene::UpgradePurchaseBlockReason
+TavernScene::CurrentUpgradeBlockReason(UpgradeId upgrade) const {
+  const int level = UpgradeLevel(upgrade);
+  const int maximumLevel = UpgradeMaximumLevel(upgrade);
+  if (level >= maximumLevel) {
+    return upgrade == UpgradeId::AleCapacity
+               ? UpgradePurchaseBlockReason::Maxed
+               : UpgradePurchaseBlockReason::Owned;
+  }
+  if (upgrade == UpgradeId::OpenTable3 &&
+      m_tutorialStep != TutorialStep::Complete)
+    return UpgradePurchaseBlockReason::TutorialRequired;
+
+  const int price = UpgradePrice(upgrade);
+  if (m_gold < price)
+    return UpgradePurchaseBlockReason::InsufficientGold;
+  if (AleStock() == 0 && m_gold - price < kAleSupplyUnitPrice)
+    return UpgradePurchaseBlockReason::EmergencyAleReserve;
+  return UpgradePurchaseBlockReason::None;
+}
+
+void TavernScene::RequestUpgradePurchase(UpgradeId upgrade) {
+  m_selectedUpgradeIndex = static_cast<int>(upgrade);
+  const UpgradePurchaseBlockReason blockReason =
+      CurrentUpgradeBlockReason(upgrade);
+  if (blockReason == UpgradePurchaseBlockReason::None) {
+    m_upgradeConfirmationOpen = true;
+    m_upgradeConfirmBuySelected = true;
+    return;
+  }
+
+  switch (blockReason) {
+  case UpgradePurchaseBlockReason::InsufficientGold:
+    m_feedbackText = "NOT ENOUGH GOLD";
+    break;
+  case UpgradePurchaseBlockReason::Owned:
+    m_feedbackText = "ALREADY OWNED";
+    break;
+  case UpgradePurchaseBlockReason::Maxed:
+    m_feedbackText = "MAX LEVEL";
+    break;
+  case UpgradePurchaseBlockReason::TutorialRequired:
+    m_feedbackText = "COMPLETE THE TUTORIAL FIRST";
+    break;
+  case UpgradePurchaseBlockReason::EmergencyAleReserve:
+    m_feedbackText = "KEEP 2 G FOR ALE";
+    break;
+  case UpgradePurchaseBlockReason::None:
+    break;
+  }
+  m_feedbackTimer = 1.8f;
+}
+
+bool TavernScene::TryPurchaseUpgrade(UpgradeId upgrade) {
+  if (CurrentUpgradeBlockReason(upgrade) != UpgradePurchaseBlockReason::None)
+    return false;
+
+  const int price = UpgradePrice(upgrade);
+  m_gold -= price;
+  const char *upgradeName = "UPGRADE";
+  switch (upgrade) {
+  case UpgradeId::ExtraMug:
+    m_extraMugLevel = 1;
+    m_cleanMugs = std::min(TotalMugs(), m_cleanMugs + 1);
+    upgradeName = "EXTRA MUG";
+    break;
+  case UpgradeId::AleCapacity:
+    AleSupply().capacity =
+        kInitialAleCapacity +
+        std::min(kMaximumAleCapacityLevel, AleCapacityLevel() + 1);
+    upgradeName = "ALE CAPACITY";
+    break;
+  case UpgradeId::OpenTable3:
+    m_table3Unlocked = true;
+    m_tables[2] = {};
+    m_tables[2].enabled = true;
+    m_spawnTimers[2] = CustomerSpawnDelay(2);
+    upgradeName = "TABLE 3 OPEN";
+    break;
+  case UpgradeId::Count:
+    return false;
+  }
+
+  ++m_upgradePurchaseSerial;
+  m_upgradeConfirmationOpen = false;
+  m_upgradeConfirmBuySelected = false;
+  char feedback[96]{};
+  std::snprintf(feedback, sizeof(feedback), "%s   -%d G", upgradeName, price);
+  m_feedbackText = feedback;
+  m_feedbackTimer = 1.8f;
+  return true;
+}
+
 void TavernScene::ConfigureSuppliesSmokeState(int aleStock, int gold) {
   AleSupply().current = std::clamp(aleStock, 0, AleCapacity());
   m_gold = std::clamp(gold, 0, 999999);
   m_aleOrderQuantity = 0;
 }
 
+void TavernScene::ConfigureUpgradesSmokeState(int gold, int aleStock,
+                                              bool tutorialComplete) {
+  m_gold = std::clamp(gold, 0, 999999);
+  AleSupply().current = std::clamp(aleStock, 0, AleCapacity());
+  m_tutorialStep =
+      tutorialComplete ? TutorialStep::Complete : TutorialStep::TakeOrder;
+  m_tables[1].enabled = tutorialComplete;
+  if (tutorialComplete && m_spawnTimers[1] <= 0.0f)
+    m_spawnTimers[1] = 4.0f;
+  m_tables[2].enabled = tutorialComplete && m_table3Unlocked;
+  if (m_tables[2].enabled && m_spawnTimers[2] <= 0.0f)
+    m_spawnTimers[2] = CustomerSpawnDelay(2);
+}
+
 void TavernScene::OpenManagementMenu() {
   m_managementPage = ManagementPage::Root;
   m_managementSelection = ManagementSelection::Supplies;
   m_aleOrderQuantity = 0;
+  m_selectedUpgradeIndex = 0;
+  m_upgradeConfirmationOpen = false;
+  m_upgradeConfirmBuySelected = false;
   m_managementActivationSerial = 0;
   m_managementUiDiagnostics = {};
   m_interactionCooldown = 0.20f;
@@ -565,20 +917,46 @@ void TavernScene::OpenSuppliesPage() {
   m_managementUiDiagnostics.subpageOpen = true;
   m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
   m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+  m_managementUiDiagnostics.upgradePurchaseSerial = m_upgradePurchaseSerial;
   m_managementUiDiagnostics.renderedFrameSerial = renderedFrameSerial;
 }
 
-void TavernScene::BackToManagementRoot() {
-  m_managementPage = ManagementPage::Root;
-  m_managementSelection = ManagementSelection::Supplies;
-  m_aleOrderQuantity = 0;
+void TavernScene::OpenUpgradesPage() {
+  m_managementPage = ManagementPage::Upgrades;
+  m_managementSelection = ManagementSelection::Upgrades;
+  m_selectedUpgradeIndex = 0;
+  m_upgradeConfirmationOpen = false;
+  m_upgradeConfirmBuySelected = false;
   const uint64_t renderedFrameSerial =
       m_managementUiDiagnostics.renderedFrameSerial;
   m_managementUiDiagnostics = {};
   m_managementUiDiagnostics.menuOpen = true;
-  m_managementUiDiagnostics.selectedCardIndex = 0;
+  m_managementUiDiagnostics.subpageOpen = true;
   m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
   m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+  m_managementUiDiagnostics.upgradePurchaseSerial = m_upgradePurchaseSerial;
+  m_managementUiDiagnostics.renderedFrameSerial = renderedFrameSerial;
+}
+
+void TavernScene::BackToManagementRoot() {
+  const ManagementSelection returnSelection =
+      m_managementPage == ManagementPage::Upgrades
+          ? ManagementSelection::Upgrades
+          : ManagementSelection::Supplies;
+  m_managementPage = ManagementPage::Root;
+  m_managementSelection = returnSelection;
+  m_aleOrderQuantity = 0;
+  m_upgradeConfirmationOpen = false;
+  m_upgradeConfirmBuySelected = false;
+  const uint64_t renderedFrameSerial =
+      m_managementUiDiagnostics.renderedFrameSerial;
+  m_managementUiDiagnostics = {};
+  m_managementUiDiagnostics.menuOpen = true;
+  m_managementUiDiagnostics.selectedCardIndex =
+      returnSelection == ManagementSelection::Upgrades ? 1 : 0;
+  m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
+  m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+  m_managementUiDiagnostics.upgradePurchaseSerial = m_upgradePurchaseSerial;
   m_managementUiDiagnostics.renderedFrameSerial = renderedFrameSerial;
 }
 
@@ -586,11 +964,15 @@ void TavernScene::CloseManagementMenu() {
   m_managementPage = ManagementPage::Closed;
   m_managementSelection = ManagementSelection::None;
   m_aleOrderQuantity = 0;
+  m_upgradeConfirmationOpen = false;
+  m_upgradeConfirmBuySelected = false;
   const uint64_t renderedFrameSerial =
       m_managementUiDiagnostics.renderedFrameSerial;
   m_managementUiDiagnostics = {};
   m_managementUiDiagnostics.renderedFrameSerial = renderedFrameSerial;
   m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
+  m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+  m_managementUiDiagnostics.upgradePurchaseSerial = m_upgradePurchaseSerial;
   m_interactionCooldown = 0.20f;
 }
 
@@ -799,30 +1181,47 @@ void TavernScene::SetBusinessHour(float hour) {
 }
 
 void TavernScene::Reset(float startingHour) {
-  m_shiftState = ShiftState::Running;
-  SetBusinessHour(startingHour);
-  m_spawnTimers = {2.0f, 0.0f, 0.0f};
   m_gold = 0;
   m_servedCustomers = 0;
-  m_walkouts = 0;
   m_completedCycles = 0;
   m_completedDays = 0;
   m_tableCompletedCycles = {};
-  m_tables = {};
-  m_counterMugs = {};
   m_supplies = {};
   AleSupply() = {kInitialAleStock, kInitialAleCapacity};
-  m_aleOrderQuantity = 0;
   m_supplyPurchaseSerial = 0;
+  m_upgradePurchaseSerial = 0;
+  m_extraMugLevel = 0;
+  m_table3Unlocked = false;
+  m_tutorialStep = TutorialStep::TakeOrder;
+  m_perfectPours = 0;
+  ResetShiftRuntime(startingHour);
+}
+
+void TavernScene::ResetShiftRuntime(float startingHour) {
+  m_shiftState = ShiftState::Running;
+  SetBusinessHour(startingHour);
+  m_spawnTimers = {2.0f, 0.0f, 0.0f};
+  m_walkouts = 0;
+  m_tables = {};
+  m_counterMugs = {};
   m_tables[0].enabled = true;
-  m_tables[1].enabled = false;
+  m_tables[1].enabled = m_tutorialStep == TutorialStep::Complete;
+  m_tables[2].enabled =
+      m_table3Unlocked && m_tutorialStep == TutorialStep::Complete;
+  if (m_tables[1].enabled)
+    m_spawnTimers[1] = 4.0f;
+  if (m_tables[2].enabled)
+    m_spawnTimers[2] = CustomerSpawnDelay(2);
   m_heldItem = HeldItem::None;
   m_workState = WorkState::None;
   m_managementPage = ManagementPage::Closed;
   m_managementSelection = ManagementSelection::None;
   m_managementActivationSerial = 0;
   m_managementUiDiagnostics = {};
-  m_tutorialStep = TutorialStep::TakeOrder;
+  m_aleOrderQuantity = 0;
+  m_selectedUpgradeIndex = 0;
+  m_upgradeConfirmationOpen = false;
+  m_upgradeConfirmBuySelected = false;
   m_playerPosition = PlayerSpawnPosition();
   m_nearbyPrompt = "WASD：移動　E：調べる";
   m_feedbackText.clear();
@@ -834,8 +1233,7 @@ void TavernScene::Reset(float startingHour) {
   m_interactionCooldown = 0.35f;
   m_feedbackTimer = 0.0f;
   m_pourVisualTime = 0.0f;
-  m_cleanMugs = kTotalMugs;
-  m_perfectPours = 0;
+  m_cleanMugs = TotalMugs();
   m_heldMugTableIndex = -1;
   m_tutorialTableIndex = 0;
   m_workActionStarted = false;
@@ -845,33 +1243,10 @@ void TavernScene::Reset(float startingHour) {
 }
 
 void TavernScene::BeginNextDay(float startingHour) {
-  const int gold = m_gold;
-  const int servedCustomers = m_servedCustomers;
-  const int completedCycles = m_completedCycles;
-  const int perfectPours = m_perfectPours;
-  const int completedDays = m_completedDays + 1;
-  const std::array<int, 3> tableCompletedCycles = m_tableCompletedCycles;
-  const TutorialStep tutorialStep = m_tutorialStep;
-  const auto supplies = m_supplies;
-  const uint64_t supplyPurchaseSerial = m_supplyPurchaseSerial;
-
-  Reset(startingHour);
-  m_gold = gold;
-  m_servedCustomers = servedCustomers;
-  m_completedCycles = completedCycles;
-  m_perfectPours = perfectPours;
-  m_completedDays = completedDays;
-  m_tableCompletedCycles = tableCompletedCycles;
-  m_tutorialStep = tutorialStep;
-  m_supplies = supplies;
-  m_supplyPurchaseSerial = supplyPurchaseSerial;
-  m_aleOrderQuantity = 0;
+  ++m_completedDays;
+  ResetShiftRuntime(startingHour);
   if (AleStock() == 0 && m_gold < kAleSupplyUnitPrice)
     AleSupply().current = std::min(kEmergencyAleFloor, AleCapacity());
-  if (m_tutorialStep == TutorialStep::Complete) {
-    m_tables[1].enabled = true;
-    m_spawnTimers[1] = 4.0f;
-  }
   m_feedbackText = "翌朝 5:00　新しい一日が始まった";
   m_feedbackTimer = 2.4f;
 }
@@ -919,12 +1294,11 @@ void TavernScene::ReturnEmptyMug() {
   if (m_heldItem != HeldItem::EmptyMug)
     return;
   m_heldItem = HeldItem::None;
-  m_cleanMugs = std::min(kTotalMugs, m_cleanMugs + 1);
+  m_cleanMugs = std::min(TotalMugs(), m_cleanMugs + 1);
 }
 
 void TavernScene::PlaceHeldMug(int slotIndex) {
-  if (slotIndex < 0 ||
-      slotIndex >= static_cast<int>(m_counterMugs.size()) ||
+  if (slotIndex < 0 || slotIndex >= static_cast<int>(m_counterMugs.size()) ||
       m_heldItem == HeldItem::None ||
       m_counterMugs[slotIndex].item != HeldItem::None)
     return;
@@ -1120,7 +1494,7 @@ void TavernScene::TriggerWalkout(int tableIndex) {
 int TavernScene::NearestEnabledTable(float maximumDistance) const {
   int nearestTable = -1;
   float nearestDistance = maximumDistance;
-  for (int tableIndex = 0; tableIndex < kActiveTableCount; ++tableIndex) {
+  for (int tableIndex = 0; tableIndex < CustomerTableCount(); ++tableIndex) {
     if (!m_tables[tableIndex].enabled)
       continue;
     const float distance =
@@ -1146,7 +1520,7 @@ bool TavernScene::ManagementInteractionHasPriority() const {
 }
 
 int TavernScene::FindTableInState(TableState state) const {
-  for (int tableIndex = 0; tableIndex < kActiveTableCount; ++tableIndex) {
+  for (int tableIndex = 0; tableIndex < CustomerTableCount(); ++tableIndex) {
     if (m_tables[tableIndex].enabled && m_tables[tableIndex].state == state)
       return tableIndex;
   }
@@ -1156,7 +1530,7 @@ int TavernScene::FindTableInState(TableState state) const {
 int TavernScene::FindMostUrgentWaitingAleTable() const {
   int urgentTable = -1;
   float lowestSatisfaction = 101.0f;
-  for (int tableIndex = 0; tableIndex < kActiveTableCount; ++tableIndex) {
+  for (int tableIndex = 0; tableIndex < CustomerTableCount(); ++tableIndex) {
     const TableSlot &table = m_tables[tableIndex];
     if (table.enabled && table.state == TableState::WaitingAle &&
         table.satisfaction < lowestSatisfaction) {
@@ -1184,7 +1558,7 @@ int TavernScene::NearestCounterMugSlot(float maximumDistance) const {
 }
 
 bool TavernScene::HasActiveCustomers() const {
-  for (int tableIndex = 0; tableIndex < kActiveTableCount; ++tableIndex) {
+  for (int tableIndex = 0; tableIndex < CustomerTableCount(); ++tableIndex) {
     const TableSlot &table = m_tables[tableIndex];
     if (!table.enabled)
       continue;
@@ -1289,7 +1663,14 @@ void TavernScene::RunAutomation() {
 
 void TavernScene::UpdateNearbyPrompt() {
   if (ManagementMenuOpen()) {
-    m_nearbyPrompt = "E / B：管理メニューを閉じる";
+    if (m_managementPage == ManagementPage::Upgrades &&
+        m_upgradeConfirmationOpen)
+      m_nearbyPrompt = "B：購入確認を戻る　E：管理メニューを閉じる";
+    else if (m_managementPage == ManagementPage::Supplies ||
+             m_managementPage == ManagementPage::Upgrades)
+      m_nearbyPrompt = "B：管理項目へ戻る　E：管理メニューを閉じる";
+    else
+      m_nearbyPrompt = "E / B：管理メニューを閉じる";
     return;
   }
   if (m_workState == WorkState::PouringAle) {
@@ -1425,10 +1806,16 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
       if (interactPressed && m_interactionCooldown <= 0.0f) {
         CloseManagementMenu();
       } else if (managementInput.cancelPressed) {
-        if (m_managementPage == ManagementPage::Supplies)
+        if (m_managementPage == ManagementPage::Upgrades &&
+            m_upgradeConfirmationOpen) {
+          m_upgradeConfirmationOpen = false;
+          m_upgradeConfirmBuySelected = false;
+        } else if (m_managementPage == ManagementPage::Supplies ||
+                   m_managementPage == ManagementPage::Upgrades) {
           BackToManagementRoot();
-        else
+        } else {
           CloseManagementMenu();
+        }
       } else if (m_managementPage == ManagementPage::Root) {
         if (managementInput.previousPressed)
           m_managementSelection = ManagementSelection::Supplies;
@@ -1440,8 +1827,7 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
             OpenSuppliesPage();
           } else if (m_managementSelection == ManagementSelection::Upgrades) {
             ++m_managementActivationSerial;
-            m_feedbackText = "UPGRADES COMING SOON";
-            m_feedbackTimer = 1.6f;
+            OpenUpgradesPage();
           }
         }
       } else if (m_managementPage == ManagementPage::Supplies) {
@@ -1451,6 +1837,33 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
           AdjustAleOrderQuantity(1);
         if (managementInput.confirmPressed)
           TryOrderAle();
+      } else if (m_managementPage == ManagementPage::Upgrades) {
+        if (m_upgradeConfirmationOpen) {
+          if (managementInput.previousPressed)
+            m_upgradeConfirmBuySelected = false;
+          else if (managementInput.nextPressed)
+            m_upgradeConfirmBuySelected = true;
+          if (managementInput.confirmPressed) {
+            if (m_upgradeConfirmBuySelected) {
+              const UpgradeId upgrade =
+                  static_cast<UpgradeId>(m_selectedUpgradeIndex);
+              TryPurchaseUpgrade(upgrade);
+            } else {
+              m_upgradeConfirmationOpen = false;
+            }
+          }
+        } else {
+          const int lastUpgradeIndex = static_cast<int>(UpgradeId::Count) - 1;
+          if (managementInput.previousPressed)
+            m_selectedUpgradeIndex = std::max(0, m_selectedUpgradeIndex - 1);
+          else if (managementInput.nextPressed)
+            m_selectedUpgradeIndex =
+                std::min(lastUpgradeIndex, m_selectedUpgradeIndex + 1);
+          if (managementInput.confirmPressed) {
+            RequestUpgradePurchase(
+                static_cast<UpgradeId>(m_selectedUpgradeIndex));
+          }
+        }
       }
     }
     UpdateNearbyPrompt();
@@ -1521,7 +1934,7 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
   }
 
   if (CanServeCustomers()) {
-    for (int tableIndex = 0; tableIndex < kActiveTableCount; ++tableIndex) {
+    for (int tableIndex = 0; tableIndex < CustomerTableCount(); ++tableIndex) {
       TableSlot &table = m_tables[tableIndex];
       if (!table.enabled)
         continue;
@@ -1789,7 +2202,7 @@ void TavernScene::BuildFrame(FrameData &frame) const {
            .empty();
 
   if (hasRoundTable && hasStool) {
-    for (int tableIndex = 0; tableIndex < kActiveTableCount; ++tableIndex) {
+    for (int tableIndex = 0; tableIndex < kBaseTableCount; ++tableIndex) {
       const float x = tableX[tableIndex];
       pushAsset(TavernAsset::RoundTable, {1.08f, 1.08f, 1.08f},
                 {0.0f, 0.18f * static_cast<float>(tableIndex), 0.0f},
@@ -1832,16 +2245,27 @@ void TavernScene::BuildFrame(FrameData &frame) const {
     }
   }
 
-  // テーブル上の食器と灯り。三卓目は装飾用の共同席として整える。
+  // テーブル上の食器と灯り。三卓目は購入後に共同席の灯りを点ける。
   for (int tableIndex = 0; tableIndex < 3; ++tableIndex) {
-    const float topY = tableIndex < kActiveTableCount ? 1.00f : 0.97f;
+    const float topY = tableIndex < kBaseTableCount ? 1.00f : 0.97f;
+    const bool tableLit = tableIndex < kBaseTableCount || m_table3Unlocked;
     pushAsset(TavernAsset::Candle, {1.45f, 1.45f, 1.45f}, {0.0f, 0.0f, 0.0f},
               {tableX[tableIndex] - 0.34f, topY, 4.02f});
-    pushMesh(m_glowMeshId, 0.045f, 0.075f, 0.045f, tableX[tableIndex] - 0.34f,
-             topY + 0.25f, 4.02f);
+    if (tableLit) {
+      pushMesh(m_glowMeshId, 0.045f, 0.075f, 0.045f, tableX[tableIndex] - 0.34f,
+               topY + 0.25f, 4.02f);
+    }
     pushAsset(TavernAsset::Plate, {0.58f, 0.58f, 0.58f},
               {0.0f, 0.18f * static_cast<float>(tableIndex), 0.0f},
               {tableX[tableIndex] + 0.28f, topY + 0.012f, 4.10f});
+  }
+  if (!m_table3Unlocked) {
+    pushTransform(m_darkWoodMeshId, {0.82f, 0.08f, 0.34f},
+                  {0.0f, 0.12f, -0.12f}, {tableX[2], 1.28f, 4.10f});
+    pushTransform(m_metalMeshId, {0.045f, 0.50f, 0.035f}, {0.0f, 0.0f, -0.82f},
+                  {tableX[2], 1.35f, 4.02f});
+    pushTransform(m_metalMeshId, {0.045f, 0.50f, 0.035f}, {0.0f, 0.0f, 0.82f},
+                  {tableX[2], 1.35f, 4.02f});
   }
 
   // 後方の保管品は歩行経路を塞がない壁際へまとめる。
@@ -1896,33 +2320,42 @@ void TavernScene::BuildFrame(FrameData &frame) const {
                  mug.aleFoam);
   }
 
-  pushAsset(TavernAsset::Barrel, {1.34f, 1.34f, 1.34f}, {0.0f, 0.0f, 0.0f},
-            {0.0f, 1.33f, 9.35f});
+  const float kegScale = 1.34f + static_cast<float>(AleCapacityLevel()) * 0.08f;
+  pushAsset(TavernAsset::Barrel, {kegScale, kegScale, kegScale},
+            {0.0f, 0.0f, 0.0f}, {0.0f, 1.33f, 9.35f});
   if (m_tavernAssetMeshIds[static_cast<std::size_t>(TavernAsset::Barrel)]
           .empty())
-    pushMesh(m_woodMeshId, 1.15f, 1.55f, 0.95f, 0.0f, 2.12f, 9.40f);
+    pushMesh(m_woodMeshId, 1.15f + AleCapacityLevel() * 0.07f,
+             1.55f + AleCapacityLevel() * 0.08f,
+             0.95f + AleCapacityLevel() * 0.06f, 0.0f, 2.12f, 9.40f);
   pushMesh(m_metalMeshId, 0.20f, 0.82f, 0.20f, 0.0f, 2.12f, 8.55f);
   pushMesh(m_metalMeshId, 0.58f, 0.16f, 0.20f, 0.0f, 2.42f, 8.25f);
   pushMesh(m_glowMeshId, 0.18f, 0.18f, 0.18f, 0.0f, 2.72f, 8.30f);
+  for (int level = 0; level < kMaximumAleCapacityLevel; ++level) {
+    const bool purchased = level < AleCapacityLevel();
+    pushMesh(purchased ? m_glowMeshId : m_metalMeshId, 0.065f, 0.065f, 0.045f,
+             -0.18f + static_cast<float>(level) * 0.18f, 2.82f, 8.47f);
+  }
 
   pushMesh(m_metalMeshId, 1.55f, 0.24f, 0.88f, 2.7f, 1.50f, 7.78f);
   pushMesh(m_waterMeshId, 1.18f, 0.05f, 0.58f, 2.7f, 1.65f, 7.78f);
 
-  for (int tableIndex = 0; tableIndex < kActiveTableCount; ++tableIndex) {
+  for (int tableIndex = 0; tableIndex < CustomerTableCount(); ++tableIndex) {
     const TableState tableState = m_tables[tableIndex].state;
     const bool customerVisible =
         tableState != TableState::Empty && tableState != TableState::Dirty;
     if (customerVisible) {
+      const float customerZ = tableIndex == 2 ? 5.12f : 5.28f;
       pushMesh(m_customerBodyMeshId, 0.58f, 0.84f, 0.58f, tableX[tableIndex],
-               1.16f, 5.28f);
+               1.16f, customerZ);
       pushMesh(m_customerHeadMeshId, 0.46f, 0.46f, 0.46f, tableX[tableIndex],
-               1.79f, 5.22f);
+               1.79f, customerZ - 0.06f);
       pushMesh(m_customerHairMeshId, 0.48f, 0.23f, 0.48f, tableX[tableIndex],
-               1.97f, 5.22f);
+               1.97f, customerZ - 0.06f);
       if (tableState == TableState::WaitingOrder ||
           tableState == TableState::WaitingAle)
         pushMesh(m_glowMeshId, 0.16f, 0.52f, 0.16f, tableX[tableIndex], 2.72f,
-                 5.18f);
+                 customerZ - 0.10f);
     }
 
     if (tableState == TableState::Eating || tableState == TableState::Dirty) {
@@ -2026,9 +2459,11 @@ void TavernScene::BuildFrame(FrameData &frame) const {
   counterLight.intensity = 8.0f;
   frame.pointLights.push_back(counterLight);
 
-  for (float x : tableX) {
+  for (int tableIndex = 0; tableIndex < 3; ++tableIndex) {
+    if (tableIndex == 2 && !m_table3Unlocked)
+      continue;
     GPUPointLight tableLight{};
-    tableLight.position = {x, 1.75f, 4.15f};
+    tableLight.position = {tableX[tableIndex], 1.75f, 4.15f};
     tableLight.range = 4.2f;
     tableLight.color = {1.0f, 0.56f, 0.24f};
     tableLight.intensity = 3.2f;
@@ -2047,6 +2482,7 @@ void TavernScene::DrawManagementRoot(int viewportWidth, int viewportHeight) {
   m_managementUiDiagnostics.rootRendered = true;
   m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
   m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+  m_managementUiDiagnostics.upgradePurchaseSerial = m_upgradePurchaseSerial;
   m_managementUiDiagnostics.renderedFrameSerial = renderedFrameSerial;
 
   const ImVec2 viewportSize(static_cast<float>(viewportWidth),
@@ -2128,6 +2564,7 @@ void TavernScene::DrawManagementRoot(int viewportWidth, int viewportHeight) {
       m_managementSelection == ManagementSelection::Upgrades);
 
   bool openSuppliesAfterDraw = false;
+  bool openUpgradesAfterDraw = false;
   if (suppliesCard.clicked) {
     m_managementSelection = ManagementSelection::Supplies;
     ++m_managementActivationSerial;
@@ -2136,8 +2573,7 @@ void TavernScene::DrawManagementRoot(int viewportWidth, int viewportHeight) {
   if (upgradesCard.clicked) {
     m_managementSelection = ManagementSelection::Upgrades;
     ++m_managementActivationSerial;
-    m_feedbackText = "UPGRADES COMING SOON";
-    m_feedbackTimer = 1.6f;
+    openUpgradesAfterDraw = true;
   }
 
   m_managementUiDiagnostics.suppliesCardRendered =
@@ -2165,9 +2601,12 @@ void TavernScene::DrawManagementRoot(int viewportWidth, int viewportHeight) {
           : (m_managementSelection == ManagementSelection::Upgrades ? 1 : -1);
   m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
   m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+  m_managementUiDiagnostics.upgradePurchaseSerial = m_upgradePurchaseSerial;
 
   if (openSuppliesAfterDraw)
     OpenSuppliesPage();
+  if (openUpgradesAfterDraw)
+    OpenUpgradesPage();
   if (closeClicked)
     CloseManagementMenu();
 
@@ -2188,6 +2627,7 @@ void TavernScene::DrawSuppliesPage(int viewportWidth, int viewportHeight) {
   m_managementUiDiagnostics.suppliesPageRendered = true;
   m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
   m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+  m_managementUiDiagnostics.upgradePurchaseSerial = m_upgradePurchaseSerial;
   m_managementUiDiagnostics.renderedFrameSerial = renderedFrameSerial;
 
   const ImVec2 viewportSize(static_cast<float>(viewportWidth),
@@ -2365,6 +2805,308 @@ void TavernScene::DrawSuppliesPage(int viewportWidth, int viewportHeight) {
       CurrentAleOrderBlockReason() == SupplyOrderBlockReason::None;
   m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
   m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+  m_managementUiDiagnostics.upgradePurchaseSerial = m_upgradePurchaseSerial;
+
+  if (backButton.clicked)
+    BackToManagementRoot();
+  if (closeButton.clicked)
+    CloseManagementMenu();
+
+  ImGui::End();
+  ImGui::PopStyleColor();
+  ImGui::PopStyleVar(2);
+}
+
+void TavernScene::DrawUpgradesPage(int viewportWidth, int viewportHeight) {
+  if (m_managementPage != ManagementPage::Upgrades)
+    return;
+
+  const uint64_t renderedFrameSerial =
+      m_managementUiDiagnostics.renderedFrameSerial + 1;
+  m_managementUiDiagnostics = {};
+  m_managementUiDiagnostics.menuOpen = true;
+  m_managementUiDiagnostics.subpageOpen = true;
+  m_managementUiDiagnostics.upgradesPageRendered = true;
+  m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
+  m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+  m_managementUiDiagnostics.upgradePurchaseSerial = m_upgradePurchaseSerial;
+  m_managementUiDiagnostics.renderedFrameSerial = renderedFrameSerial;
+
+  const ImVec2 viewportSize(static_cast<float>(viewportWidth),
+                            static_cast<float>(viewportHeight));
+  ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(viewportSize, ImGuiCond_Always);
+  ImGui::SetNextWindowFocus();
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+  ImGui::Begin("##TavernUpgradesPage", nullptr,
+               ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                   ImGuiWindowFlags_NoSavedSettings |
+                   ImGuiWindowFlags_NoScrollbar |
+                   ImGuiWindowFlags_NoScrollWithMouse |
+                   ImGuiWindowFlags_NoNavInputs | ImGuiWindowFlags_NoNavFocus);
+
+  ImDrawList *draw = ImGui::GetWindowDrawList();
+  draw->AddRectFilled(ImVec2(0.0f, 0.0f), viewportSize,
+                      TavernUiColor(0.0f, 0.0f, 0.0f, 0.77f));
+
+  const float panelWidth = std::min(std::max(980.0f, viewportSize.x * 0.86f),
+                                    std::max(520.0f, viewportSize.x - 36.0f));
+  const float panelHeight = std::min(std::max(620.0f, viewportSize.y * 0.82f),
+                                     std::max(440.0f, viewportSize.y - 36.0f));
+  const ImVec2 panelMin((viewportSize.x - panelWidth) * 0.5f,
+                        (viewportSize.y - panelHeight) * 0.5f);
+  const ImVec2 panelMax(panelMin.x + panelWidth, panelMin.y + panelHeight);
+  const ImU32 teal = TavernUiColor(0.30f, 0.90f, 0.72f, 0.96f);
+  DrawPanel(draw, panelMin, panelMax, teal, 16.0f);
+
+  const bool headerControlsEnabled = !m_upgradeConfirmationOpen;
+  const ImVec2 backMin(panelMin.x + 30.0f, panelMin.y + 25.0f);
+  const ImVec2 backMax(backMin.x + 132.0f, backMin.y + 42.0f);
+  const ManagementButtonResult backButton =
+      DrawManagementButton(draw, "upgrades-back", "BACK", backMin, backMax,
+                           headerControlsEnabled, teal);
+  const ImVec2 closeMin(panelMax.x - 162.0f, panelMin.y + 25.0f);
+  const ImVec2 closeMax(closeMin.x + 132.0f, closeMin.y + 42.0f);
+  const ManagementButtonResult closeButton =
+      DrawManagementButton(draw, "upgrades-close", "CLOSE", closeMin, closeMax,
+                           headerControlsEnabled, teal);
+
+  ImFont *font = ImGui::GetFont();
+  constexpr const char *pageTitle = "TAVERN UPGRADES";
+  const float titleSizePx = std::clamp(panelHeight * 0.050f, 28.0f, 39.0f);
+  const ImVec2 titleSize =
+      font->CalcTextSizeA(titleSizePx, FLT_MAX, 0.0f, pageTitle);
+  draw->AddText(font, titleSizePx,
+                ImVec2((panelMin.x + panelMax.x - titleSize.x) * 0.5f,
+                       panelMin.y + 25.0f),
+                TavernUiColor(0.78f, 1.0f, 0.90f, 1.0f), pageTitle);
+  char textBuffer[128]{};
+  std::snprintf(textBuffer, sizeof(textBuffer), "GOLD  %d G", m_gold);
+  const ImVec2 goldSize = ImGui::CalcTextSize(textBuffer);
+  draw->AddText(
+      ImVec2((panelMin.x + panelMax.x - goldSize.x) * 0.5f, panelMin.y + 70.0f),
+      TavernUiColor(1.0f, 0.72f, 0.24f, 1.0f), textBuffer);
+  if (!m_feedbackText.empty() && m_feedbackTimer > 0.0f) {
+    const ImVec2 feedbackSize = ImGui::CalcTextSize(m_feedbackText.c_str());
+    draw->AddText(ImVec2((panelMin.x + panelMax.x - feedbackSize.x) * 0.5f,
+                         panelMin.y + 91.0f),
+                  TavernUiColor(0.70f, 1.0f, 0.84f,
+                                std::clamp(m_feedbackTimer, 0.35f, 1.0f)),
+                  m_feedbackText.c_str());
+  }
+
+  constexpr int cardCount = static_cast<int>(UpgradeId::Count);
+  const float sidePadding = std::clamp(panelWidth * 0.035f, 28.0f, 52.0f);
+  const float cardGap = std::clamp(panelWidth * 0.020f, 18.0f, 30.0f);
+  const float cardWidth =
+      (panelWidth - sidePadding * 2.0f - cardGap * (cardCount - 1)) /
+      static_cast<float>(cardCount);
+  const float cardsTop = panelMin.y + 108.0f;
+  const float cardsBottom = panelMax.y - 55.0f;
+  bool allCardsSubmitted = true;
+  bool cardsDoNotOverlap = true;
+  float previousCardRight = -FLT_MAX;
+
+  for (int cardIndex = 0; cardIndex < cardCount; ++cardIndex) {
+    const UpgradeId upgrade = static_cast<UpgradeId>(cardIndex);
+    const int level = UpgradeLevel(upgrade);
+    const int maximumLevel = UpgradeMaximumLevel(upgrade);
+    const int price = UpgradePrice(upgrade);
+    const UpgradePurchaseBlockReason blockReason =
+        CurrentUpgradeBlockReason(upgrade);
+    const bool purchasable = blockReason == UpgradePurchaseBlockReason::None;
+
+    const char *title = "UPGRADE";
+    const char *note = "PERMANENT";
+    UpgradeArtwork artwork = UpgradeArtwork::Mug;
+    std::array<char, 96> effect{};
+    std::array<char, 96> status{};
+    if (upgrade == UpgradeId::ExtraMug) {
+      title = "EXTRA MUG";
+      note = "ONE-TIME UPGRADE";
+      artwork = UpgradeArtwork::Mug;
+      std::snprintf(effect.data(), effect.size(), "%s",
+                    level == 0 ? "MUGS  2 -> 3" : "MUGS  3 / 3");
+    } else if (upgrade == UpgradeId::AleCapacity) {
+      title = "ALE CAPACITY";
+      note = "DOES NOT REFILL";
+      artwork = UpgradeArtwork::AleCapacity;
+      if (level < maximumLevel) {
+        std::snprintf(effect.data(), effect.size(), "ALE MAX  %d -> %d",
+                      AleCapacity(), AleCapacity() + 1);
+      } else {
+        std::snprintf(effect.data(), effect.size(), "ALE MAX  %d / %d",
+                      AleCapacity(), kInitialAleCapacity + maximumLevel);
+      }
+    } else {
+      title = "OPEN TABLE 3";
+      note = "MORE CUSTOMERS";
+      artwork = UpgradeArtwork::Table;
+      std::snprintf(effect.data(), effect.size(), "%s",
+                    m_table3Unlocked ? "TABLE 3  OPEN" : "UNLOCK TABLE 3");
+    }
+
+    switch (blockReason) {
+    case UpgradePurchaseBlockReason::None:
+      std::snprintf(status.data(), status.size(), "BUY  %d G", price);
+      break;
+    case UpgradePurchaseBlockReason::InsufficientGold:
+      std::snprintf(status.data(), status.size(), "NEED  %d G", price);
+      break;
+    case UpgradePurchaseBlockReason::Owned:
+      std::snprintf(status.data(), status.size(),
+                    upgrade == UpgradeId::OpenTable3 ? "OPEN - OWNED"
+                                                     : "OWNED - 3 MUGS");
+      break;
+    case UpgradePurchaseBlockReason::Maxed:
+      std::snprintf(status.data(), status.size(), "MAXED - LEVEL %d / %d",
+                    level, maximumLevel);
+      break;
+    case UpgradePurchaseBlockReason::TutorialRequired:
+      std::snprintf(status.data(), status.size(), "COMPLETE TUTORIAL");
+      break;
+    case UpgradePurchaseBlockReason::EmergencyAleReserve:
+      std::snprintf(status.data(), status.size(), "KEEP 2 G FOR ALE");
+      break;
+    }
+
+    const ImVec2 cardMin(
+        panelMin.x + sidePadding + cardIndex * (cardWidth + cardGap), cardsTop);
+    const ImVec2 cardMax(cardMin.x + cardWidth, cardsBottom);
+    const UpgradeCardResult card = DrawUpgradeCard(
+        draw, title, title, effect.data(), note, status.data(), artwork, level,
+        cardMin, cardMax, m_selectedUpgradeIndex == cardIndex, purchasable,
+        !m_upgradeConfirmationOpen);
+    allCardsSubmitted = allCardsSubmitted && card.submitted;
+    if (cardIndex > 0)
+      cardsDoNotOverlap = cardsDoNotOverlap && previousCardRight < cardMin.x;
+    previousCardRight = cardMax.x;
+    if (card.clicked && !m_upgradeConfirmationOpen) {
+      m_selectedUpgradeIndex = cardIndex;
+      RequestUpgradePurchase(upgrade);
+    }
+  }
+
+  draw->AddText(ImVec2(panelMin.x + 32.0f, panelMax.y - 31.0f),
+                TavernUiColor(0.64f, 0.72f, 0.67f, 1.0f),
+                "LEFT / RIGHT  SELECT     ENTER / A  CONFIRM");
+  constexpr const char *closeHint = "B / ESC  BACK     E  CLOSE";
+  const ImVec2 closeHintSize = ImGui::CalcTextSize(closeHint);
+  draw->AddText(
+      ImVec2(panelMax.x - 32.0f - closeHintSize.x, panelMax.y - 31.0f),
+      TavernUiColor(0.64f, 0.72f, 0.67f, 1.0f), closeHint);
+
+  if (m_upgradeConfirmationOpen) {
+    const UpgradeId upgrade = static_cast<UpgradeId>(m_selectedUpgradeIndex);
+    const int price = UpgradePrice(upgrade);
+    const char *title =
+        upgrade == UpgradeId::ExtraMug
+            ? "EXTRA MUG"
+            : (upgrade == UpgradeId::AleCapacity ? "ALE CAPACITY"
+                                                 : "OPEN TABLE 3");
+    std::array<char, 96> confirmEffect{};
+    if (upgrade == UpgradeId::ExtraMug) {
+      std::snprintf(confirmEffect.data(), confirmEffect.size(), "MUGS  2 -> 3");
+    } else if (upgrade == UpgradeId::AleCapacity) {
+      std::snprintf(confirmEffect.data(), confirmEffect.size(),
+                    "ALE MAX  %d -> %d   -   NO REFILL", AleCapacity(),
+                    AleCapacity() + 1);
+    } else {
+      std::snprintf(confirmEffect.data(), confirmEffect.size(),
+                    "UNLOCK TABLE 3");
+    }
+    draw->AddRectFilled(ImVec2(0.0f, 0.0f), viewportSize,
+                        TavernUiColor(0.0f, 0.0f, 0.0f, 0.70f));
+    const ImVec2 confirmSize(std::min(570.0f, viewportSize.x - 48.0f),
+                             std::min(330.0f, viewportSize.y - 48.0f));
+    const ImVec2 confirmMin((viewportSize.x - confirmSize.x) * 0.5f,
+                            (viewportSize.y - confirmSize.y) * 0.5f);
+    const ImVec2 confirmMax(confirmMin.x + confirmSize.x,
+                            confirmMin.y + confirmSize.y);
+    DrawPanel(draw, confirmMin, confirmMax, teal, 15.0f);
+    constexpr const char *confirmTitle = "CONFIRM UPGRADE";
+    const ImVec2 confirmTitleSize = ImGui::CalcTextSize(confirmTitle);
+    draw->AddText(
+        ImVec2((confirmMin.x + confirmMax.x - confirmTitleSize.x) * 0.5f,
+               confirmMin.y + 27.0f),
+        TavernUiColor(0.76f, 1.0f, 0.90f, 1.0f), confirmTitle);
+    const ImVec2 upgradeTitleSize = ImGui::CalcTextSize(title);
+    draw->AddText(
+        ImVec2((confirmMin.x + confirmMax.x - upgradeTitleSize.x) * 0.5f,
+               confirmMin.y + 75.0f),
+        TavernUiColor(1.0f, 0.88f, 0.68f, 1.0f), title);
+    const ImVec2 effectSize = ImGui::CalcTextSize(confirmEffect.data());
+    draw->AddText(ImVec2((confirmMin.x + confirmMax.x - effectSize.x) * 0.5f,
+                         confirmMin.y + 108.0f),
+                  TavernUiColor(0.76f, 0.86f, 0.80f, 1.0f),
+                  confirmEffect.data());
+    std::snprintf(textBuffer, sizeof(textBuffer), "PRICE  %d G", price);
+    const ImVec2 priceSize = ImGui::CalcTextSize(textBuffer);
+    draw->AddText(ImVec2((confirmMin.x + confirmMax.x - priceSize.x) * 0.5f,
+                         confirmMin.y + 143.0f),
+                  TavernUiColor(1.0f, 0.70f, 0.24f, 1.0f), textBuffer);
+    std::snprintf(textBuffer, sizeof(textBuffer), "GOLD AFTER  %d G",
+                  m_gold - price);
+    const ImVec2 afterSize = ImGui::CalcTextSize(textBuffer);
+    draw->AddText(ImVec2((confirmMin.x + confirmMax.x - afterSize.x) * 0.5f,
+                         confirmMin.y + 174.0f),
+                  TavernUiColor(0.76f, 0.82f, 0.78f, 1.0f), textBuffer);
+    constexpr const char *cancelHint = "B / ESC  CANCEL";
+    const ImVec2 cancelHintSize = ImGui::CalcTextSize(cancelHint);
+    draw->AddText(
+        ImVec2((confirmMin.x + confirmMax.x - cancelHintSize.x) * 0.5f,
+               confirmMin.y + 207.0f),
+        TavernUiColor(0.58f, 0.66f, 0.62f, 1.0f), cancelHint);
+
+    const float buttonGap = 18.0f;
+    const float buttonWidth = (confirmSize.x - 78.0f - buttonGap) * 0.5f;
+    const ImVec2 cancelMin(confirmMin.x + 39.0f, confirmMax.y - 84.0f);
+    const ImVec2 cancelMax(cancelMin.x + buttonWidth, confirmMax.y - 34.0f);
+    const ImVec2 buyMin(cancelMax.x + buttonGap, cancelMin.y);
+    const ImVec2 buyMax(buyMin.x + buttonWidth, cancelMax.y);
+    const ManagementButtonResult cancelButton =
+        DrawManagementButton(draw, "upgrade-confirm-cancel", "CANCEL",
+                             cancelMin, cancelMax, true, teal);
+    const ManagementButtonResult buyButton = DrawManagementButton(
+        draw, "upgrade-confirm-buy", "BUY", buyMin, buyMax, true, teal);
+    draw->AddRect(m_upgradeConfirmBuySelected ? buyMin : cancelMin,
+                  m_upgradeConfirmBuySelected ? buyMax : cancelMax,
+                  TavernUiColor(1.0f, 0.82f, 0.34f, 1.0f), 7.0f, 0, 3.0f);
+    if (cancelButton.clicked) {
+      m_upgradeConfirmationOpen = false;
+      m_upgradeConfirmBuySelected = false;
+    }
+    if (buyButton.clicked)
+      TryPurchaseUpgrade(upgrade);
+    m_managementUiDiagnostics.upgradeConfirmationRendered = true;
+  }
+
+  const UpgradeId selectedUpgrade =
+      static_cast<UpgradeId>(m_selectedUpgradeIndex);
+  m_managementUiDiagnostics.upgradeCardsRendered = allCardsSubmitted;
+  m_managementUiDiagnostics.backControlRendered = true;
+  m_managementUiDiagnostics.visualRegionsValid =
+      cardWidth > 0.0f && cardsBottom > cardsTop;
+  m_managementUiDiagnostics.cardsDoNotOverlap = cardsDoNotOverlap;
+  m_managementUiDiagnostics.selectedCardIndex = 1;
+  m_managementUiDiagnostics.selectedUpgradeIndex = m_selectedUpgradeIndex;
+  m_managementUiDiagnostics.selectedUpgradePrice =
+      UpgradePrice(selectedUpgrade);
+  m_managementUiDiagnostics.selectedUpgradeLevel =
+      UpgradeLevel(selectedUpgrade);
+  m_managementUiDiagnostics.extraMugCapacity = TotalMugs();
+  m_managementUiDiagnostics.aleCapacityLevel = AleCapacityLevel();
+  m_managementUiDiagnostics.table3Unlocked = m_table3Unlocked;
+  m_managementUiDiagnostics.upgradeBlockReason =
+      CurrentUpgradeBlockReason(selectedUpgrade);
+  m_managementUiDiagnostics.upgradeCanPurchase =
+      m_managementUiDiagnostics.upgradeBlockReason ==
+      UpgradePurchaseBlockReason::None;
+  m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
+  m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+  m_managementUiDiagnostics.upgradePurchaseSerial = m_upgradePurchaseSerial;
 
   if (backButton.clicked)
     BackToManagementRoot();
@@ -2384,6 +3126,7 @@ void TavernScene::DrawManagementUi(int viewportWidth, int viewportHeight) {
     m_managementUiDiagnostics.renderedFrameSerial = renderedFrameSerial;
     m_managementUiDiagnostics.activationSerial = m_managementActivationSerial;
     m_managementUiDiagnostics.purchaseSerial = m_supplyPurchaseSerial;
+    m_managementUiDiagnostics.upgradePurchaseSerial = m_upgradePurchaseSerial;
     return;
   }
 
@@ -2395,8 +3138,7 @@ void TavernScene::DrawManagementUi(int viewportWidth, int viewportHeight) {
     DrawSuppliesPage(viewportWidth, viewportHeight);
     break;
   case ManagementPage::Upgrades:
-    BackToManagementRoot();
-    DrawManagementRoot(viewportWidth, viewportHeight);
+    DrawUpgradesPage(viewportWidth, viewportHeight);
     break;
   case ManagementPage::Closed:
     break;
@@ -2441,24 +3183,34 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
   draw->AddText(ImVec2(50.0f, 106.0f), TavernUiColor(0.82f, 0.76f, 0.68f, 1.0f),
                 line);
   if (showSleepStatus) {
-    draw->AddText(
-        ImVec2(50.0f, 136.0f),
-        TavernUiColor(0.68f, 0.82f, 1.0f, 1.0f),
-        m_shiftState == ShiftState::Closing ? "店内の客を見送って就寝"
-                                             : "R：受付を止めて就寝");
+    draw->AddText(ImVec2(50.0f, 136.0f),
+                  TavernUiColor(0.68f, 0.82f, 1.0f, 1.0f),
+                  m_shiftState == ShiftState::Closing ? "店内の客を見送って就寝"
+                                                      : "R：受付を止めて就寝");
   }
 
-  const float orderWidth = std::clamp(viewportSize.x - 760.0f, 520.0f, 680.0f);
+  const int visibleTableCount = CustomerTableCount();
+  const float orderWidth =
+      visibleTableCount == 3
+          ? std::clamp(viewportSize.x - 800.0f, 560.0f, 900.0f)
+          : std::clamp(viewportSize.x - 760.0f, 520.0f, 680.0f);
   const ImVec2 orderMin((viewportSize.x - orderWidth) * 0.5f, 28.0f);
   const ImVec2 orderMax(orderMin.x + orderWidth, 174.0f);
   DrawPanel(draw, orderMin, orderMax, goldBorder);
-  const float tableCardWidth = orderWidth * 0.5f;
-  draw->AddLine(ImVec2(orderMin.x + tableCardWidth, orderMin.y + 12.0f),
-                ImVec2(orderMin.x + tableCardWidth, orderMax.y - 12.0f),
-                TavernUiColor(0.45f, 0.27f, 0.14f, 0.82f), 1.0f);
-  for (int tableIndex = 0; tableIndex < kActiveTableCount; ++tableIndex) {
+  const float tableCardWidth =
+      orderWidth / static_cast<float>(visibleTableCount);
+  for (int divider = 1; divider < visibleTableCount; ++divider) {
+    const float dividerX = orderMin.x + tableCardWidth * divider;
+    draw->AddLine(ImVec2(dividerX, orderMin.y + 12.0f),
+                  ImVec2(dividerX, orderMax.y - 12.0f),
+                  TavernUiColor(0.45f, 0.27f, 0.14f, 0.82f), 1.0f);
+  }
+  for (int tableIndex = 0; tableIndex < visibleTableCount; ++tableIndex) {
     const TableSlot &table = m_tables[tableIndex];
     const float cardX = orderMin.x + tableCardWidth * tableIndex;
+    draw->PushClipRect(ImVec2(cardX + 2.0f, orderMin.y + 2.0f),
+                       ImVec2(cardX + tableCardWidth - 2.0f, orderMax.y - 2.0f),
+                       true);
     std::snprintf(line, sizeof(line), "TABLE %d%s", tableIndex + 1,
                   table.enabled ? "" : "  準備中");
     draw->AddText(ImVec2(cardX + 18.0f, orderMin.y + 15.0f),
@@ -2499,6 +3251,7 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
                     TavernUiColor(1.0f, 0.91f, 0.72f, 1.0f),
                     speechText.c_str());
     }
+    draw->PopClipRect();
   }
 
   const ImVec2 heldMin(viewportSize.x - 278.0f, 28.0f);
@@ -2510,7 +3263,7 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
                 TavernUiColor(1.0f, 0.82f, 0.56f, 1.0f),
                 GetHeldItemName(m_heldItem));
   std::snprintf(line, sizeof(line), "棚のジョッキ  %d / %d", m_cleanMugs,
-                kTotalMugs);
+                TotalMugs());
   draw->AddText(ImVec2(heldMin.x + 18.0f, heldMin.y + 75.0f),
                 TavernUiColor(0.82f, 0.76f, 0.68f, 1.0f), line);
   std::snprintf(line, sizeof(line), "ALE STOCK  %d / %d", AleStock(),
@@ -2796,16 +3549,20 @@ void TavernScene::DrawDebugPanel(float &timeOfDayHours, bool &automaticTime) {
   if (ImGui::Button("満タン"))
     AleSupply().current = AleCapacity();
 
+  ImGui::Text("Upgrade：Mug %d / 3  Ale Lv.%d / %d  Table 3 %s", TotalMugs(),
+              AleCapacityLevel(), kMaximumAleCapacityLevel,
+              m_table3Unlocked ? "OPEN" : "CLOSED");
+
   const int placedMugs = static_cast<int>(std::count_if(
       m_counterMugs.begin(), m_counterMugs.end(),
       [](const MugState &mug) { return mug.item != HeldItem::None; }));
   ImGui::Separator();
   ImGui::Text("客流：%s", CustomerTrafficName());
-  ImGui::Text("提供：%d  退店：%d  PERFECT：%d", m_servedCustomers,
-              m_walkouts, m_perfectPours);
+  ImGui::Text("提供：%d  退店：%d  PERFECT：%d", m_servedCustomers, m_walkouts,
+              m_perfectPours);
   ImGui::Text("手持：%s", GetHeldItemName(m_heldItem));
   ImGui::Text("棚のジョッキ：%d / %d  一時置き：%d / %zu", m_cleanMugs,
-              kTotalMugs, placedMugs, m_counterMugs.size());
+              TotalMugs(), placedMugs, m_counterMugs.size());
 
   ImGui::End();
 }

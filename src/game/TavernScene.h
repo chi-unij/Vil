@@ -26,6 +26,22 @@ public:
     InsufficientGold,
   };
 
+  enum class UpgradeId : int {
+    ExtraMug = 0,
+    AleCapacity = 1,
+    OpenTable3 = 2,
+    Count = 3,
+  };
+
+  enum class UpgradePurchaseBlockReason {
+    None,
+    InsufficientGold,
+    Owned,
+    Maxed,
+    TutorialRequired,
+    EmergencyAleReserve,
+  };
+
   struct ManagementUiDiagnostics {
     bool menuOpen = false;
     bool rootRendered = false;
@@ -33,6 +49,9 @@ public:
     bool upgradesCardRendered = false;
     bool suppliesPageRendered = false;
     bool aleCardRendered = false;
+    bool upgradesPageRendered = false;
+    bool upgradeCardsRendered = false;
+    bool upgradeConfirmationRendered = false;
     bool backControlRendered = false;
     bool labelsInRequestedOrder = false;
     bool visualRegionsValid = false;
@@ -46,10 +65,20 @@ public:
     int orderUnitPrice = 0;
     int orderTotal = 0;
     int aleStockAfterOrder = 0;
+    int selectedUpgradeIndex = -1;
+    int selectedUpgradePrice = 0;
+    int selectedUpgradeLevel = 0;
+    int extraMugCapacity = 2;
+    int aleCapacityLevel = 0;
+    bool table3Unlocked = false;
+    bool upgradeCanPurchase = false;
     SupplyOrderBlockReason orderBlockReason =
         SupplyOrderBlockReason::ZeroQuantity;
+    UpgradePurchaseBlockReason upgradeBlockReason =
+        UpgradePurchaseBlockReason::None;
     uint64_t activationSerial = 0;
     uint64_t purchaseSerial = 0;
+    uint64_t upgradePurchaseSerial = 0;
     uint64_t renderedFrameSerial = 0;
   };
 
@@ -91,13 +120,26 @@ public:
   int Gold() const { return m_gold; }
   int AleStock() const;
   int AleCapacity() const;
+  int AleCapacityLevel() const;
+  int TotalMugs() const;
+  bool ExtraMugOwned() const { return m_extraMugLevel > 0; }
+  bool Table3Unlocked() const { return m_table3Unlocked; }
+  bool Table3Enabled() const { return m_tables[2].enabled; }
   bool AlePourInProgress() const;
   int PendingAleOrderQuantity() const { return m_aleOrderQuantity; }
   int AleUnitPrice() const;
   uint64_t SupplyPurchaseSerial() const { return m_supplyPurchaseSerial; }
+  uint64_t UpgradePurchaseSerial() const { return m_upgradePurchaseSerial; }
   void ConfigureSuppliesSmokeState(int aleStock, int gold);
+  void ConfigureUpgradesSmokeState(int gold, int aleStock,
+                                   bool tutorialComplete);
   int ServedCustomers() const { return m_servedCustomers; }
   int Walkouts() const { return m_walkouts; }
+  int TableCompletedCycles(int tableIndex) const {
+    return tableIndex >= 0 && tableIndex < static_cast<int>(m_tables.size())
+               ? m_tableCompletedCycles[static_cast<std::size_t>(tableIndex)]
+               : 0;
+  }
   float BusinessHour() const { return m_businessHour; }
   DirectX::XMFLOAT3 PlayerSpawnPosition() const { return {0.0f, 0.0f, -0.35f}; }
   DirectX::XMFLOAT3 CameraPosition() const { return {0.0f, 3.0f, -5.15f}; }
@@ -210,13 +252,23 @@ private:
   SupplyOrderBlockReason CurrentAleOrderBlockReason() const;
   void AdjustAleOrderQuantity(int delta);
   bool TryOrderAle();
+  int CustomerTableCount() const;
+  int UpgradeLevel(UpgradeId upgrade) const;
+  int UpgradeMaximumLevel(UpgradeId upgrade) const;
+  int UpgradePrice(UpgradeId upgrade) const;
+  UpgradePurchaseBlockReason CurrentUpgradeBlockReason(UpgradeId upgrade) const;
+  void RequestUpgradePurchase(UpgradeId upgrade);
+  bool TryPurchaseUpgrade(UpgradeId upgrade);
+  void ResetShiftRuntime(float startingHour);
   void OpenManagementMenu();
   void OpenSuppliesPage();
+  void OpenUpgradesPage();
   void BackToManagementRoot();
   void CloseManagementMenu();
   void DrawManagementUi(int viewportWidth, int viewportHeight);
   void DrawManagementRoot(int viewportWidth, int viewportHeight);
   void DrawSuppliesPage(int viewportWidth, int viewportHeight);
+  void DrawUpgradesPage(int viewportWidth, int viewportHeight);
 
   uint32_t m_floorMeshId = UINT32_MAX;
   uint32_t m_wallMeshId = UINT32_MAX;
@@ -248,6 +300,7 @@ private:
   ManagementUiDiagnostics m_managementUiDiagnostics{};
   uint64_t m_managementActivationSerial = 0;
   uint64_t m_supplyPurchaseSerial = 0;
+  uint64_t m_upgradePurchaseSerial = 0;
   TutorialStep m_tutorialStep = TutorialStep::TakeOrder;
   DirectX::XMFLOAT3 m_playerPosition = {0.0f, 0.0f, -0.35f};
   std::vector<CollisionSystem::Collider> m_collisionColliders;
@@ -259,6 +312,8 @@ private:
   std::array<SupplyState, static_cast<std::size_t>(SupplyType::Count)>
       m_supplies{};
   int m_aleOrderQuantity = 0;
+  int m_selectedUpgradeIndex = 0;
+  int m_extraMugLevel = 0;
   float m_aleFill = 0.0f;
   float m_aleFoam = 0.0f;
   float m_aleOverflow = 0.0f;
@@ -280,6 +335,9 @@ private:
   bool m_cycleAwaitingWash = false;
   bool m_primaryActionActive = false;
   bool m_lastPourPerfect = false;
+  bool m_table3Unlocked = false;
+  bool m_upgradeConfirmationOpen = false;
+  bool m_upgradeConfirmBuySelected = false;
   bool m_importedArtReady = false;
   bool m_ready = false;
 };
