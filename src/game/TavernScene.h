@@ -142,9 +142,14 @@ public:
   }
   float BusinessHour() const { return m_businessHour; }
   DirectX::XMFLOAT3 PlayerSpawnPosition() const { return {0.0f, 0.0f, -0.35f}; }
-  DirectX::XMFLOAT3 CameraPosition() const { return {0.0f, 3.0f, -5.15f}; }
+  DirectX::XMFLOAT3 CameraFollowOffset() const { return {0.0f, 3.20f, -5.80f}; }
+  DirectX::XMFLOAT3 CameraPosition() const {
+    const DirectX::XMFLOAT3 spawn = PlayerSpawnPosition();
+    const DirectX::XMFLOAT3 offset = CameraFollowOffset();
+    return {spawn.x + offset.x, spawn.y + offset.y, spawn.z + offset.z};
+  }
   float CameraYaw() const { return 0.0f; }
-  float CameraPitch() const { return -0.48f; }
+  float CameraPitch() const { return -0.28f; }
   const std::vector<CollisionSystem::Collider> &CollisionColliders() const {
     return m_collisionColliders;
   }

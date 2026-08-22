@@ -634,9 +634,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         HasCommandLineSwitch(commandLine, L"--boss-mirror-pickup-smoke");
     const bool dxrOverworldSmokeRequested =
         HasCommandLineSwitch(commandLine, L"--dxr-overworld-smoke");
+    const bool overworldShortcutRequested =
+        HasCommandLineSwitch(commandLine, L"--overworld");
     const bool dxrOverworldRequested =
         HasCommandLineSwitch(commandLine, L"--dxr-overworld") ||
         dxrOverworldSmokeRequested;
+    const bool overworldRequested =
+        overworldShortcutRequested || dxrOverworldRequested;
+    const bool bossShortcutRequested =
+        HasCommandLineSwitch(commandLine, L"--boss");
+    const bool bossRequested =
+        bossShortcutRequested || bossMirrorPickupSmokeRequested;
     const bool tavernSmokeRequested =
         HasCommandLineSwitch(commandLine, L"--tavern-smoke");
     const bool tavernGameplaySmokeRequested =
@@ -1134,11 +1142,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     // ---- Editor/Game mode toggle (Milestone 4 Phase 0) ----
     enum class AppMode { Title, Game, Tavern, BossArena, Editor };
     AppMode appMode =
-        bossMirrorPickupSmokeRequested  ? AppMode::BossArena
+        bossRequested                   ? AppMode::BossArena
         : playerAnimationSmokeRequested ? AppMode::Game
         : tavernRequested
             ? AppMode::Tavern
-            : (dxrOverworldRequested
+            : (overworldRequested
                    ? AppMode::Game
                    : (launchEditor ? AppMode::Editor : AppMode::Title));
     bool requestQuit = false;
@@ -1217,6 +1225,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       bossMirrorPickupInitialCharge = bossArenaScene.MirrorChargeCount();
       bossMirrorPickupInitialActionSerial = playerPreview.ActionTriggerSerial();
       TraceAppEvent("Boss mirror pickup smoke: route ready");
+    }
+    if (bossShortcutRequested && !bossMirrorPickupSmokeRequested) {
+      const DirectX::XMFLOAT3 playerPosition = playerPreview.Position();
+      gameCameraPosition = {playerPosition.x, playerPosition.y + 3.2f,
+                            playerPosition.z - 5.8f};
+      cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
+                      gameCameraPosition.z);
+      cam.SetYawPitch(0.0f, -0.28f);
+      cam.SetLens(DirectX::XM_PIDIV4,
+                  static_cast<float>(window.Width()) /
+                      static_cast<float>(window.Height()),
+                  0.1f, 1000.0f);
+      TraceAppEvent("debug shortcut: BossArena ready");
     }
     const auto enterTavernMode = [&]() {
       appMode = AppMode::Tavern;
@@ -1305,7 +1326,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     TraceAppEvent("startup: editor welcome scene ready");
     CameraPreset editorReturnCamera;
     bool editorReturnCameraValid = false;
-    if (dxrOverworldRequested || playerAnimationSmokeRequested) {
+    if (overworldRequested || playerAnimationSmokeRequested) {
       playerPreview.SetPosition(overworldScene.PlayerSpawnPosition());
       playerPreview.SetYaw(0.0f);
       const DirectX::XMFLOAT3 spawn = playerPreview.Position();
@@ -1315,6 +1336,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       cam.SetYawPitch(0.0f, -0.28f);
       if (playerAnimationSmokeRequested) {
         TraceAppEvent("Player animation smoke: Overworld route ready");
+      } else if (overworldShortcutRequested) {
+        TraceAppEvent("debug shortcut: Overworld ready");
       } else {
         TraceAppEvent(
             dxrOverworldSmokeRequested
@@ -2084,8 +2107,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                                emptyMeshTriangles);
         }
         const DirectX::XMFLOAT3 playerPos = playerPreview.Position();
+        const DirectX::XMFLOAT3 cameraFollowOffset =
+            tavernScene.CameraFollowOffset();
         const DirectX::XMFLOAT3 targetCameraPos = {
-            playerPos.x, playerPos.y + 3.0f, playerPos.z - 4.80f};
+            playerPos.x + cameraFollowOffset.x,
+            playerPos.y + cameraFollowOffset.y,
+            playerPos.z + cameraFollowOffset.z};
         const float cameraFollowT = std::clamp(dt * 8.5f, 0.0f, 1.0f);
         gameCameraPosition =
             LerpFloat3(gameCameraPosition, targetCameraPos, cameraFollowT);

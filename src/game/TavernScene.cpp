@@ -3194,15 +3194,15 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
       visibleTableCount == 3
           ? std::clamp(viewportSize.x - 800.0f, 560.0f, 900.0f)
           : std::clamp(viewportSize.x - 760.0f, 520.0f, 680.0f);
-  const ImVec2 orderMin((viewportSize.x - orderWidth) * 0.5f, 28.0f);
-  const ImVec2 orderMax(orderMin.x + orderWidth, 174.0f);
+  const ImVec2 orderMin((viewportSize.x - orderWidth) * 0.5f, 18.0f);
+  const ImVec2 orderMax(orderMin.x + orderWidth, 136.0f);
   DrawPanel(draw, orderMin, orderMax, goldBorder);
   const float tableCardWidth =
       orderWidth / static_cast<float>(visibleTableCount);
   for (int divider = 1; divider < visibleTableCount; ++divider) {
     const float dividerX = orderMin.x + tableCardWidth * divider;
-    draw->AddLine(ImVec2(dividerX, orderMin.y + 12.0f),
-                  ImVec2(dividerX, orderMax.y - 12.0f),
+    draw->AddLine(ImVec2(dividerX, orderMin.y + 8.0f),
+                  ImVec2(dividerX, orderMax.y - 8.0f),
                   TavernUiColor(0.45f, 0.27f, 0.14f, 0.82f), 1.0f);
   }
   for (int tableIndex = 0; tableIndex < visibleTableCount; ++tableIndex) {
@@ -3213,21 +3213,21 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
                        true);
     std::snprintf(line, sizeof(line), "TABLE %d%s", tableIndex + 1,
                   table.enabled ? "" : "  準備中");
-    draw->AddText(ImVec2(cardX + 18.0f, orderMin.y + 15.0f),
+    draw->AddText(ImVec2(cardX + 18.0f, orderMin.y + 10.0f),
                   TavernUiColor(1.0f, 0.84f, 0.62f, 1.0f), line);
     const char *orderText = !table.enabled
                                 ? "初回研修後に開放"
                                 : (table.state == TableState::WaitingAle
                                        ? "注文：水鏡エール"
                                        : GetTableStateName(table.state));
-    draw->AddText(ImVec2(cardX + 18.0f, orderMin.y + 44.0f),
+    draw->AddText(ImVec2(cardX + 18.0f, orderMin.y + 32.0f),
                   TavernUiColor(0.94f, 0.87f, 0.77f, 1.0f), orderText);
     std::snprintf(line, sizeof(line), "満足度 %.0f",
                   std::clamp(table.satisfaction, 0.0f, 100.0f));
-    draw->AddText(ImVec2(cardX + 18.0f, orderMin.y + 73.0f),
+    draw->AddText(ImVec2(cardX + 18.0f, orderMin.y + 54.0f),
                   TavernUiColor(0.82f, 0.76f, 0.68f, 1.0f), line);
-    const ImVec2 satMin(cardX + 18.0f, orderMin.y + 94.0f);
-    const ImVec2 satMax(cardX + tableCardWidth - 18.0f, orderMin.y + 104.0f);
+    const ImVec2 satMin(cardX + 18.0f, orderMin.y + 74.0f);
+    const ImVec2 satMax(cardX + tableCardWidth - 18.0f, orderMin.y + 82.0f);
     draw->AddRectFilled(satMin, satMax,
                         TavernUiColor(0.15f, 0.11f, 0.08f, 1.0f), 4.0f);
     const float satisfaction =
@@ -3241,13 +3241,13 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
         ImVec2(satMin.x + (satMax.x - satMin.x) * satisfaction, satMax.y),
         satisfactionColor, 4.0f);
     if (!table.speech.empty() && table.speechTimer > 0.0f) {
-      const ImVec2 speechMin(cardX + 18.0f, orderMin.y + 116.0f);
+      const ImVec2 speechMin(cardX + 18.0f, orderMin.y + 88.0f);
       const ImVec2 speechMax(cardX + tableCardWidth - 18.0f,
-                             orderMin.y + 140.0f);
+                             orderMin.y + 112.0f);
       draw->AddRectFilled(speechMin, speechMax,
                           TavernUiColor(0.18f, 0.12f, 0.075f, 0.96f), 7.0f);
       const std::string speechText = "「" + table.speech + "」";
-      draw->AddText(ImVec2(speechMin.x + 8.0f, speechMin.y + 4.0f),
+      draw->AddText(ImVec2(speechMin.x + 8.0f, speechMin.y + 3.0f),
                     TavernUiColor(1.0f, 0.91f, 0.72f, 1.0f),
                     speechText.c_str());
     }

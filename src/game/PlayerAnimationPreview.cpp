@@ -80,8 +80,8 @@ void PlayerAnimationPreview::Initialize(DxContext &dx) {
     m_nativeModelMinY = minY;
     m_nativeModelHeight = maxY - minY;
   }
-  // Capsule の half-height 0.85 m に合わせ、全 Scene で見た目を 1.70 m に統一する。
-  constexpr float kTargetPlayerHeightMeters = 1.70f;
+  // 全 Scene で同じ見た目の高さを使い、家具とボス演出に対する比率を安定させる。
+  constexpr float kTargetPlayerHeightMeters = 1.60f;
   if (m_nativeModelHeight > 0.0001f)
     m_modelToWorldScale = kTargetPlayerHeightMeters / m_nativeModelHeight;
 
