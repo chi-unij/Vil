@@ -2062,7 +2062,7 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
   return Action::None;
 }
 
-void TavernScene::BuildFrame(FrameData &frame) const {
+void TavernScene::BuildFrame(FrameData &frame, const ViewContext &view) const {
   if (!m_ready)
     return;
 
@@ -2091,32 +2091,46 @@ void TavernScene::BuildFrame(FrameData &frame) const {
   };
   const bool hasImportedMug =
       !m_tavernAssetMeshIds[static_cast<std::size_t>(TavernAsset::Mug)].empty();
-  const auto pushMugBase = [&](HeldItem item, const XMFLOAT3 &position) {
+  const auto rotateHorizontalOffset = [](float x, float z, float yaw) {
+    const float yawCos = std::cos(yaw);
+    const float yawSin = std::sin(yaw);
+    return XMFLOAT3{x * yawCos + z * yawSin, 0.0f,
+                    z * yawCos - x * yawSin};
+  };
+  const auto pushMugBase = [&](HeldItem item, const XMFLOAT3 &position,
+                               float yaw) {
     if (hasImportedMug) {
       pushAsset(TavernAsset::Mug,
                 {kImportedMugScale, kImportedMugScale, kImportedMugScale},
-                {0.0f, 0.0f, 0.0f},
+                {0.0f, yaw, 0.0f},
                 {position.x, position.y - kImportedMugHalfHeight, position.z});
     } else {
-      pushMesh(MugMeshForState(item), kMugScaleXZ, kMugScaleY, kMugScaleXZ,
-               position.x, position.y, position.z);
+      pushTransform(MugMeshForState(item),
+                    {kMugScaleXZ, kMugScaleY, kMugScaleXZ},
+                    {0.0f, yaw, 0.0f}, position);
     }
   };
-  const auto pushDirtySpots = [&](const XMFLOAT3 &position) {
-    pushMesh(m_dirtySpotMeshId, 0.055f, 0.045f, 0.028f, position.x - 0.11f,
-             position.y + 0.08f, position.z - 0.18f);
-    pushMesh(m_dirtySpotMeshId, 0.038f, 0.032f, 0.022f, position.x + 0.12f,
-             position.y - 0.04f, position.z - 0.18f);
-    pushMesh(m_dirtySpotMeshId, 0.030f, 0.026f, 0.020f, position.x + 0.02f,
-             position.y + 0.17f, position.z - 0.18f);
+  const auto pushDirtySpots = [&](const XMFLOAT3 &position, float yaw) {
+    const auto pushSpot = [&](const XMFLOAT3 &scale,
+                              const XMFLOAT3 &localOffset) {
+      const XMFLOAT3 rotatedOffset =
+          rotateHorizontalOffset(localOffset.x, localOffset.z, yaw);
+      pushTransform(m_dirtySpotMeshId, scale, {0.0f, yaw, 0.0f},
+                    {position.x + rotatedOffset.x,
+                     position.y + localOffset.y,
+                     position.z + rotatedOffset.z});
+    };
+    pushSpot({0.055f, 0.045f, 0.028f}, {-0.11f, 0.08f, -0.18f});
+    pushSpot({0.038f, 0.032f, 0.022f}, {0.12f, -0.04f, -0.18f});
+    pushSpot({0.030f, 0.026f, 0.020f}, {0.02f, 0.17f, -0.18f});
   };
   const auto pushStateMug = [&](HeldItem item, const XMFLOAT3 &position,
-                                float aleFill, float aleFoam) {
+                                float aleFill, float aleFoam, float yaw) {
     if (item == HeldItem::None)
       return;
-    pushMugBase(item, position);
+    pushMugBase(item, position, yaw);
     if (item == HeldItem::DirtyMug)
-      pushDirtySpots(position);
+      pushDirtySpots(position, yaw);
     if (item == HeldItem::FilledMug) {
       const float visibleFill = std::max(0.12f, aleFill);
       pushMesh(m_aleMeshId, kAleSurfaceScaleXZ, 0.06f, kAleSurfaceScaleXZ,
@@ -2296,7 +2310,7 @@ void TavernScene::BuildFrame(FrameData &frame) const {
             {-1.45f, 2.36f, 9.38f});
   pushAsset(TavernAsset::Plate, {0.50f, 0.50f, 0.50f}, {0.0f, 0.0f, 0.0f},
             {1.40f, 2.36f, 9.38f});
-  pushMugBase(HeldItem::EmptyMug, {0.72f, 2.53f, 9.38f});
+  pushMugBase(HeldItem::EmptyMug, {0.72f, 2.53f, 9.38f}, 0.0f);
 
   // 左からジョッキ棚、仮置き、エール樽、洗い場の順に配置する。
   pushMesh(m_darkWoodMeshId, 1.55f, 0.16f, 0.58f, -2.7f, 1.65f, 7.72f);
@@ -2304,7 +2318,7 @@ void TavernScene::BuildFrame(FrameData &frame) const {
     pushStateMug(HeldItem::EmptyMug,
                  {-2.92f + static_cast<float>(mugIndex) * 0.42f,
                   hasImportedMug ? 1.915f : 1.98f, 7.72f},
-                 0.0f, 0.0f);
+                 0.0f, 0.0f, 0.0f);
   }
 
   pushMesh(m_darkWoodMeshId, 1.20f, 0.07f, 0.58f, -1.20f, 1.43f, 7.65f);
@@ -2317,7 +2331,7 @@ void TavernScene::BuildFrame(FrameData &frame) const {
                slotPosition.z);
     }
     pushStateMug(mug.item, kCounterMugPositions[slotIndex], mug.aleFill,
-                 mug.aleFoam);
+                 mug.aleFoam, 0.0f);
   }
 
   const float kegScale = 1.34f + static_cast<float>(AleCapacityLevel()) * 0.08f;
@@ -2362,14 +2376,35 @@ void TavernScene::BuildFrame(FrameData &frame) const {
       const XMFLOAT3 tableMugPosition = {tableX[tableIndex],
                                          hasImportedMug ? 1.18f : 1.27f, 4.32f};
       if (tableState == TableState::Eating)
-        pushStateMug(HeldItem::FilledMug, tableMugPosition, 0.90f, 0.04f);
+        pushStateMug(HeldItem::FilledMug, tableMugPosition, 0.90f, 0.04f,
+                     0.0f);
       else
-        pushStateMug(HeldItem::DirtyMug, tableMugPosition, 0.0f, 0.0f);
+        pushStateMug(HeldItem::DirtyMug, tableMugPosition, 0.0f, 0.0f, 0.0f);
     }
   }
 
   XMFLOAT3 carriedMugPosition = {m_playerPosition.x + 0.48f, 1.03f,
                                  m_playerPosition.z + 0.10f};
+  float carriedMugYaw = 0.0f;
+  if (view.firstPerson && m_workState == WorkState::None) {
+    const float pitchCos = std::cos(view.cameraPitch);
+    const float pitchSin = std::sin(view.cameraPitch);
+    const float yawCos = std::cos(view.cameraYaw);
+    const float yawSin = std::sin(view.cameraYaw);
+    const XMFLOAT3 forward = {pitchCos * yawSin, pitchSin,
+                              pitchCos * yawCos};
+    const XMFLOAT3 right = {yawCos, 0.0f, -yawSin};
+    const XMFLOAT3 up = {-pitchSin * yawSin, pitchCos,
+                         -pitchSin * yawCos};
+    carriedMugPosition = {
+        view.cameraPosition.x + right.x * 0.34f + forward.x * 0.66f -
+            up.x * 0.30f,
+        view.cameraPosition.y + right.y * 0.34f + forward.y * 0.66f -
+            up.y * 0.30f,
+        view.cameraPosition.z + right.z * 0.34f + forward.z * 0.66f -
+            up.z * 0.30f};
+    carriedMugYaw = view.cameraYaw;
+  }
   if (m_workState == WorkState::PouringAle)
     carriedMugPosition = {0.0f, 1.64f, 7.38f};
   else if (m_workState == WorkState::WashingMug)
@@ -2377,7 +2412,7 @@ void TavernScene::BuildFrame(FrameData &frame) const {
 
   if (m_heldItem != HeldItem::None) {
     if (m_workState == WorkState::PouringAle) {
-      pushMugBase(HeldItem::EmptyMug, carriedMugPosition);
+      pushMugBase(HeldItem::EmptyMug, carriedMugPosition, 0.0f);
       const float visibleFill = m_heldItem == HeldItem::FilledMug
                                     ? std::max(0.12f, m_aleFill)
                                     : m_aleFill;
@@ -2395,7 +2430,8 @@ void TavernScene::BuildFrame(FrameData &frame) const {
         }
       }
     } else {
-      pushStateMug(m_heldItem, carriedMugPosition, m_aleFill, m_aleFoam);
+      pushStateMug(m_heldItem, carriedMugPosition, m_aleFill, m_aleFoam,
+                   carriedMugYaw);
     }
   }
 
@@ -3146,7 +3182,8 @@ void TavernScene::DrawManagementUi(int viewportWidth, int viewportHeight) {
 }
 
 TavernScene::Action TavernScene::DrawHud(int viewportWidth,
-                                         int viewportHeight) {
+                                         int viewportHeight,
+                                         bool firstPersonView) {
   const ImVec2 viewportSize(static_cast<float>(viewportWidth),
                             static_cast<float>(viewportHeight));
   const ImU32 goldBorder = TavernUiColor(0.92f, 0.55f, 0.24f, 0.80f);
@@ -3252,6 +3289,15 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
                     speechText.c_str());
     }
     draw->PopClipRect();
+  }
+
+  if (firstPersonView && !ManagementMenuOpen() &&
+      m_workState == WorkState::None) {
+    const ImVec2 center(viewportSize.x * 0.5f, viewportSize.y * 0.5f);
+    const ImU32 shadow = TavernUiColor(0.02f, 0.01f, 0.005f, 0.72f);
+    const ImU32 reticle = TavernUiColor(1.0f, 0.82f, 0.50f, 0.88f);
+    draw->AddCircleFilled(center, 3.4f, shadow, 16);
+    draw->AddCircle(center, 2.2f, reticle, 16, 1.4f);
   }
 
   const ImVec2 heldMin(viewportSize.x - 278.0f, 28.0f);

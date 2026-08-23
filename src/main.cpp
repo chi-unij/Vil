@@ -657,6 +657,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         HasCommandLineSwitch(commandLine, L"--tavern-supplies-smoke");
     const bool tavernUpgradesSmokeRequested =
         HasCommandLineSwitch(commandLine, L"--tavern-upgrades-smoke");
+    const bool tavernThirdPersonRequested =
+        HasCommandLineSwitch(commandLine, L"--tavern-third-person");
+    const bool tavernFirstPersonEnabled = !tavernThirdPersonRequested;
     const int tavernSmokeModeCount =
         static_cast<int>(tavernSmokeRequested) +
         static_cast<int>(tavernGameplaySmokeRequested) +
@@ -666,6 +669,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         static_cast<int>(tavernUpgradesSmokeRequested);
     const bool tavernRequested =
         HasCommandLineSwitch(commandLine, L"--tavern") ||
+        tavernThirdPersonRequested ||
         tavernSmokeRequested || tavernGameplaySmokeRequested ||
         tavernDaySmokeRequested || tavernManagementSmokeRequested ||
         tavernSuppliesSmokeRequested || tavernUpgradesSmokeRequested;
@@ -1247,15 +1251,23 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       tavernScene.SetBusinessHour(gameTimeOfDayHours);
       playerPreview.SetPosition(tavernScene.PlayerSpawnPosition());
       playerPreview.SetYaw(0.0f);
-      const DirectX::XMFLOAT3 cameraPosition = tavernScene.CameraPosition();
+      const DirectX::XMFLOAT3 cameraPosition =
+          tavernFirstPersonEnabled
+              ? tavernScene.FirstPersonCameraPosition(playerPreview.Position())
+              : tavernScene.CameraPosition();
       gameCameraPosition = cameraPosition;
       cam.SetPosition(cameraPosition.x, cameraPosition.y, cameraPosition.z);
-      cam.SetYawPitch(tavernScene.CameraYaw(), tavernScene.CameraPitch());
-      cam.SetLens(DirectX::XM_PIDIV4,
+      cam.SetYawPitch(tavernScene.CameraYaw(),
+                      tavernFirstPersonEnabled ? -0.06f
+                                               : tavernScene.CameraPitch());
+      cam.SetLens(tavernFirstPersonEnabled ? DirectX::XM_PI / 3.0f
+                                           : DirectX::XM_PIDIV4,
                   static_cast<float>(window.Width()) /
                       static_cast<float>(window.Height()),
                   0.1f, 1000.0f);
-      TraceAppEvent("tavern transition: enter");
+      TraceAppEvent(tavernFirstPersonEnabled
+                        ? "tavern transition: enter first-person"
+                        : "tavern transition: enter third-person fallback");
     };
     const auto returnFromTavern = [&]() {
       appMode = AppMode::Game;
@@ -1838,6 +1850,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
 
       const bool uiWantsMouse = imgui.WantCaptureMouse();
       const bool uiWantsKeyboard = imgui.WantCaptureKeyboard();
+      const bool tavernFirstPersonLookActive =
+          appMode == AppMode::Tavern && tavernFirstPersonEnabled &&
+          !gameFreeCameraEnabled && !showSettings &&
+          !tavernMenuOpenBeforeUi && !uiWantsMouse && !uiWantsKeyboard;
+      window.SetMouseCaptured(tavernFirstPersonLookActive &&
+                              GetForegroundWindow() == window.Handle());
       const bool tavernInteractKeyNow = input.IsKeyDown('E');
       const bool tavernGamepadConfirmPressed =
           input.GamepadButtonPressed(XINPUT_GAMEPAD_A);
@@ -1903,6 +1921,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         cam.Update(dt, input, wantMouseLook);
         if (!uiWantsMouse)
           cam.ApplyScrollZoom(scroll);
+      } else if (appMode == AppMode::Tavern && tavernFirstPersonEnabled) {
+        input.ConsumeScrollDelta();
+        const auto md = input.ConsumeMouseDelta();
+        if (tavernFirstPersonLookActive) {
+          cam.AddYawPitch(md.dx * cam.LookSpeed(),
+                          -md.dy * cam.LookSpeed());
+          constexpr float kGamepadLookSpeed = 2.25f;
+          cam.AddYawPitch(input.RightStickX() * kGamepadLookSpeed * dt,
+                          input.RightStickY() * kGamepadLookSpeed * dt);
+          cam.SetYawPitch(cam.Yaw(),
+                          std::clamp(cam.Pitch(), -1.05f, 1.05f));
+        }
       } else if (!isPlaying) {
         // プレイ中以外でスクロールを消費する（プレイ中は将来のゲームロジック側で扱う想定）。
         float scroll = input.ConsumeScrollDelta();
@@ -2104,21 +2134,28 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         } else {
           playerPreview.Update(dt, input, 12.0f,
                                tavernScene.CollisionColliders(),
-                               emptyMeshTriangles);
+                               emptyMeshTriangles, false,
+                               tavernFirstPersonEnabled ? cam.Yaw() : 0.0f);
         }
         const DirectX::XMFLOAT3 playerPos = playerPreview.Position();
-        const DirectX::XMFLOAT3 cameraFollowOffset =
-            tavernScene.CameraFollowOffset();
-        const DirectX::XMFLOAT3 targetCameraPos = {
-            playerPos.x + cameraFollowOffset.x,
-            playerPos.y + cameraFollowOffset.y,
-            playerPos.z + cameraFollowOffset.z};
-        const float cameraFollowT = std::clamp(dt * 8.5f, 0.0f, 1.0f);
-        gameCameraPosition =
-            LerpFloat3(gameCameraPosition, targetCameraPos, cameraFollowT);
+        if (tavernFirstPersonEnabled) {
+          gameCameraPosition =
+              tavernScene.FirstPersonCameraPosition(playerPos);
+        } else {
+          const DirectX::XMFLOAT3 cameraFollowOffset =
+              tavernScene.CameraFollowOffset();
+          const DirectX::XMFLOAT3 targetCameraPos = {
+              playerPos.x + cameraFollowOffset.x,
+              playerPos.y + cameraFollowOffset.y,
+              playerPos.z + cameraFollowOffset.z};
+          const float cameraFollowT = std::clamp(dt * 8.5f, 0.0f, 1.0f);
+          gameCameraPosition =
+              LerpFloat3(gameCameraPosition, targetCameraPos, cameraFollowT);
+        }
         cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
                         gameCameraPosition.z);
-        cam.SetYawPitch(tavernScene.CameraYaw(), tavernScene.CameraPitch());
+        if (!tavernFirstPersonEnabled)
+          cam.SetYawPitch(tavernScene.CameraYaw(), tavernScene.CameraPitch());
       } else if ((appMode == AppMode::Game || appMode == AppMode::BossArena) &&
                  ((!uiWantsKeyboard && !gameFreeCameraEnabled) ||
                   bossMirrorPickupSmokeRequested)) {
@@ -2865,7 +2902,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
             automateTavern);
         const TavernScene::Action hudAction =
             tavernScene.DrawHud(static_cast<int>(window.Width()),
-                                static_cast<int>(window.Height()));
+                                static_cast<int>(window.Height()),
+                                tavernFirstPersonEnabled);
         if (tavernManagementSmokeRequested && !tavernManagementSmokeFailed &&
             !tavernManagementSmokeCompleted) {
           const TavernScene::ManagementUiDiagnostics &diagnostics =
@@ -3843,8 +3881,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         frame.ssrEnabled = true;
         frame.ssrReflectionParams = {1.20f, 24.0f, 0.18f, 0.20f};
       } else if (appMode == AppMode::Tavern) {
-        tavernScene.BuildFrame(frame);
-        playerPreview.BuildFrame(frame);
+        TavernScene::ViewContext tavernView;
+        tavernView.firstPerson = tavernFirstPersonEnabled;
+        tavernView.cameraPosition = cam.GetPosition();
+        tavernView.cameraYaw = cam.Yaw();
+        tavernView.cameraPitch = cam.Pitch();
+        tavernScene.BuildFrame(frame, tavernView);
+        if (!tavernFirstPersonEnabled)
+          playerPreview.BuildFrame(frame);
         frame.gridEnabled = false;
         frame.clearColor[0] = 0.035f;
         frame.clearColor[1] = 0.020f;

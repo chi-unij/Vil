@@ -89,6 +89,13 @@ public:
     bool cancelPressed = false;
   };
 
+  struct ViewContext {
+    bool firstPerson = false;
+    DirectX::XMFLOAT3 cameraPosition = {};
+    float cameraYaw = 0.0f;
+    float cameraPitch = 0.0f;
+  };
+
   void Initialize(DxContext &dx);
   void Reset(float startingHour = 5.0f);
   void BeginNextDay(float startingHour = 5.0f);
@@ -98,8 +105,9 @@ public:
                 bool restartPressed,
                 const ManagementInput &managementInput = {},
                 bool automateGameplay = false);
-  void BuildFrame(FrameData &frame) const;
-  Action DrawHud(int viewportWidth, int viewportHeight);
+  void BuildFrame(FrameData &frame, const ViewContext &view = {}) const;
+  Action DrawHud(int viewportWidth, int viewportHeight,
+                 bool firstPersonView = false);
   void DrawDebugPanel(float &timeOfDayHours, bool &automaticTime);
 
   bool IsReady() const { return m_ready; }
@@ -142,6 +150,10 @@ public:
   }
   float BusinessHour() const { return m_businessHour; }
   DirectX::XMFLOAT3 PlayerSpawnPosition() const { return {0.0f, 0.0f, -0.35f}; }
+  DirectX::XMFLOAT3
+  FirstPersonCameraPosition(const DirectX::XMFLOAT3 &playerPosition) const {
+    return {playerPosition.x, playerPosition.y + 1.48f, playerPosition.z};
+  }
   DirectX::XMFLOAT3 CameraFollowOffset() const { return {0.0f, 3.20f, -5.80f}; }
   DirectX::XMFLOAT3 CameraPosition() const {
     const DirectX::XMFLOAT3 spawn = PlayerSpawnPosition();

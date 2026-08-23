@@ -524,7 +524,7 @@ void PlayerAnimationPreview::Update(float dt, const Input &input,
                                     const std::vector<
                                         CollisionSystem::MeshTriangle>
                                         &meshTriangles,
-                                    bool debugFly) {
+                                    bool debugFly, float movementYawRadians) {
   if (!m_ready) {
     Update(dt);
     return;
@@ -558,6 +558,13 @@ void PlayerAnimationPreview::Update(float dt, const Input &input,
     moveX *= invLen;
     moveY *= invLen;
     moveZ *= invLen;
+
+    const float localMoveX = moveX;
+    const float localMoveZ = moveZ;
+    const float movementCos = std::cos(movementYawRadians);
+    const float movementSin = std::sin(movementYawRadians);
+    moveX = localMoveX * movementCos + localMoveZ * movementSin;
+    moveZ = localMoveZ * movementCos - localMoveX * movementSin;
 
     const bool running = input.IsKeyDown(VK_SHIFT) ||
                          input.IsGamepadButtonDown(XINPUT_GAMEPAD_A);
