@@ -1116,6 +1116,8 @@ void TavernScene::Initialize(DxContext &dx) {
                          : "[TavernScene] optimized art incomplete; procedural "
                            "fallback remains active\n");
 
+  m_customerNpc.Initialize(dx);
+
   m_collisionColliders = {
       {CollisionSystem::ShapeType::Box,
        {-6.85f, 1.5f, 4.2f},
@@ -1794,6 +1796,9 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
                     bool automateGameplay) {
   m_playerPosition = playerPosition;
   const float dt = std::clamp(deltaSeconds, 0.0f, 0.25f);
+  const TableState prototypeCustomerState = m_tables[0].state;
+  m_customerNpc.Update(dt, prototypeCustomerState == TableState::Arriving ||
+                               prototypeCustomerState == TableState::Leaving);
   m_interactionCooldown = std::max(0.0f, m_interactionCooldown - dt);
   m_feedbackTimer = std::max(0.0f, m_feedbackTimer - dt);
   if (m_feedbackTimer <= 0.0f)
@@ -2360,12 +2365,31 @@ void TavernScene::BuildFrame(FrameData &frame, const ViewContext &view) const {
         tableState != TableState::Empty && tableState != TableState::Dirty;
     if (customerVisible) {
       const float customerZ = tableIndex == 2 ? 5.12f : 5.28f;
-      pushMesh(m_customerBodyMeshId, 0.58f, 0.84f, 0.58f, tableX[tableIndex],
-               1.16f, customerZ);
-      pushMesh(m_customerHeadMeshId, 0.46f, 0.46f, 0.46f, tableX[tableIndex],
-               1.79f, customerZ - 0.06f);
-      pushMesh(m_customerHairMeshId, 0.48f, 0.23f, 0.48f, tableX[tableIndex],
-               1.97f, customerZ - 0.06f);
+      if (tableIndex == 0 && ImportedCustomerReady()) {
+        float animatedCustomerZ = customerZ;
+        float customerYaw = XM_PI;
+        if (tableState == TableState::Arriving) {
+          const float progress =
+              1.0f -
+              std::clamp(m_tables[tableIndex].stateTimer / 0.8f, 0.0f, 1.0f);
+          animatedCustomerZ = 4.0f + (customerZ - 4.0f) * progress;
+          customerYaw = 0.0f;
+        } else if (tableState == TableState::Leaving) {
+          const float progress =
+              1.0f -
+              std::clamp(m_tables[tableIndex].stateTimer / 0.8f, 0.0f, 1.0f);
+          animatedCustomerZ = customerZ + (4.0f - customerZ) * progress;
+        }
+        m_customerNpc.BuildFrame(
+            frame, {tableX[tableIndex], 0.0f, animatedCustomerZ}, customerYaw);
+      } else {
+        pushMesh(m_customerBodyMeshId, 0.58f, 0.84f, 0.58f, tableX[tableIndex],
+                 1.16f, customerZ);
+        pushMesh(m_customerHeadMeshId, 0.46f, 0.46f, 0.46f, tableX[tableIndex],
+                 1.79f, customerZ - 0.06f);
+        pushMesh(m_customerHairMeshId, 0.48f, 0.23f, 0.48f, tableX[tableIndex],
+                 1.97f, customerZ - 0.06f);
+      }
       if (tableState == TableState::WaitingOrder ||
           tableState == TableState::WaitingAle)
         pushMesh(m_glowMeshId, 0.16f, 0.52f, 0.16f, tableX[tableIndex], 2.72f,

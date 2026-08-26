@@ -4295,13 +4295,44 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       }
       if (tavernGameplaySmokeRequested && !tavernGameplaySmokeLogged &&
           tavernScene.GameplaySmokeComplete()) {
+        const TavernCustomerPreview::ClipDiagnostics customerIdle =
+            tavernScene.CustomerIdleDiagnostics();
+        const TavernCustomerPreview::ClipDiagnostics customerWalk =
+            tavernScene.CustomerWalkDiagnostics();
+        const bool customerAnimationReady =
+            tavernScene.ImportedCustomerReady() &&
+            tavernScene.CustomerBonePaletteFinite() &&
+            tavernScene.CustomerSkeletonBoneCount() == 65 &&
+            tavernScene.CustomerMaterialPartCount() == 7 &&
+            customerIdle.loaded && customerWalk.loaded &&
+            std::abs(customerIdle.duration - 9.916667f) <= 0.01f &&
+            std::abs(customerWalk.duration - 0.95f) <= 0.01f &&
+            tavernScene.CustomerIdlePoseUpdateCount() > 0 &&
+            tavernScene.CustomerWalkPoseUpdateCount() > 0;
+        if (!customerAnimationReady) {
+          TraceAppEvent(
+              "Tavern gameplay smoke: FAIL; npc1 animation gate incomplete");
+          applicationExitCode = 2;
+          tavernGameplaySmokeLogged = true;
+          requestQuit = true;
+          continue;
+        }
         std::ostringstream message;
         message << "Tavern gameplay smoke: completed both table Ale service "
                    "and wash cycles; cycles="
                 << tavernScene.CompletedCycles()
                 << " gold=" << tavernScene.Gold()
                 << " served=" << tavernScene.ServedCustomers()
-                << " walkouts=" << tavernScene.Walkouts();
+                << " walkouts=" << tavernScene.Walkouts()
+                << " npcParts=" << tavernScene.CustomerMaterialPartCount()
+                << " npcBones=" << tavernScene.CustomerSkeletonBoneCount()
+                << " npcIdle=" << customerIdle.duration << "s/"
+                << customerIdle.trackCount << " tracks"
+                << " npcWalk=" << customerWalk.duration << "s/"
+                << customerWalk.trackCount << " tracks"
+                << " npcPoseUpdates="
+                << tavernScene.CustomerIdlePoseUpdateCount() << "/"
+                << tavernScene.CustomerWalkPoseUpdateCount();
         TraceAppEvent(message.str().c_str());
         tavernGameplaySmokeLogged = true;
         requestQuit = true;

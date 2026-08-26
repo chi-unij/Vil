@@ -3,6 +3,7 @@
 #include "DxContext.h"
 #include "RenderPass.h"
 #include "game/CollisionSystem.h"
+#include "game/TavernCustomerPreview.h"
 
 #include <DirectXMath.h>
 #include <array>
@@ -112,6 +113,32 @@ public:
 
   bool IsReady() const { return m_ready; }
   bool ImportedArtReady() const { return m_importedArtReady; }
+  bool ImportedCustomerReady() const {
+    return m_customerNpc.IsReady() && m_customerNpc.HasSkeleton() &&
+           m_customerNpc.IdleDiagnostics().loaded &&
+           m_customerNpc.WalkDiagnostics().loaded;
+  }
+  bool CustomerBonePaletteFinite() const {
+    return m_customerNpc.BonePaletteFinite();
+  }
+  size_t CustomerSkeletonBoneCount() const {
+    return m_customerNpc.SkeletonBoneCount();
+  }
+  size_t CustomerMaterialPartCount() const {
+    return m_customerNpc.MaterialPartCount();
+  }
+  TavernCustomerPreview::ClipDiagnostics CustomerIdleDiagnostics() const {
+    return m_customerNpc.IdleDiagnostics();
+  }
+  TavernCustomerPreview::ClipDiagnostics CustomerWalkDiagnostics() const {
+    return m_customerNpc.WalkDiagnostics();
+  }
+  uint64_t CustomerIdlePoseUpdateCount() const {
+    return m_customerNpc.IdlePoseUpdateCount();
+  }
+  uint64_t CustomerWalkPoseUpdateCount() const {
+    return m_customerNpc.WalkPoseUpdateCount();
+  }
   bool GameplaySmokeComplete() const {
     return m_tableCompletedCycles[0] >= 1 && m_tableCompletedCycles[1] >= 1;
   }
@@ -152,7 +179,7 @@ public:
   DirectX::XMFLOAT3 PlayerSpawnPosition() const { return {0.0f, 0.0f, -0.35f}; }
   DirectX::XMFLOAT3
   FirstPersonCameraPosition(const DirectX::XMFLOAT3 &playerPosition) const {
-    return {playerPosition.x, playerPosition.y + 1.48f, playerPosition.z};
+    return {playerPosition.x, playerPosition.y + 1.68f, playerPosition.z};
   }
   DirectX::XMFLOAT3 CameraFollowOffset() const { return {0.0f, 3.20f, -5.80f}; }
   DirectX::XMFLOAT3 CameraPosition() const {
@@ -306,6 +333,7 @@ private:
   std::array<std::vector<uint32_t>,
              static_cast<std::size_t>(TavernAsset::Count)>
       m_tavernAssetMeshIds{};
+  TavernCustomerPreview m_customerNpc;
 
   ShiftState m_shiftState = ShiftState::Running;
   std::array<TableSlot, 3> m_tables{};
