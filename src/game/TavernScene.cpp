@@ -46,6 +46,10 @@ constexpr int kExtraMugPrice = 25;
 constexpr int kOpenTable3Price = 60;
 constexpr int kMaximumAleCapacityLevel = 3;
 constexpr float kBusinessOpenHour = 5.0f;
+constexpr float kEntranceWaitSeconds = 30.0f;
+constexpr float kEntranceLeaveSeconds = 1.2f;
+constexpr int kEntranceTimeoutPenalty = 20;
+constexpr float kCustomerWalkSpeed = 1.6f;
 constexpr float kMugScaleXZ = 0.345f;
 constexpr float kMugScaleY = 0.465f;
 constexpr float kAleSurfaceScaleXZ = 0.255f;
@@ -53,10 +57,88 @@ constexpr float kImportedMugScale = 1.55f;
 constexpr float kImportedMugHalfHeight = 0.239042f * kImportedMugScale * 0.5f;
 constexpr const char *kAleName = "水鏡エール";
 
+LoadedMesh CreateOrderBubbleMesh() {
+  // カメラ側（ローカル -Z）を向く角丸の吹き出しと、客を指すしっぽ。
+  LoadedMesh mesh;
+  const auto vertex = [&](float x, float y) {
+    MeshVertex v{};
+    v.pos[0] = x;
+    v.pos[1] = y;
+    v.normal[2] = -1.0f;
+    v.tangent[0] = 1.0f;
+    v.tangent[3] = 1.0f;
+    mesh.vertices.push_back(v);
+  };
+  vertex(0.0f, 0.0f);
+  constexpr float halfWidth = 0.40f;
+  constexpr float halfHeight = 0.31f;
+  constexpr float radius = 0.12f;
+  for (int corner = 0; corner < 4; ++corner) {
+    const float x = (corner == 0 || corner == 3 ? 1.0f : -1.0f) *
+                    (halfWidth - radius);
+    const float y = (corner < 2 ? 1.0f : -1.0f) * (halfHeight - radius);
+    for (int step = 0; step <= 6; ++step) {
+      const float angle = (corner + step / 6.0f) * XM_PIDIV2;
+      vertex(x + radius * std::cos(angle), y + radius * std::sin(angle));
+    }
+  }
+  const uint32_t perimeter = static_cast<uint32_t>(mesh.vertices.size()) - 1;
+  for (uint32_t i = 1; i <= perimeter; ++i)
+    mesh.indices.insert(mesh.indices.end(), {0, i % perimeter + 1, i});
+  const uint32_t tail = static_cast<uint32_t>(mesh.vertices.size());
+  vertex(-0.10f, -halfHeight);
+  vertex(0.10f, -halfHeight);
+  vertex(0.0f, -halfHeight - 0.15f);
+  mesh.indices.insert(mesh.indices.end(), {tail, tail + 1, tail + 2});
+  return mesh;
+}
+
 float DistanceXZ(const XMFLOAT3 &a, const XMFLOAT3 &b) {
   const float dx = a.x - b.x;
   const float dz = a.z - b.z;
   return std::sqrt(dx * dx + dz * dz);
+}
+
+XMFLOAT3 EntrancePosition(int tableIndex) {
+  return {-1.25f + static_cast<float>(tableIndex) * 1.25f, 0.0f, -0.90f};
+}
+
+std::array<XMFLOAT3, 5> CustomerRoute(int tableIndex) {
+  const float tableX = kTableInteractions[tableIndex].x;
+  const float aisleX = tableX + 1.90f;
+  // 入口から前方通路、卓間の通路、席の背面を経由して家具を避ける。
+  return {EntrancePosition(tableIndex), XMFLOAT3{aisleX, 0.0f, 1.35f},
+          XMFLOAT3{aisleX, 0.0f, 6.10f}, XMFLOAT3{tableX, 0.0f, 6.10f},
+          XMFLOAT3{tableX, 0.0f, tableIndex == 2 ? 5.12f : 5.28f}};
+}
+
+float CustomerTravelSeconds(int tableIndex) {
+  const auto route = CustomerRoute(tableIndex);
+  float distance = 0.0f;
+  for (size_t i = 1; i < route.size(); ++i)
+    distance += DistanceXZ(route[i - 1], route[i]);
+  return distance / kCustomerWalkSpeed;
+}
+
+XMFLOAT3 CustomerRoutePosition(int tableIndex, float secondsRemaining,
+                              bool leaving, float &yaw) {
+  auto route = CustomerRoute(tableIndex);
+  if (leaving)
+    std::reverse(route.begin(), route.end());
+  float distance = std::max(0.0f, CustomerTravelSeconds(tableIndex) -
+                                    secondsRemaining) * kCustomerWalkSpeed;
+  for (size_t i = 1; i < route.size(); ++i) {
+    const float segment = DistanceXZ(route[i - 1], route[i]);
+    if (distance <= segment || i == route.size() - 1) {
+      const float t = std::clamp(distance / segment, 0.0f, 1.0f);
+      const float dx = route[i].x - route[i - 1].x;
+      const float dz = route[i].z - route[i - 1].z;
+      yaw = std::atan2(dx, dz);
+      return {route[i - 1].x + dx * t, 0.0f, route[i - 1].z + dz * t};
+    }
+    distance -= segment;
+  }
+  return route.back();
 }
 
 ImU32 TavernUiColor(float r, float g, float b, float a) {
@@ -640,7 +722,7 @@ const char *TavernScene::GetTableStateName(TableState state) {
   case TableState::WaitingOrder:
     return "注文待ち";
   case TableState::WaitingAle:
-    return "エール待ち";
+    return "提供待ち";
   case TableState::Eating:
     return "飲食中";
   case TableState::Leaving:
@@ -1017,6 +1099,20 @@ void TavernScene::Initialize(DxContext &dx) {
   glowMaterial.rayTracingVisible = false;
   m_glowMeshId = dx.CreateMeshResources(cubeMesh, {}, glowMaterial);
 
+  const LoadedMesh orderBubbleMesh = CreateOrderBubbleMesh();
+  Material bubbleMaterial{};
+  bubbleMaterial.baseColorFactor = {0.94f, 0.85f, 0.65f, 1.0f};
+  bubbleMaterial.emissiveFactor = {0.18f, 0.15f, 0.10f};
+  bubbleMaterial.roughnessFactor = 1.0f;
+  bubbleMaterial.rayTracingVisible = false;
+  bubbleMaterial.ssrExcluded = true;
+  m_orderBubbleMeshId = dx.CreateMeshResources(orderBubbleMesh, {}, bubbleMaterial);
+  Material bubbleBorderMaterial = bubbleMaterial;
+  bubbleBorderMaterial.baseColorFactor = {0.14f, 0.065f, 0.025f, 1.0f};
+  bubbleBorderMaterial.emissiveFactor = {0.035f, 0.015f, 0.005f};
+  m_orderBubbleBorderMeshId =
+      dx.CreateMeshResources(orderBubbleMesh, {}, bubbleBorderMaterial);
+
   Material customerBodyMaterial{};
   customerBodyMaterial.baseColorFactor = {0.16f, 0.42f, 0.52f, 1.0f};
   customerBodyMaterial.metallicFactor = 0.0f;
@@ -1174,7 +1270,8 @@ void TavernScene::Initialize(DxContext &dx) {
             m_filledMugMeshId != UINT32_MAX && m_dirtyMugMeshId != UINT32_MAX &&
             m_dirtySpotMeshId != UINT32_MAX && m_aleMeshId != UINT32_MAX &&
             m_foamMeshId != UINT32_MAX && m_metalMeshId != UINT32_MAX &&
-            m_waterMeshId != UINT32_MAX;
+            m_waterMeshId != UINT32_MAX && m_orderBubbleMeshId != UINT32_MAX &&
+            m_orderBubbleBorderMeshId != UINT32_MAX;
   Reset();
 }
 
@@ -1205,6 +1302,7 @@ void TavernScene::ResetShiftRuntime(float startingHour) {
   m_spawnTimers = {2.0f, 0.0f, 0.0f};
   m_walkouts = 0;
   m_tables = {};
+  m_entranceCustomers = {};
   m_counterMugs = {};
   m_tables[0].enabled = true;
   m_tables[1].enabled = m_tutorialStep == TutorialStep::Complete;
@@ -1260,7 +1358,7 @@ void TavernScene::SpawnCustomer(int tableIndex) {
   if (!table.enabled || table.state != TableState::Empty)
     return;
   table.state = TableState::Arriving;
-  table.stateTimer = 0.8f;
+  table.stateTimer = CustomerTravelSeconds(tableIndex);
   table.satisfaction = 100.0f;
   table.servedCustomer = false;
   table.complaintPlayed = false;
@@ -1268,13 +1366,367 @@ void TavernScene::SpawnCustomer(int tableIndex) {
   table.speechTimer = 2.0f;
 }
 
+void TavernScene::DismissEntranceCustomer(int tableIndex, bool penalize) {
+  EntranceCustomer &customer = m_entranceCustomers[tableIndex];
+  if (customer.state != EntranceState::Waiting)
+    return;
+  customer.state = EntranceState::Leaving;
+  customer.leaveTimer = kEntranceLeaveSeconds;
+  if (penalize) {
+    const int penalty = std::min(m_gold, kEntranceTimeoutPenalty);
+    m_gold -= penalty;
+    ++m_walkouts;
+    m_feedbackText = "入口の客が待ちきれず退店：-" + std::to_string(penalty) +
+                     " G（上限20 G）";
+    m_feedbackTimer = 3.0f;
+  }
+}
+
+void TavernScene::UpdateEntranceCustomers(float dt) {
+  for (int tableIndex = 0; tableIndex < CustomerTableCount(); ++tableIndex) {
+    TableSlot &table = m_tables[tableIndex];
+    EntranceCustomer &customer = m_entranceCustomers[tableIndex];
+    if (!table.enabled) {
+      customer = {};
+      continue;
+    }
+    if (customer.state == EntranceState::Leaving) {
+      customer.leaveTimer -= dt;
+      if (customer.leaveTimer <= 0.0f) {
+        customer = {};
+        m_spawnTimers[tableIndex] = CustomerSpawnDelay(tableIndex);
+      }
+      continue;
+    }
+    if (customer.state == EntranceState::Waiting) {
+      if (m_shiftState != ShiftState::Running) {
+        DismissEntranceCustomer(tableIndex, false);
+      } else if (table.state == TableState::Empty) {
+        // 回収したジョッキは手元に残し、空いた卓へ待機客だけを案内する。
+        customer = {};
+        SpawnCustomer(tableIndex);
+      } else if (m_tutorialStep == TutorialStep::Complete) {
+        customer.waitedSeconds =
+            std::min(kEntranceWaitSeconds, customer.waitedSeconds + dt);
+        if (customer.waitedSeconds >= kEntranceWaitSeconds)
+          DismissEntranceCustomer(tableIndex, true);
+      }
+      continue;
+    }
+    if (m_shiftState != ShiftState::Running ||
+        (table.state != TableState::Empty && table.state != TableState::Dirty))
+      continue;
+    // 研修中も客は入口に現れるが、待機時間は研修完了まで進めない。
+    m_spawnTimers[tableIndex] -= dt;
+    if (m_spawnTimers[tableIndex] > 0.0f)
+      continue;
+    if (table.state == TableState::Empty) {
+      SpawnCustomer(tableIndex);
+    } else {
+      customer.state = EntranceState::Waiting;
+      customer.waitedSeconds = 0.0f;
+      m_feedbackText = "入口でお待ちです：TABLE " +
+                       std::to_string(tableIndex + 1) + " のジョッキを回収";
+      m_feedbackTimer = 2.4f;
+    }
+  }
+}
+
+void TavernScene::ConfigureEntranceWaitingPreview() {
+  Reset(5.0f);
+  m_tutorialStep = TutorialStep::Complete;
+  m_gold = 50;
+  m_cleanMugs = 0;
+  for (int tableIndex = 0; tableIndex < kBaseTableCount; ++tableIndex) {
+    m_tables[tableIndex].enabled = true;
+    m_tables[tableIndex].state = TableState::Dirty;
+    m_tables[tableIndex].servedCustomer = true;
+    m_spawnTimers[tableIndex] = 0.0f;
+  }
+  UpdateEntranceCustomers(0.0f);
+}
+
+void TavernScene::ConfigureOrderBubblePreview() {
+  Reset(5.0f);
+  m_tutorialStep = TutorialStep::Complete;
+  m_table3Unlocked = true;
+  for (int tableIndex = 0; tableIndex < CustomerTableCount(); ++tableIndex) {
+    m_tables[tableIndex].enabled = true;
+    m_tables[tableIndex].state = TableState::WaitingOrder;
+    TakeOrder(tableIndex);
+  }
+}
+
+bool TavernScene::RunOrderBubbleRegression(std::string &failure) const {
+  failure.clear();
+  const auto fail = [&](const char *reason) {
+    failure = reason;
+    return false;
+  };
+  if (!m_ready)
+    return fail("Tavern mesh resources are not ready");
+
+  // 実行中の営業を変更せず、実際の接客操作と描画経路を検証する。
+  TavernScene probe;
+  probe.m_ready = true;
+  probe.m_orderBubbleMeshId = m_orderBubbleMeshId;
+  probe.m_orderBubbleBorderMeshId = m_orderBubbleBorderMeshId;
+  probe.m_filledMugMeshId = m_filledMugMeshId;
+  probe.m_aleMeshId = m_aleMeshId;
+  probe.m_foamMeshId = m_foamMeshId;
+  const auto mugIndex = static_cast<std::size_t>(TavernAsset::Mug);
+  probe.m_tavernAssetMeshIds[mugIndex] = m_tavernAssetMeshIds[mugIndex];
+  ViewContext view{};
+  const auto bubbleCount = [&]() {
+    FrameData frame;
+    probe.BuildFrame(frame, view);
+    return std::count_if(frame.opaqueItems.begin(), frame.opaqueItems.end(),
+                         [&](const auto &item) {
+                           return item.meshId == m_orderBubbleMeshId;
+                         });
+  };
+  probe.Reset();
+  if (bubbleCount() != 0)
+    return fail("Unheard orders must not reveal a bubble");
+  probe.ConfigureOrderBubblePreview();
+  for (TableSlot &table : probe.m_tables) {
+    if (!table.speech.empty())
+      return fail("Accepted order must not repeat its text in the TABLE card");
+    table.speechTimer = 0.0f;
+  }
+  if (bubbleCount() != 3)
+    return fail("All three accepted orders must outlast the speech timer");
+
+  for (const float yaw : {0.0f, XM_PIDIV2, XM_PI}) {
+    for (const float pitch : {-1.05f, 0.0f, 1.05f}) {
+      view.cameraYaw = yaw;
+      view.cameraPitch = pitch;
+      FrameData frame;
+      probe.BuildFrame(frame, view);
+      int bubbles = 0;
+      for (size_t i = 0; i < frame.opaqueItems.size(); ++i) {
+        const auto &item = frame.opaqueItems[i];
+        if (item.meshId != m_orderBubbleMeshId)
+          continue;
+        const XMVECTOR normal = XMVector3TransformNormal(
+            XMVectorSet(0, 0, -1, 0), item.world);
+        const XMVECTOR forward = XMVectorSet(std::cos(pitch) * std::sin(yaw),
+            std::sin(pitch), std::cos(pitch) * std::cos(yaw), 0);
+        XMFLOAT3 anchor;
+        XMStoreFloat3(&anchor, item.world.r[3]);
+        if (bubbles >= 3 ||
+            XMVectorGetX(XMVector3Dot(normal, forward)) > -0.999f ||
+            std::abs(anchor.x - kTableInteractions[bubbles].x) > 0.001f ||
+            std::abs(anchor.y - 2.18f) > 0.001f)
+          return fail("Order bubble detached from its customer or camera");
+        const auto &mugIds = probe.m_tavernAssetMeshIds[mugIndex];
+        const uint32_t iconMesh = mugIds.empty() ? m_filledMugMeshId : mugIds.front();
+        if (i + 2 >= frame.opaqueItems.size() ||
+            frame.opaqueItems[i + 2].meshId != iconMesh)
+          return fail("Order bubble is missing its actual mug model");
+        ++bubbles;
+      }
+      if (bubbles != 3)
+        return fail("Camera movement changed the number of orders");
+    }
+  }
+  probe.m_tavernAssetMeshIds[mugIndex].clear();
+  if (bubbleCount() != 3)
+    return fail("Missing imported mug must retain fallback order bubbles");
+  probe.m_heldItem = HeldItem::FilledMug;
+  probe.m_aleFill = 0.90f;
+  probe.ServeAle(0);
+  if (bubbleCount() != 2)
+    return fail("Serving must remove only that customer's order bubble");
+  probe.TriggerWalkout(1);
+  if (bubbleCount() != 1)
+    return fail("A walkout must remove only that customer's order bubble");
+  probe.m_tables[2].state = TableState::Dirty;
+  if (bubbleCount() != 0)
+    return fail("Dirty tables must not keep an order bubble");
+  probe.ConfigureOrderBubblePreview();
+  probe.BeginNextDay();
+  if (bubbleCount() != 0)
+    return fail("Next day must clear order bubbles");
+  probe.ConfigureOrderBubblePreview();
+  probe.Reset();
+  if (bubbleCount() != 0)
+    return fail("New Game must clear order bubbles");
+  return true;
+}
+
+bool TavernScene::RunEntranceWaitingRegression(std::string &failure) {
+  // 実際のUpdateと操作経路を使い、実行中の営業データには触れない。
+  TavernScene probe;
+  failure.clear();
+  const auto fail = [&](const char *reason) {
+    failure = reason;
+    return false;
+  };
+  const auto setup = [&]() {
+    probe.Reset(5.0f);
+    probe.m_tutorialStep = TutorialStep::Complete;
+    probe.m_gold = 50;
+    probe.m_cleanMugs = probe.TotalMugs() - 1;
+    probe.m_tables[0].state = TableState::Dirty;
+    probe.m_tables[0].servedCustomer = true;
+    probe.m_spawnTimers[0] = 0.0f;
+  };
+  const auto tick = [&](float seconds) {
+    Action action = Action::None;
+    while (seconds > 0.0f) {
+      const float dt = std::min(seconds, 0.25f);
+      action = probe.Update(dt, {0.0f, 0.0f, 1.3f}, false, false, false);
+      seconds -= dt;
+    }
+    return action;
+  };
+  const auto mugCount = [&]() {
+    int count = probe.m_cleanMugs + (probe.m_heldItem != HeldItem::None ? 1 : 0);
+    for (const MugState &mug : probe.m_counterMugs)
+      count += mug.item != HeldItem::None ? 1 : 0;
+    for (const TableSlot &table : probe.m_tables)
+      count += table.state == TableState::Dirty || table.state == TableState::Eating ||
+                       (table.state == TableState::Leaving && table.servedCustomer)
+                   ? 1 : 0;
+    return count;
+  };
+
+  setup();
+  probe.m_tables[0].state = TableState::Eating;
+  probe.m_tables[0].stateTimer = 0.25f;
+  tick(0.25f + CustomerTravelSeconds(0) + probe.CustomerSpawnDelay(0) + 0.25f);
+  if (probe.m_tables[0].state != TableState::Dirty ||
+      probe.m_entranceCustomers[0].state != EntranceState::Waiting ||
+      mugCount() != probe.TotalMugs())
+    return fail("食事と退店の後、汚れた卓への来客が開始しない");
+
+  setup();
+  tick(1.0f);
+  if (probe.m_entranceCustomers[0].state != EntranceState::Waiting ||
+      probe.m_tables[0].state != TableState::Dirty || mugCount() != probe.TotalMugs() ||
+      probe.m_entranceCustomers[1].state != EntranceState::None ||
+      probe.m_entranceCustomers[2].state != EntranceState::None)
+    return fail("汚れた卓の入口待機、未開放卓、またはジョッキ数が不正");
+
+  probe.Update(0.0f, kManagementTableInteraction, true, false, false);
+  const float waited = probe.m_entranceCustomers[0].waitedSeconds;
+  if (!probe.ManagementMenuOpen())
+    return fail("管理台の操作でメニューが開かない");
+  tick(40.0f);
+  if (probe.m_entranceCustomers[0].waitedSeconds != waited || probe.Gold() != 50)
+    return fail("管理メニュー中に入店待ち時間または罰金が進んだ");
+  probe.Update(0.0f, kManagementTableInteraction, true, false, false);
+  probe.Update(0.25f, kTableInteractions[0], true, false, false);
+  tick(0.25f);
+  if (probe.m_entranceCustomers[0].state != EntranceState::None ||
+      probe.m_tables[0].state != TableState::Arriving ||
+      probe.m_heldItem != HeldItem::DirtyMug || probe.m_heldMugTableIndex != 0 ||
+      mugCount() != probe.TotalMugs() || probe.Gold() != 50 || probe.Walkouts() != 0)
+    return fail("回収後の案内でジョッキが失われた、または不要な罰金が発生");
+  tick(CustomerTravelSeconds(0) + 0.25f);
+  if (probe.m_tables[0].state != TableState::WaitingOrder)
+    return fail("入口からの移動後に注文可能な状態にならない");
+  probe.Update(0.25f, kWashBasinInteraction, true, false, false);
+  for (int i = 0; i < 5; ++i)
+    probe.Update(0.25f, kWashBasinInteraction, false, true, false);
+  if (probe.m_heldItem != HeldItem::EmptyMug ||
+      probe.TableCompletedCycles(0) != 1 || mugCount() != probe.TotalMugs())
+    return fail("待機客を案内した後の洗浄サイクルが壊れた");
+
+  setup();
+  probe.m_spawnTimers[0] = 4.0f;
+  tick(1.0f);
+  probe.CollectDirtyMug(0);
+  if (std::abs(probe.m_spawnTimers[0] - 3.0f) > 0.001f)
+    return fail("早めの回収で来客タイマーが再設定された");
+  tick(3.0f);
+  if (probe.m_tables[0].state != TableState::Arriving)
+    return fail("清掃済みの卓へ来客しない");
+
+  setup();
+  tick(kEntranceWaitSeconds + 0.25f);
+  if (probe.m_entranceCustomers[0].state != EntranceState::Leaving ||
+      probe.Gold() != 30 || probe.Walkouts() != 1 ||
+      probe.m_tables[0].state != TableState::Dirty || mugCount() != probe.TotalMugs())
+    return fail("待機満了時の20 G損失、退店、または汚れたジョッキの保持が不正");
+  tick(0.5f);
+  if (probe.Gold() != 30 || probe.Walkouts() != 1)
+    return fail("同じ待機客の罰金が重複した");
+  tick(kEntranceLeaveSeconds + probe.CustomerSpawnDelay(0));
+  if (probe.m_entranceCustomers[0].state != EntranceState::Waiting ||
+      probe.Gold() != 30 || probe.Walkouts() != 1)
+    return fail("退店後、汚れた卓への次の来客が止まった");
+
+  setup();
+  probe.m_gold = 5;
+  probe.AleSupply().current = 0;
+  tick(kEntranceWaitSeconds + 0.25f);
+  if (probe.Gold() != 0 || probe.Walkouts() != 1)
+    return fail("残高不足時の罰金が負債または二重計上になった");
+  probe.BeginNextDay();
+  if (probe.m_entranceCustomers[0].state != EntranceState::None ||
+      probe.AleStock() != kEmergencyAleFloor || probe.Walkouts() != 0 ||
+      mugCount() != probe.TotalMugs())
+    return fail("翌朝の入店待ちリセットまたは資金不足救済が不正");
+
+  setup();
+  probe.m_gold = 0;
+  tick(kEntranceWaitSeconds + 0.25f);
+  if (probe.Gold() != 0 || probe.Walkouts() != 1)
+    return fail("残高0で罰金処理が壊れた");
+
+  setup();
+  tick(1.0f);
+  probe.SetBusinessHour(0.5f);
+  probe.Update(0.25f, {0.0f, 0.0f, 1.3f}, false, false, true);
+  if (tick(2.0f) != Action::SleepUntilMorning || probe.Gold() != 50 ||
+      probe.Walkouts() != 0 || probe.m_tables[0].state != TableState::Dirty)
+    return fail("閉店時の待機客が就寝を妨げた、または罰金が発生した");
+
+  setup();
+  probe.m_tutorialStep = TutorialStep::CollectMug;
+  tick(60.0f);
+  if (probe.m_entranceCustomers[0].state != EntranceState::Waiting ||
+      probe.m_entranceCustomers[0].waitedSeconds != 0.0f || probe.Gold() != 50)
+    return fail("初回研修中に入口客が消えた、または待機時間が進んだ");
+  probe.m_tutorialStep = TutorialStep::Complete;
+  tick(kEntranceWaitSeconds);
+  if (probe.Gold() != 30 || probe.Walkouts() != 1)
+    return fail("研修完了後に待機時間が再開しない");
+
+  setup();
+  probe.m_table3Unlocked = true;
+  probe.m_extraMugLevel = 1;
+  probe.m_cleanMugs = 0;
+  for (int i = 0; i < 3; ++i) {
+    probe.m_tables[i].enabled = true;
+    probe.m_tables[i].state = TableState::Dirty;
+    probe.m_spawnTimers[i] = 0.0f;
+  }
+  tick(1.0f);
+  probe.Update(0.25f, kTableInteractions[2], true, false, false);
+  tick(0.25f);
+  if (probe.m_entranceCustomers[0].state != EntranceState::Waiting ||
+      probe.m_entranceCustomers[1].state != EntranceState::Waiting ||
+      probe.m_entranceCustomers[2].state != EntranceState::None ||
+      probe.m_tables[2].state != TableState::Arriving || mugCount() != 3)
+    return fail("三卓目の回収が別の待機客またはジョッキを変更した");
+  probe.Reset();
+  for (const EntranceCustomer &customer : probe.m_entranceCustomers)
+    if (customer.state != EntranceState::None)
+      return fail("New Game後に待機客が残った");
+  return true;
+}
+
 void TavernScene::TakeOrder(int tableIndex) {
   TableSlot &table = m_tables[tableIndex];
   if (CanServeCustomers() && table.state == TableState::WaitingOrder) {
     table.state = TableState::WaitingAle;
-    table.speech = "エールを一杯頼む！";
-    table.speechTimer = 2.6f;
-    m_feedbackText = "注文を受けた：水鏡エール";
+    // 注文内容は頭上の模型で表示し、苦情などの台詞は従来のHUDに残す。
+    table.speech.clear();
+    table.speechTimer = 0.0f;
+    m_feedbackText = "注文を受けた";
     m_feedbackTimer = 1.6f;
     if (m_tutorialStep == TutorialStep::TakeOrder) {
       m_tutorialTableIndex = tableIndex;
@@ -1441,7 +1893,7 @@ void TavernScene::CollectDirtyMug(int tableIndex) {
   m_heldMugTableIndex = tableIndex;
   table = {};
   table.enabled = true;
-  m_spawnTimers[tableIndex] = CustomerSpawnDelay(tableIndex);
+  // 来客計時はDirtyへ遷移した時点から継続する。回収で待ち直させない。
   m_cycleAwaitingWash = true;
   if (m_tutorialStep == TutorialStep::CollectMug) {
     m_tutorialTableIndex = tableIndex;
@@ -1486,7 +1938,7 @@ void TavernScene::FinishWashing() {
 void TavernScene::TriggerWalkout(int tableIndex) {
   TableSlot &table = m_tables[tableIndex];
   table.state = TableState::Leaving;
-  table.stateTimer = 0.8f;
+  table.stateTimer = CustomerTravelSeconds(tableIndex);
   table.servedCustomer = false;
   table.speech = "もう待てない！";
   table.speechTimer = 1.4f;
@@ -1564,6 +2016,8 @@ bool TavernScene::HasActiveCustomers() const {
     const TableSlot &table = m_tables[tableIndex];
     if (!table.enabled)
       continue;
+    if (m_entranceCustomers[tableIndex].state != EntranceState::None)
+      return true;
     if (table.state != TableState::Empty && table.state != TableState::Dirty)
       return true;
   }
@@ -1798,7 +2252,8 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
   const float dt = std::clamp(deltaSeconds, 0.0f, 0.25f);
   const TableState prototypeCustomerState = m_tables[0].state;
   m_customerNpc.Update(dt, prototypeCustomerState == TableState::Arriving ||
-                               prototypeCustomerState == TableState::Leaving);
+                               prototypeCustomerState == TableState::Leaving ||
+                               m_entranceCustomers[0].state == EntranceState::Leaving);
   m_interactionCooldown = std::max(0.0f, m_interactionCooldown - dt);
   m_feedbackTimer = std::max(0.0f, m_feedbackTimer - dt);
   if (m_feedbackTimer <= 0.0f)
@@ -1945,11 +2400,6 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
         continue;
       switch (table.state) {
       case TableState::Empty:
-        if (m_shiftState == ShiftState::Running) {
-          m_spawnTimers[tableIndex] -= dt;
-          if (m_spawnTimers[tableIndex] <= 0.0f)
-            SpawnCustomer(tableIndex);
-        }
         break;
       case TableState::Arriving:
         table.stateTimer -= dt;
@@ -1974,7 +2424,7 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
         table.stateTimer -= dt;
         if (table.stateTimer <= 0.0f) {
           table.state = TableState::Leaving;
-          table.stateTimer = 0.8f;
+          table.stateTimer = CustomerTravelSeconds(tableIndex);
           table.speech = "また来るよ！";
           table.speechTimer = 0.8f;
         }
@@ -1986,6 +2436,7 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
             table.state = TableState::Dirty;
             table.speech.clear();
             table.speechTimer = 0.0f;
+            m_spawnTimers[tableIndex] = CustomerSpawnDelay(tableIndex);
           } else {
             table = {};
             table.enabled = true;
@@ -2004,6 +2455,7 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
         TriggerWalkout(tableIndex);
       }
     }
+    UpdateEntranceCustomers(dt);
   }
 
   if (m_shiftState == ShiftState::Closing && !HasActiveCustomers())
@@ -2363,40 +2815,86 @@ void TavernScene::BuildFrame(FrameData &frame, const ViewContext &view) const {
     const TableState tableState = m_tables[tableIndex].state;
     const bool customerVisible =
         tableState != TableState::Empty && tableState != TableState::Dirty;
+    const auto drawCustomer = [&](const XMFLOAT3 &position, float yaw) {
+      if (tableIndex == 0 && ImportedCustomerReady()) {
+        m_customerNpc.BuildFrame(frame, position, yaw);
+      } else {
+        // 入口でも接地する全身の代替モデル。実モデルと同じ約1.62 mに揃える。
+        pushMesh(m_customerBodyMeshId, 0.46f, 0.70f, 0.40f, position.x,
+                 position.y + 0.93f, position.z);
+        pushMesh(m_customerHeadMeshId, 0.34f, 0.34f, 0.34f, position.x,
+                 position.y + 1.40f, position.z);
+        pushMesh(m_customerHairMeshId, 0.36f, 0.18f, 0.36f, position.x,
+                 position.y + 1.53f, position.z);
+        for (const float side : {-1.0f, 1.0f}) {
+          const XMFLOAT3 offset =
+              rotateHorizontalOffset(side * 0.13f, 0.0f, yaw);
+          pushMesh(m_customerBodyMeshId, 0.16f, 0.60f, 0.18f,
+                   position.x + offset.x, position.y + 0.30f, position.z + offset.z);
+        }
+      }
+    };
     if (customerVisible) {
       const float customerZ = tableIndex == 2 ? 5.12f : 5.28f;
-      if (tableIndex == 0 && ImportedCustomerReady()) {
-        float animatedCustomerZ = customerZ;
-        float customerYaw = XM_PI;
-        if (tableState == TableState::Arriving) {
-          const float progress =
-              1.0f -
-              std::clamp(m_tables[tableIndex].stateTimer / 0.8f, 0.0f, 1.0f);
-          animatedCustomerZ = 4.0f + (customerZ - 4.0f) * progress;
-          customerYaw = 0.0f;
-        } else if (tableState == TableState::Leaving) {
-          const float progress =
-              1.0f -
-              std::clamp(m_tables[tableIndex].stateTimer / 0.8f, 0.0f, 1.0f);
-          animatedCustomerZ = customerZ + (4.0f - customerZ) * progress;
-        }
-        m_customerNpc.BuildFrame(
-            frame, {tableX[tableIndex], 0.0f, animatedCustomerZ}, customerYaw);
-      } else {
-        pushMesh(m_customerBodyMeshId, 0.58f, 0.84f, 0.58f, tableX[tableIndex],
-                 1.16f, customerZ);
-        pushMesh(m_customerHeadMeshId, 0.46f, 0.46f, 0.46f, tableX[tableIndex],
-                 1.79f, customerZ - 0.06f);
-        pushMesh(m_customerHairMeshId, 0.48f, 0.23f, 0.48f, tableX[tableIndex],
-                 1.97f, customerZ - 0.06f);
-      }
-      if (tableState == TableState::WaitingOrder ||
-          tableState == TableState::WaitingAle)
+      float customerYaw = XM_PI;
+      XMFLOAT3 customerPosition = {tableX[tableIndex], 0.0f, customerZ};
+      if (tableState == TableState::Arriving || tableState == TableState::Leaving)
+        customerPosition = CustomerRoutePosition(
+            tableIndex, m_tables[tableIndex].stateTimer,
+            tableState == TableState::Leaving, customerYaw);
+      drawCustomer(customerPosition, customerYaw);
+      if (tableState == TableState::WaitingOrder)
         pushMesh(m_glowMeshId, 0.16f, 0.52f, 0.16f, tableX[tableIndex], 2.72f,
                  customerZ - 0.10f);
+      if (tableState == TableState::WaitingAle) {
+        // 吹き出しと模型を同じカメラ基底に置き、どの方向からも読めるようにする。
+        const XMMATRIX bubbleWorld =
+            XMMatrixRotationRollPitchYaw(-view.cameraPitch, view.cameraYaw, 0.0f) *
+            XMMatrixTranslation(customerPosition.x, customerPosition.y + 2.18f,
+                                customerPosition.z);
+        frame.opaqueItems.push_back({m_orderBubbleMeshId, bubbleWorld});
+        frame.opaqueItems.push_back({m_orderBubbleBorderMeshId,
+            XMMatrixScaling(1.08f, 1.08f, 1.0f) *
+            XMMatrixTranslation(0.0f, 0.0f, 0.015f) * bubbleWorld});
+        const size_t iconStart = frame.opaqueItems.size();
+        pushStateMug(HeldItem::FilledMug, {0.0f, 0.0f, 0.0f}, 0.90f, 0.04f,
+                     -0.60f);
+        // 模型を面より手前に置く際の視差を補正し、画面端でも中央に収める。
+        const XMVECTOR localEye = XMVector3TransformCoord(
+            XMLoadFloat3(&view.cameraPosition), XMMatrixInverse(nullptr, bubbleWorld));
+        constexpr float iconDepth = 0.28f;
+        const float eyeDepth = -XMVectorGetZ(localEye);
+        const float parallax = eyeDepth > iconDepth ? iconDepth / eyeDepth : 0.0f;
+        const XMMATRIX iconWorld = XMMatrixScaling(0.90f, 0.90f, 0.90f) *
+            XMMatrixRotationX(-0.30f) *
+            XMMatrixTranslation(XMVectorGetX(localEye) * parallax,
+                                -0.015f + XMVectorGetY(localEye) * parallax,
+                                -iconDepth) *
+            bubbleWorld;
+        for (size_t i = iconStart; i < frame.opaqueItems.size(); ++i)
+          frame.opaqueItems[i].world *= iconWorld;
+      }
     }
 
-    if (tableState == TableState::Eating || tableState == TableState::Dirty) {
+    const EntranceCustomer &waiting = m_entranceCustomers[tableIndex];
+    if (waiting.state != EntranceState::None) {
+      XMFLOAT3 position = EntrancePosition(tableIndex);
+      if (waiting.state == EntranceState::Leaving)
+        position.z -= (1.0f - std::clamp(waiting.leaveTimer /
+                                          kEntranceLeaveSeconds, 0.0f, 1.0f)) * 1.8f;
+      drawCustomer(position, waiting.state == EntranceState::Leaving ? XM_PI : 0.0f);
+      if (waiting.state == EntranceState::Waiting) {
+        const float progress = waiting.waitedSeconds / kEntranceWaitSeconds;
+        pushMesh(m_darkWoodMeshId, 0.86f, 0.10f, 0.08f,
+                 position.x, 2.35f, position.z);
+        if (progress > 0.0f)
+          pushMesh(m_glowMeshId, 0.80f * progress, 0.06f, 0.10f,
+                   position.x - 0.40f + 0.40f * progress, 2.35f, position.z);
+      }
+    }
+
+    if (tableState == TableState::Eating || tableState == TableState::Dirty ||
+        (tableState == TableState::Leaving && m_tables[tableIndex].servedCustomer)) {
       const XMFLOAT3 tableMugPosition = {tableX[tableIndex],
                                          hasImportedMug ? 1.18f : 1.27f, 4.32f};
       if (tableState == TableState::Eating)
@@ -3239,7 +3737,7 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
                 businessMinutes / 60, businessMinutes % 60, m_gold);
   draw->AddText(ImVec2(50.0f, 76.0f), TavernUiColor(0.95f, 0.88f, 0.78f, 1.0f),
                 line);
-  std::snprintf(line, sizeof(line), "%s　提供 %d　退店 %d / 3",
+  std::snprintf(line, sizeof(line), "%s　提供 %d　退店 %d",
                 CustomerTrafficName(), m_servedCustomers, m_walkouts);
   draw->AddText(ImVec2(50.0f, 106.0f), TavernUiColor(0.82f, 0.76f, 0.68f, 1.0f),
                 line);
@@ -3268,6 +3766,9 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
   }
   for (int tableIndex = 0; tableIndex < visibleTableCount; ++tableIndex) {
     const TableSlot &table = m_tables[tableIndex];
+    const EntranceCustomer &entrance = m_entranceCustomers[tableIndex];
+    const bool waitingAtEntrance = entrance.state == EntranceState::Waiting;
+    const bool leavingEntrance = entrance.state == EntranceState::Leaving;
     const float cardX = orderMin.x + tableCardWidth * tableIndex;
     draw->PushClipRect(ImVec2(cardX + 2.0f, orderMin.y + 2.0f),
                        ImVec2(cardX + tableCardWidth - 2.0f, orderMax.y - 2.0f),
@@ -3276,38 +3777,49 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
                   table.enabled ? "" : "  準備中");
     draw->AddText(ImVec2(cardX + 18.0f, orderMin.y + 10.0f),
                   TavernUiColor(1.0f, 0.84f, 0.62f, 1.0f), line);
-    const char *orderText = !table.enabled
+    const char *orderText = waitingAtEntrance ? "入口待ち／要回収"
+                           : leavingEntrance ? "入口の客が退店中"
+                           : !table.enabled
                                 ? "初回研修後に開放"
-                                : (table.state == TableState::WaitingAle
-                                       ? "注文：水鏡エール"
-                                       : GetTableStateName(table.state));
+                                : GetTableStateName(table.state);
     draw->AddText(ImVec2(cardX + 18.0f, orderMin.y + 32.0f),
                   TavernUiColor(0.94f, 0.87f, 0.77f, 1.0f), orderText);
-    std::snprintf(line, sizeof(line), "満足度 %.0f",
-                  std::clamp(table.satisfaction, 0.0f, 100.0f));
+    if (waitingAtEntrance)
+      std::snprintf(line, sizeof(line), "待機 %.0f / %.0f秒",
+                    entrance.waitedSeconds, kEntranceWaitSeconds);
+    else
+      std::snprintf(line, sizeof(line), "満足度 %.0f",
+                    std::clamp(table.satisfaction, 0.0f, 100.0f));
     draw->AddText(ImVec2(cardX + 18.0f, orderMin.y + 54.0f),
                   TavernUiColor(0.82f, 0.76f, 0.68f, 1.0f), line);
     const ImVec2 satMin(cardX + 18.0f, orderMin.y + 74.0f);
     const ImVec2 satMax(cardX + tableCardWidth - 18.0f, orderMin.y + 82.0f);
     draw->AddRectFilled(satMin, satMax,
                         TavernUiColor(0.15f, 0.11f, 0.08f, 1.0f), 4.0f);
-    const float satisfaction =
-        table.enabled ? std::clamp(table.satisfaction / 100.0f, 0.0f, 1.0f)
-                      : 0.0f;
+    const float satisfaction = waitingAtEntrance
+        ? std::clamp(entrance.waitedSeconds / kEntranceWaitSeconds, 0.0f, 1.0f)
+        : (table.enabled ? std::clamp(table.satisfaction / 100.0f, 0.0f, 1.0f)
+                         : 0.0f);
     const ImU32 satisfactionColor =
-        satisfaction < 0.35f ? TavernUiColor(0.92f, 0.22f, 0.14f, 1.0f)
-                             : TavernUiColor(0.28f, 0.78f, 0.48f, 1.0f);
+        waitingAtEntrance
+            ? (satisfaction >= 0.75f ? TavernUiColor(0.92f, 0.22f, 0.14f, 1.0f)
+                                     : TavernUiColor(1.0f, 0.65f, 0.20f, 1.0f))
+            : (satisfaction < 0.35f ? TavernUiColor(0.92f, 0.22f, 0.14f, 1.0f)
+                                    : TavernUiColor(0.28f, 0.78f, 0.48f, 1.0f));
     draw->AddRectFilled(
         satMin,
         ImVec2(satMin.x + (satMax.x - satMin.x) * satisfaction, satMax.y),
         satisfactionColor, 4.0f);
-    if (!table.speech.empty() && table.speechTimer > 0.0f) {
+    if (waitingAtEntrance || (!table.speech.empty() && table.speechTimer > 0.0f)) {
       const ImVec2 speechMin(cardX + 18.0f, orderMin.y + 88.0f);
       const ImVec2 speechMax(cardX + tableCardWidth - 18.0f,
                              orderMin.y + 112.0f);
       draw->AddRectFilled(speechMin, speechMax,
                           TavernUiColor(0.18f, 0.12f, 0.075f, 0.96f), 7.0f);
-      const std::string speechText = "「" + table.speech + "」";
+      const std::string speechText = waitingAtEntrance
+          ? (m_tutorialStep == TutorialStep::Complete ? "満了：最大20G損失"
+                                                     : "研修中：時間停止")
+          : "「" + table.speech + "」";
       draw->AddText(ImVec2(speechMin.x + 8.0f, speechMin.y + 3.0f),
                     TavernUiColor(1.0f, 0.91f, 0.72f, 1.0f),
                     speechText.c_str());

@@ -168,6 +168,10 @@ public:
   void ConfigureSuppliesSmokeState(int aleStock, int gold);
   void ConfigureUpgradesSmokeState(int gold, int aleStock,
                                    bool tutorialComplete);
+  void ConfigureEntranceWaitingPreview();
+  static bool RunEntranceWaitingRegression(std::string &failure);
+  void ConfigureOrderBubblePreview();
+  bool RunOrderBubbleRegression(std::string &failure) const;
   int ServedCustomers() const { return m_servedCustomers; }
   int Walkouts() const { return m_walkouts; }
   int TableCompletedCycles(int tableIndex) const {
@@ -205,6 +209,7 @@ private:
     Dirty,
   };
   enum class HeldItem { None, EmptyMug, FilledMug, DirtyMug };
+  enum class EntranceState { None, Waiting, Leaving };
   enum class WorkState { None, PouringAle, WashingMug };
   enum class ManagementPage { Closed, Root, Supplies, Upgrades };
   enum class ManagementSelection { None, Supplies, Upgrades };
@@ -257,6 +262,12 @@ private:
     bool lastPourPerfect = false;
   };
 
+  struct EntranceCustomer {
+    EntranceState state = EntranceState::None;
+    float waitedSeconds = 0.0f;
+    float leaveTimer = 0.0f;
+  };
+
   struct SupplyState {
     int current = 0;
     int capacity = 0;
@@ -265,6 +276,8 @@ private:
   static const char *GetTableStateName(TableState state);
   static const char *GetHeldItemName(HeldItem item);
   void SpawnCustomer(int tableIndex);
+  void UpdateEntranceCustomers(float dt);
+  void DismissEntranceCustomer(int tableIndex, bool penalize);
   void TakeOrder(int tableIndex);
   void PickUpEmptyMug();
   void ReturnEmptyMug();
@@ -319,6 +332,8 @@ private:
   uint32_t m_woodMeshId = UINT32_MAX;
   uint32_t m_darkWoodMeshId = UINT32_MAX;
   uint32_t m_glowMeshId = UINT32_MAX;
+  uint32_t m_orderBubbleMeshId = UINT32_MAX;
+  uint32_t m_orderBubbleBorderMeshId = UINT32_MAX;
   uint32_t m_customerBodyMeshId = UINT32_MAX;
   uint32_t m_customerHeadMeshId = UINT32_MAX;
   uint32_t m_customerHairMeshId = UINT32_MAX;
@@ -337,6 +352,7 @@ private:
 
   ShiftState m_shiftState = ShiftState::Running;
   std::array<TableSlot, 3> m_tables{};
+  std::array<EntranceCustomer, 3> m_entranceCustomers{};
   std::array<MugState, 2> m_counterMugs{};
   HeldItem m_heldItem = HeldItem::None;
   WorkState m_workState = WorkState::None;

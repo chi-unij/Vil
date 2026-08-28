@@ -649,6 +649,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         HasCommandLineSwitch(commandLine, L"--tavern-smoke");
     const bool tavernGameplaySmokeRequested =
         HasCommandLineSwitch(commandLine, L"--tavern-gameplay-smoke");
+    const bool tavernWaitingPreviewRequested =
+        HasCommandLineSwitch(commandLine, L"--tavern-waiting-preview");
+    const bool tavernOrderPreviewRequested =
+        HasCommandLineSwitch(commandLine, L"--tavern-order-preview");
     const bool tavernDaySmokeRequested =
         HasCommandLineSwitch(commandLine, L"--tavern-day-smoke");
     const bool tavernManagementSmokeRequested =
@@ -669,6 +673,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         static_cast<int>(tavernUpgradesSmokeRequested);
     const bool tavernRequested =
         HasCommandLineSwitch(commandLine, L"--tavern") ||
+        tavernWaitingPreviewRequested || tavernOrderPreviewRequested ||
         tavernThirdPersonRequested ||
         tavernSmokeRequested || tavernGameplaySmokeRequested ||
         tavernDaySmokeRequested || tavernManagementSmokeRequested ||
@@ -1288,6 +1293,37 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     if (tavernRequested && !playerAnimationSmokeRequested &&
         !bossMirrorPickupSmokeRequested)
       enterTavernMode();
+    if (tavernGameplaySmokeRequested) {
+      std::string waitingFailure;
+      if (!TavernScene::RunEntranceWaitingRegression(waitingFailure)) {
+        TraceAppEvent(("Tavern entrance regression: FAIL; " + waitingFailure).c_str());
+        applicationExitCode = 2;
+        requestQuit = true;
+      } else {
+        TraceAppEvent("Tavern entrance regression: PASS; dirty arrival, collection, "
+                      "timeout, gold floor, pause, closing, reset, tutorial, Table 3");
+      }
+      std::string bubbleFailure;
+      if (!tavernScene.RunOrderBubbleRegression(bubbleFailure)) {
+        TraceAppEvent(("Tavern order bubble regression: FAIL; " + bubbleFailure).c_str());
+        applicationExitCode = 2;
+        requestQuit = true;
+      } else {
+        TraceAppEvent("Tavern order bubble regression: PASS; acceptance, persistence, "
+                      "Table 3, billboard, mug model, fallback, serve, walkout, reset");
+      }
+    }
+    if (tavernWaitingPreviewRequested && tavernSmokeModeCount == 0) {
+      tavernScene.ConfigureEntranceWaitingPreview();
+      playerPreview.SetPosition({0.0f, 0.0f, 1.6f});
+      playerPreview.SetYaw(DirectX::XM_PI);
+      cam.SetYawPitch(DirectX::XM_PI, -0.06f);
+    }
+    if (tavernOrderPreviewRequested && tavernSmokeModeCount == 0) {
+      tavernScene.ConfigureOrderBubblePreview();
+      playerPreview.SetPosition({0.0f, 0.0f, -0.35f});
+      cam.SetYawPitch(0.0f, tavernFirstPersonEnabled ? -0.06f : -0.28f);
+    }
     if (tavernManagementSmokeRequested) {
       const DirectX::XMFLOAT3 managementPosition =
           tavernScene.ManagementInteractionPosition();
