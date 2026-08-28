@@ -1326,6 +1326,17 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         TraceAppEvent("Tavern Kitchen regression: PASS; mixed order, asynchronous "
                       "cooking, pause, serve, bowl wash, walkout, reset");
       }
+      std::string expansionFailure;
+      if (!TavernScene::RunExpansionRegression(expansionFailure)) {
+        TraceAppEvent(("Tavern expansion regression: FAIL; " + expansionFailure)
+                          .c_str());
+        applicationExitCode = 2;
+        requestQuit = true;
+      } else {
+        TraceAppEvent("Tavern expansion regression: PASS; 2-seat and 4-seat "
+                      "purchases, party capacity, rewards, movable layout, "
+                      "day persistence, new-game reset");
+      }
     }
     if (tavernWaitingPreviewRequested && tavernSmokeModeCount == 0) {
       tavernScene.ConfigureEntranceWaitingPreview();
@@ -1931,6 +1942,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         tavernManagementInput.nextPressed =
             ImGui::IsKeyPressed(ImGuiKey_RightArrow, false) ||
             input.GamepadButtonPressed(XINPUT_GAMEPAD_DPAD_RIGHT);
+        tavernManagementInput.upPressed =
+            ImGui::IsKeyPressed(ImGuiKey_UpArrow, false) ||
+            input.GamepadButtonPressed(XINPUT_GAMEPAD_DPAD_UP);
+        tavernManagementInput.downPressed =
+            ImGui::IsKeyPressed(ImGuiKey_DownArrow, false) ||
+            input.GamepadButtonPressed(XINPUT_GAMEPAD_DPAD_DOWN);
+        tavernManagementInput.rotateLeftPressed =
+            ImGui::IsKeyPressed(ImGuiKey_Q, false) ||
+            input.GamepadButtonPressed(XINPUT_GAMEPAD_LEFT_SHOULDER);
+        tavernManagementInput.rotateRightPressed =
+            ImGui::IsKeyPressed(ImGuiKey_R, false) ||
+            input.GamepadButtonPressed(XINPUT_GAMEPAD_RIGHT_SHOULDER);
         tavernManagementInput.confirmPressed =
             ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
             ImGui::IsKeyPressed(ImGuiKey_Space, false) ||
@@ -3383,7 +3406,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
               failTavernUpgradesSmoke(
                   "opening Upgrades changed Gold or purchase serial");
             } else {
-              TraceAppEvent("Tavern upgrades smoke: three-card page rendered");
+              TraceAppEvent("Tavern upgrades smoke: six-card page rendered");
               tavernScene.ConfigureUpgradesSmokeState(26, 0, true);
               tavernUpgradesSmokePhase =
                   TavernUpgradesSmokePhase::VerifyEmergencyReserve;
@@ -4516,7 +4539,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
             "D3D12 debug layer reported an error/corruption message");
       } else if (tavernUpgradesSmokeCompleted && !tavernUpgradesSmokeFailed) {
         std::ostringstream passMessage;
-        passMessage << "Tavern upgrades smoke: PASS; cards=3 confirmCancel=1 "
+        passMessage << "Tavern upgrades smoke: PASS; cards=6 confirmCancel=1 "
                        "emergencyReserve=1 "
                        "mugs=2>3 aleCapacity=6>7>8>9 noRefill=1 table3=open "
                        "ownedMaxedNoOp=1 nextDay=preserved reentry=preserved "

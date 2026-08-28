@@ -31,7 +31,10 @@ public:
     ExtraMug = 0,
     AleCapacity = 1,
     OpenTable3 = 2,
-    Count = 3,
+    ExpandTavern = 3,
+    FourSeatTable = 4,
+    PartySize = 5,
+    Count = 6,
   };
 
   enum class UpgradePurchaseBlockReason {
@@ -41,6 +44,8 @@ public:
     Maxed,
     TutorialRequired,
     EmergencyAleReserve,
+    ExpansionRequired,
+    FourSeatTableRequired,
   };
 
   struct ManagementUiDiagnostics {
@@ -48,9 +53,11 @@ public:
     bool rootRendered = false;
     bool suppliesCardRendered = false;
     bool upgradesCardRendered = false;
+    bool layoutCardRendered = false;
     bool suppliesPageRendered = false;
     bool aleCardRendered = false;
     bool upgradesPageRendered = false;
+    bool layoutPageRendered = false;
     bool upgradeCardsRendered = false;
     bool upgradeConfirmationRendered = false;
     bool backControlRendered = false;
@@ -72,6 +79,10 @@ public:
     int extraMugCapacity = 2;
     int aleCapacityLevel = 0;
     bool table3Unlocked = false;
+    bool tavernExpanded = false;
+    bool table4Unlocked = false;
+    bool layoutEditing = false;
+    int maximumPartySize = 1;
     bool upgradeCanPurchase = false;
     SupplyOrderBlockReason orderBlockReason =
         SupplyOrderBlockReason::ZeroQuantity;
@@ -86,6 +97,10 @@ public:
   struct ManagementInput {
     bool previousPressed = false;
     bool nextPressed = false;
+    bool upPressed = false;
+    bool downPressed = false;
+    bool rotateLeftPressed = false;
+    bool rotateRightPressed = false;
     bool confirmPressed = false;
     bool cancelPressed = false;
   };
@@ -167,6 +182,11 @@ public:
   bool ExtraMugOwned() const { return m_extraMugLevel > 0; }
   bool Table3Unlocked() const { return m_table3Unlocked; }
   bool Table3Enabled() const { return m_tables[2].enabled; }
+  bool TavernExpanded() const { return m_tavernExpanded; }
+  bool Table4Unlocked() const { return m_table4Unlocked; }
+  int MaximumPartySize() const { return m_maxPartySize; }
+  int TableCapacity(int tableIndex) const;
+  DirectX::XMFLOAT3 TablePosition(int tableIndex) const;
   bool AlePourInProgress() const;
   int PendingAleOrderQuantity() const { return m_aleOrderQuantity; }
   int AleUnitPrice() const;
@@ -181,6 +201,7 @@ public:
   void ConfigureKitchenPreview();
   bool RunOrderBubbleRegression(std::string &failure) const;
   static bool RunKitchenRegression(std::string &failure);
+  static bool RunExpansionRegression(std::string &failure);
   int ServedCustomers() const { return m_servedCustomers; }
   int Walkouts() const { return m_walkouts; }
   int TableCompletedCycles(int tableIndex) const {
@@ -231,8 +252,8 @@ private:
   enum class EntranceState { None, Waiting, Leaving };
   enum class WorkState { None, PouringAle, WashingDish };
   enum class KitchenState { Idle, Cooking, Ready };
-  enum class ManagementPage { Closed, Root, Supplies, Upgrades };
-  enum class ManagementSelection { None, Supplies, Upgrades };
+  enum class ManagementPage { Closed, Root, Supplies, Upgrades, Layout };
+  enum class ManagementSelection { None, Supplies, Upgrades, Layout };
   enum class SupplyType : std::size_t { Ale, Count };
   enum class TavernAsset : std::size_t {
     Barrel,
@@ -272,6 +293,7 @@ private:
     OrderType order = OrderType::None;
     std::string speech;
     float speechTimer = 0.0f;
+    int partySize = 1;
   };
 
   struct MugState {
@@ -340,6 +362,14 @@ private:
   void AdjustAleOrderQuantity(int delta);
   bool TryOrderAle();
   int CustomerTableCount() const;
+  bool IsTableOwned(int tableIndex) const;
+  int PartySizeForTable(int tableIndex) const;
+  DirectX::XMFLOAT3 TableInteractionPosition(int tableIndex) const;
+  std::array<DirectX::XMFLOAT3, 5> CustomerRoute(int tableIndex) const;
+  float CustomerTravelSeconds(int tableIndex) const;
+  DirectX::XMFLOAT3 CustomerRoutePosition(int tableIndex,
+                                          float secondsRemaining,
+                                          bool leaving, float &yaw) const;
   int UpgradeLevel(UpgradeId upgrade) const;
   int UpgradeMaximumLevel(UpgradeId upgrade) const;
   int UpgradePrice(UpgradeId upgrade) const;
@@ -347,15 +377,23 @@ private:
   void RequestUpgradePurchase(UpgradeId upgrade);
   bool TryPurchaseUpgrade(UpgradeId upgrade);
   void ResetShiftRuntime(float startingHour);
+  void ConfigureDefaultTableLayout();
+  void RebuildCollisionColliders();
+  bool CanPlaceTable(int tableIndex,
+                     const DirectX::XMFLOAT3 &position) const;
+  bool TryMoveSelectedTable(float deltaX, float deltaZ);
+  void CancelLayoutEdit();
   void OpenManagementMenu();
   void OpenSuppliesPage();
   void OpenUpgradesPage();
+  void OpenLayoutPage();
   void BackToManagementRoot();
   void CloseManagementMenu();
   void DrawManagementUi(int viewportWidth, int viewportHeight);
   void DrawManagementRoot(int viewportWidth, int viewportHeight);
   void DrawSuppliesPage(int viewportWidth, int viewportHeight);
   void DrawUpgradesPage(int viewportWidth, int viewportHeight);
+  void DrawLayoutPage(int viewportWidth, int viewportHeight);
 
   uint32_t m_floorMeshId = UINT32_MAX;
   uint32_t m_wallMeshId = UINT32_MAX;
@@ -382,8 +420,11 @@ private:
   TavernCustomerPreview m_customerNpc;
 
   ShiftState m_shiftState = ShiftState::Running;
-  std::array<TableSlot, 3> m_tables{};
-  std::array<EntranceCustomer, 3> m_entranceCustomers{};
+  std::array<TableSlot, 4> m_tables{};
+  std::array<EntranceCustomer, 4> m_entranceCustomers{};
+  std::array<DirectX::XMFLOAT3, 4> m_tablePositions{};
+  std::array<float, 4> m_tableYaw{};
+  std::array<int, 4> m_tableCapacities{{2, 2, 2, 4}};
   std::array<MugState, 2> m_counterMugs{};
   HeldItem m_heldItem = HeldItem::None;
   WorkState m_workState = WorkState::None;
@@ -400,12 +441,14 @@ private:
   std::string m_nearbyPrompt;
   std::string m_feedbackText;
   float m_businessHour = 5.0f;
-  std::array<float, 3> m_spawnTimers{};
-  std::array<int, 3> m_tableCompletedCycles{};
+  std::array<float, 4> m_spawnTimers{};
+  std::array<int, 4> m_tableCompletedCycles{};
   std::array<SupplyState, static_cast<std::size_t>(SupplyType::Count)>
       m_supplies{};
   int m_aleOrderQuantity = 0;
   int m_selectedUpgradeIndex = 0;
+  int m_selectedLayoutTable = 0;
+  int m_maxPartySize = 1;
   int m_extraMugLevel = 0;
   float m_aleFill = 0.0f;
   float m_aleFoam = 0.0f;
@@ -433,6 +476,11 @@ private:
   bool m_primaryActionActive = false;
   bool m_lastPourPerfect = false;
   bool m_table3Unlocked = false;
+  bool m_tavernExpanded = false;
+  bool m_table4Unlocked = false;
+  bool m_layoutEditing = false;
+  DirectX::XMFLOAT3 m_layoutEditBackupPosition{};
+  float m_layoutEditBackupYaw = 0.0f;
   bool m_upgradeConfirmationOpen = false;
   bool m_upgradeConfirmBuySelected = false;
   bool m_importedArtReady = false;
