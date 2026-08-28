@@ -4379,23 +4379,51 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       }
       if (tavernGameplaySmokeRequested && !tavernGameplaySmokeLogged &&
           tavernScene.GameplaySmokeComplete()) {
-        const TavernCustomerPreview::ClipDiagnostics customerIdle =
-            tavernScene.CustomerIdleDiagnostics();
-        const TavernCustomerPreview::ClipDiagnostics customerWalk =
-            tavernScene.CustomerWalkDiagnostics();
-        const bool customerAnimationReady =
-            tavernScene.ImportedCustomerReady() &&
-            tavernScene.CustomerBonePaletteFinite() &&
-            tavernScene.CustomerSkeletonBoneCount() == 65 &&
-            tavernScene.CustomerMaterialPartCount() == 7 &&
-            customerIdle.loaded && customerWalk.loaded &&
-            std::abs(customerIdle.duration - 9.916667f) <= 0.01f &&
-            std::abs(customerWalk.duration - 0.95f) <= 0.01f &&
-            tavernScene.CustomerIdlePoseUpdateCount() > 0 &&
-            tavernScene.CustomerWalkPoseUpdateCount() > 0;
+        std::array<TavernCustomerPreview::ClipDiagnostics,
+                   TavernScene::CustomerModelCount>
+            customerIdle{};
+        std::array<TavernCustomerPreview::ClipDiagnostics,
+                   TavernScene::CustomerModelCount>
+            customerWalk{};
+        std::array<TavernCustomerPreview::ClipDiagnostics,
+                   TavernScene::CustomerModelCount>
+            customerSitting{};
+        constexpr std::array<size_t, TavernScene::CustomerModelCount>
+            expectedBoneCounts = {65, 67};
+        bool customerAnimationReady = tavernScene.ImportedCustomerReady() &&
+                                      tavernScene.CustomerBonePaletteFinite() &&
+                                      tavernScene
+                                          .CustomerAnimationInstancesIndependent();
+        for (size_t modelIndex = 0;
+             modelIndex < TavernScene::CustomerModelCount; ++modelIndex) {
+          customerIdle[modelIndex] =
+              tavernScene.CustomerIdleDiagnostics(modelIndex);
+          customerWalk[modelIndex] =
+              tavernScene.CustomerWalkDiagnostics(modelIndex);
+          customerSitting[modelIndex] =
+              tavernScene.CustomerSittingDiagnostics(modelIndex);
+          customerAnimationReady =
+              customerAnimationReady &&
+              tavernScene.CustomerSkeletonBoneCount(modelIndex) ==
+                  expectedBoneCounts[modelIndex] &&
+              tavernScene.CustomerMaterialPartCount(modelIndex) == 7 &&
+              customerIdle[modelIndex].loaded &&
+              customerWalk[modelIndex].loaded &&
+              customerSitting[modelIndex].loaded &&
+              std::abs(customerIdle[modelIndex].duration - 9.916667f) <=
+                  0.01f &&
+              std::abs(customerWalk[modelIndex].duration - 0.95f) <= 0.01f &&
+              customerSitting[modelIndex].duration > 0.1f &&
+              customerSitting[modelIndex].trackCount > 0 &&
+              tavernScene.CustomerIdlePoseUpdateCount(modelIndex) > 0 &&
+              tavernScene.CustomerWalkPoseUpdateCount(modelIndex) > 0 &&
+              tavernScene.CustomerSittingPoseUpdateCount(modelIndex) > 0;
+        }
         if (!customerAnimationReady) {
           TraceAppEvent(
-              "Tavern gameplay smoke: FAIL; npc1 animation gate incomplete");
+              "Tavern gameplay smoke: FAIL; model-only NPC roster, shared "
+              "Idle/Walk/Sitting animation, or per-instance pose isolation "
+              "gate incomplete");
           applicationExitCode = 2;
           tavernGameplaySmokeLogged = true;
           requestQuit = true;
@@ -4409,15 +4437,26 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                 << " served=" << tavernScene.ServedCustomers()
                 << " food=" << tavernScene.FoodServed()
                 << " walkouts=" << tavernScene.Walkouts()
-                << " npcParts=" << tavernScene.CustomerMaterialPartCount()
-                << " npcBones=" << tavernScene.CustomerSkeletonBoneCount()
-                << " npcIdle=" << customerIdle.duration << "s/"
-                << customerIdle.trackCount << " tracks"
-                << " npcWalk=" << customerWalk.duration << "s/"
-                << customerWalk.trackCount << " tracks"
-                << " npcPoseUpdates="
-                << tavernScene.CustomerIdlePoseUpdateCount() << "/"
-                << tavernScene.CustomerWalkPoseUpdateCount();
+                << " npcRoster=" << TavernScene::CustomerModelCount
+                << " poseIsolation=PASS";
+        for (size_t modelIndex = 0;
+             modelIndex < TavernScene::CustomerModelCount; ++modelIndex) {
+          message << " [" << tavernScene.CustomerModelLabel(modelIndex)
+                  << ":parts="
+                  << tavernScene.CustomerMaterialPartCount(modelIndex)
+                  << ",bones="
+                  << tavernScene.CustomerSkeletonBoneCount(modelIndex)
+                  << ",idle=" << customerIdle[modelIndex].duration << "s/"
+                  << customerIdle[modelIndex].trackCount
+                  << ",walk=" << customerWalk[modelIndex].duration << "s/"
+                  << customerWalk[modelIndex].trackCount << ",updates="
+                  << tavernScene.CustomerIdlePoseUpdateCount(modelIndex) << "/"
+                  << tavernScene.CustomerWalkPoseUpdateCount(modelIndex)
+                  << ",sitting=" << customerSitting[modelIndex].duration
+                  << "s/" << customerSitting[modelIndex].trackCount << "/"
+                  << tavernScene.CustomerSittingPoseUpdateCount(modelIndex)
+                  << "]";
+        }
         TraceAppEvent(message.str().c_str());
         tavernGameplaySmokeLogged = true;
         requestQuit = true;

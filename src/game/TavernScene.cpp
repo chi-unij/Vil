@@ -59,6 +59,9 @@ constexpr float kEntranceWaitSeconds = 30.0f;
 constexpr float kEntranceLeaveSeconds = 1.2f;
 constexpr int kEntranceTimeoutPenalty = 20;
 constexpr float kCustomerWalkSpeed = 1.6f;
+constexpr float kTwoSeatSittingYOffset = -0.25f;
+constexpr float kFourSeatSittingYOffset = -0.22f;
+constexpr float kFourSeatBenchOffset = 0.82f;
 constexpr float kCookSeconds = 6.0f;
 constexpr float kMugScaleXZ = 0.345f;
 constexpr float kMugScaleY = 0.465f;
@@ -915,17 +918,23 @@ XMFLOAT3 TavernScene::CustomerSeatPosition(int tableIndex, int guestIndex,
            .empty();
   if (TableCapacity(tableIndex) >= 4 && hasLongTable) {
     // 長机は円周配置にせず、片側二席ずつの固定アンカーを使う。
-    // 座りアニメーション導入までは立ち姿がベンチへ刺さらない外縁に置く。
+    // 長椅子の中心と専用の着座高さに合わせ、2人席とは別に補正する。
     constexpr std::array<XMFLOAT3, 4> seatOffsets = {
-        XMFLOAT3{-0.58f, 0.0f, 1.38f}, XMFLOAT3{0.58f, 0.0f, 1.38f},
-        XMFLOAT3{-0.58f, 0.0f, -1.38f}, XMFLOAT3{0.58f, 0.0f, -1.38f}};
+        XMFLOAT3{-0.58f, kFourSeatSittingYOffset,
+                 kFourSeatBenchOffset},
+        XMFLOAT3{0.58f, kFourSeatSittingYOffset,
+                 kFourSeatBenchOffset},
+        XMFLOAT3{-0.58f, kFourSeatSittingYOffset,
+                 -kFourSeatBenchOffset},
+        XMFLOAT3{0.58f, kFourSeatSittingYOffset,
+                 -kFourSeatBenchOffset}};
     const int seatIndex = std::clamp(guestIndex, 0,
                                      std::min(4, std::max(1, partySize)) - 1);
     const XMFLOAT3 local = seatOffsets[static_cast<std::size_t>(seatIndex)];
     const float yawCos = std::cos(tableYaw);
     const float yawSin = std::sin(tableYaw);
     yaw = tableYaw + (local.z > 0.0f ? XM_PI : 0.0f);
-    return {table.x + local.x * yawCos + local.z * yawSin, 0.0f,
+    return {table.x + local.x * yawCos + local.z * yawSin, local.y,
             table.z + local.z * yawCos - local.x * yawSin};
   }
 
@@ -933,7 +942,7 @@ XMFLOAT3 TavernScene::CustomerSeatPosition(int tableIndex, int guestIndex,
   const float angle = tableYaw + static_cast<float>(guestIndex) * XM_2PI /
                                      static_cast<float>(seats);
   yaw = angle + XM_PI;
-  return {table.x + std::sin(angle) * 1.05f, 0.0f,
+  return {table.x + std::sin(angle) * 1.05f, kTwoSeatSittingYOffset,
           table.z + std::cos(angle) * 1.05f};
 }
 
@@ -946,7 +955,8 @@ TavernScene::CustomerRoute(int tableIndex) const {
       tableIndex, 0, PartySizeForTable(tableIndex), seatYaw);
   return {EntrancePosition(tableIndex), XMFLOAT3{aisleX, 0.0f, 1.35f},
           XMFLOAT3{aisleX, 0.0f, 6.10f},
-          XMFLOAT3{seat.x, 0.0f, 6.10f}, seat};
+          XMFLOAT3{seat.x, 0.0f, 6.10f},
+          XMFLOAT3{seat.x, 0.0f, seat.z}};
 }
 
 float TavernScene::CustomerTravelSeconds(int tableIndex) const {
@@ -1379,7 +1389,6 @@ void TavernScene::Initialize(DxContext &dx) {
   const LoadedMesh cubeMesh = ProceduralMesh::CreateCube(1.0f);
   const LoadedMesh cylinderMesh =
       ProceduralMesh::CreateCylinder(0.5f, 1.0f, 20);
-  const LoadedMesh bodyMesh = ProceduralMesh::CreateCylinder(0.5f, 1.0f, 16);
   const LoadedMesh headMesh = ProceduralMesh::CreateSphere(0.5f, 10, 20);
 
   Material floorMaterial{};
@@ -1448,27 +1457,6 @@ void TavernScene::Initialize(DxContext &dx) {
   bubbleBorderMaterial.emissiveFactor = {0.035f, 0.015f, 0.005f};
   m_orderBubbleBorderMeshId =
       dx.CreateMeshResources(orderBubbleMesh, {}, bubbleBorderMaterial);
-
-  Material customerBodyMaterial{};
-  customerBodyMaterial.baseColorFactor = {0.16f, 0.42f, 0.52f, 1.0f};
-  customerBodyMaterial.metallicFactor = 0.0f;
-  customerBodyMaterial.roughnessFactor = 0.78f;
-  m_customerBodyMeshId =
-      dx.CreateMeshResources(bodyMesh, {}, customerBodyMaterial);
-
-  Material customerHeadMaterial{};
-  customerHeadMaterial.baseColorFactor = {0.92f, 0.72f, 0.52f, 1.0f};
-  customerHeadMaterial.metallicFactor = 0.0f;
-  customerHeadMaterial.roughnessFactor = 0.86f;
-  m_customerHeadMeshId =
-      dx.CreateMeshResources(headMesh, {}, customerHeadMaterial);
-
-  Material customerHairMaterial{};
-  customerHairMaterial.baseColorFactor = {0.075f, 0.032f, 0.016f, 1.0f};
-  customerHairMaterial.metallicFactor = 0.0f;
-  customerHairMaterial.roughnessFactor = 0.88f;
-  m_customerHairMeshId =
-      dx.CreateMeshResources(headMesh, {}, customerHairMaterial);
 
   Material mugMaterial{};
   mugMaterial.baseColorFactor = {0.48f, 0.50f, 0.47f, 1.0f};
@@ -1560,7 +1548,8 @@ void TavernScene::Initialize(DxContext &dx) {
                          : "[TavernScene] optimized art incomplete; procedural "
                            "fallback remains active\n");
 
-  m_customerNpc.Initialize(dx);
+  m_customerNpcs[0].Initialize(dx, "NPC1", "Assets/models/npc1.glb");
+  m_customerNpcs[1].Initialize(dx, "Remy NPC2", "Assets/models/Remy-npc2.glb");
 
   m_collisionColliders = {
       {CollisionSystem::ShapeType::Box,
@@ -1617,13 +1606,11 @@ void TavernScene::Initialize(DxContext &dx) {
 
   m_ready = m_floorMeshId != UINT32_MAX && m_wallMeshId != UINT32_MAX &&
             m_woodMeshId != UINT32_MAX && m_darkWoodMeshId != UINT32_MAX &&
-            m_glowMeshId != UINT32_MAX && m_customerBodyMeshId != UINT32_MAX &&
-            m_customerHeadMeshId != UINT32_MAX &&
-            m_customerHairMeshId != UINT32_MAX && m_mugMeshId != UINT32_MAX &&
-            m_filledMugMeshId != UINT32_MAX && m_dirtyMugMeshId != UINT32_MAX &&
-            m_dirtySpotMeshId != UINT32_MAX && m_aleMeshId != UINT32_MAX &&
-            m_foamMeshId != UINT32_MAX && m_stewMeshId != UINT32_MAX &&
-            m_metalMeshId != UINT32_MAX &&
+            m_glowMeshId != UINT32_MAX && ImportedCustomerReady() &&
+            m_mugMeshId != UINT32_MAX && m_filledMugMeshId != UINT32_MAX &&
+            m_dirtyMugMeshId != UINT32_MAX && m_dirtySpotMeshId != UINT32_MAX &&
+            m_aleMeshId != UINT32_MAX && m_foamMeshId != UINT32_MAX &&
+            m_stewMeshId != UINT32_MAX && m_metalMeshId != UINT32_MAX &&
             m_waterMeshId != UINT32_MAX && m_orderBubbleMeshId != UINT32_MAX &&
             m_orderBubbleBorderMeshId != UINT32_MAX;
   Reset();
@@ -1633,6 +1620,72 @@ void TavernScene::ConfigureDefaultTableLayout() {
   m_tablePositions = kDefaultTablePositions;
   m_tableYaw = {};
   m_tableCapacities = {2, 2, 2, 4};
+}
+
+std::size_t TavernScene::TableCustomerAnimationIndex(int tableIndex,
+                                                     int guestIndex) {
+  return static_cast<std::size_t>(tableIndex) * CustomerGuestsPerTable +
+         static_cast<std::size_t>(guestIndex);
+}
+
+std::size_t TavernScene::EntranceCustomerAnimationIndex(int tableIndex) {
+  return TableCustomerAnimationCount + static_cast<std::size_t>(tableIndex);
+}
+
+void TavernScene::ResetCustomerAnimationInstances() {
+  m_customerAnimationInstances.clear();
+  m_customerAnimationInstances.resize(CustomerAnimationInstanceCount);
+  for (int tableIndex = 0; tableIndex < 4; ++tableIndex) {
+    for (int guestIndex = 0;
+         guestIndex < static_cast<int>(CustomerGuestsPerTable);
+         ++guestIndex) {
+      CustomerAnimationInstance &instance =
+          m_customerAnimationInstances[TableCustomerAnimationIndex(
+              tableIndex, guestIndex)];
+      instance.modelIndex =
+          static_cast<std::size_t>(tableIndex + guestIndex) %
+          CustomerModelCount;
+      m_customerNpcs[instance.modelIndex].InitializeAnimationState(
+          instance.state);
+    }
+    CustomerAnimationInstance &entrance =
+        m_customerAnimationInstances[EntranceCustomerAnimationIndex(
+            tableIndex)];
+    entrance.modelIndex = static_cast<std::size_t>(tableIndex) %
+                          CustomerModelCount;
+    m_customerNpcs[entrance.modelIndex].InitializeAnimationState(
+        entrance.state);
+  }
+}
+
+bool TavernScene::CustomerAnimationInstancesIndependent() const {
+  if (m_customerAnimationInstances.size() !=
+      CustomerAnimationInstanceCount)
+    return false;
+
+  std::array<std::size_t, CustomerModelCount> instanceCounts{};
+  for (std::size_t index = 0; index < m_customerAnimationInstances.size();
+       ++index) {
+    const CustomerAnimationInstance &instance =
+        m_customerAnimationInstances[index];
+    if (instance.modelIndex >= CustomerModelCount ||
+        !instance.state.initialized || !instance.state.paletteFinite ||
+        instance.state.palette.boneCount !=
+            static_cast<int>(
+                m_customerNpcs[instance.modelIndex].SkeletonBoneCount()))
+      return false;
+    ++instanceCounts[instance.modelIndex];
+    for (std::size_t other = index + 1;
+         other < m_customerAnimationInstances.size(); ++other) {
+      if (m_customerAnimationInstances[other].modelIndex ==
+              instance.modelIndex &&
+          &m_customerAnimationInstances[other].state.palette ==
+              &instance.state.palette)
+        return false;
+    }
+  }
+  return std::all_of(instanceCounts.begin(), instanceCounts.end(),
+                     [](std::size_t count) { return count > 1; });
 }
 
 void TavernScene::RebuildCollisionColliders() {
@@ -1744,6 +1797,7 @@ void TavernScene::ResetShiftRuntime(float startingHour) {
   m_walkouts = 0;
   m_tables = {};
   m_entranceCustomers = {};
+  ResetCustomerAnimationInstances();
   m_counterMugs = {};
   m_tables[0].enabled = true;
   m_tables[1].enabled = m_tutorialStep == TutorialStep::Complete;
@@ -2176,6 +2230,13 @@ bool TavernScene::RunExpansionRegression(std::string &failure) {
       TavernAsset::LongTable)] = {1};
   probe.m_tavernAssetMeshIds[static_cast<std::size_t>(TavernAsset::Bench)] =
       {1};
+  probe.m_tableYaw[0] = 0.0f;
+  float twoSeatYaw = 0.0f;
+  const XMFLOAT3 twoSeatPosition =
+      probe.CustomerSeatPosition(0, 0, 2, twoSeatYaw);
+  if (std::abs(twoSeatPosition.y - kTwoSeatSittingYOffset) > 0.001f)
+    return fail("2人席の着座高さ補正が失われている");
+
   probe.m_tableYaw[3] = 0.0f;
   const XMFLOAT3 longTablePosition = probe.TablePosition(3);
   std::array<XMFLOAT3, 4> seatPositions{};
@@ -2191,8 +2252,15 @@ bool TavernScene::RunExpansionRegression(std::string &failure) {
       std::abs(seatPositions[0].x - seatPositions[1].x) < 1.0f ||
       std::abs(seatPositions[2].x - seatPositions[3].x) < 1.0f)
     return fail("4人席が長机の片側二人ずつに分かれていない");
+  for (const XMFLOAT3 &seatPosition : seatPositions) {
+    if (std::abs(seatPosition.y - kFourSeatSittingYOffset) > 0.001f ||
+        std::abs(std::abs(seatPosition.z - longTablePosition.z) -
+                 kFourSeatBenchOffset) > 0.001f)
+      return fail("4人席の長椅子専用着座補正が失われている");
+  }
   const auto route = probe.CustomerRoute(3);
-  if (DistanceXZ(route.back(), seatPositions[0]) > 0.001f)
+  if (DistanceXZ(route.back(), seatPositions[0]) > 0.001f ||
+      std::abs(route.back().y) > 0.001f)
     return fail("4人席の到着経路が先頭客の座席に接続されていない");
   probe.m_tableYaw[3] = XM_PIDIV2;
   float rotatedYaw = 0.0f;
@@ -3199,10 +3267,45 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
                     bool automateGameplay) {
   m_playerPosition = playerPosition;
   const float dt = std::clamp(deltaSeconds, 0.0f, 0.25f);
-  const TableState prototypeCustomerState = m_tables[0].state;
-  m_customerNpc.Update(dt, prototypeCustomerState == TableState::Arriving ||
-                               prototypeCustomerState == TableState::Leaving ||
-                               m_entranceCustomers[0].state == EntranceState::Leaving);
+  if (m_customerAnimationInstances.size() !=
+      CustomerAnimationInstanceCount)
+    ResetCustomerAnimationInstances();
+  for (int tableIndex = 0; tableIndex < CustomerTableCount(); ++tableIndex) {
+    const TableState tableState = m_tables[tableIndex].state;
+    const bool customerVisible =
+        tableState != TableState::Empty && tableState != TableState::Dirty;
+    const bool travelling =
+        tableState == TableState::Arriving || tableState == TableState::Leaving;
+    const int partySize =
+        customerVisible
+            ? std::clamp(m_tables[tableIndex].partySize, 1,
+                         TableCapacity(tableIndex))
+            : 0;
+    for (int guest = 0;
+         guest < static_cast<int>(CustomerGuestsPerTable); ++guest) {
+      CustomerAnimationInstance &instance =
+          m_customerAnimationInstances[TableCustomerAnimationIndex(
+              tableIndex, guest)];
+      TavernCustomerPreview::AnimationMode mode =
+          TavernCustomerPreview::AnimationMode::Idle;
+      if (guest < partySize) {
+        mode = travelling ? TavernCustomerPreview::AnimationMode::Walk
+                          : TavernCustomerPreview::AnimationMode::Sitting;
+      }
+      m_customerNpcs[instance.modelIndex].Update(
+          instance.state, dt, mode);
+    }
+
+    CustomerAnimationInstance &entrance =
+        m_customerAnimationInstances[EntranceCustomerAnimationIndex(
+            tableIndex)];
+    const TavernCustomerPreview::AnimationMode entranceMode =
+        m_entranceCustomers[tableIndex].state == EntranceState::Leaving
+            ? TavernCustomerPreview::AnimationMode::Walk
+            : TavernCustomerPreview::AnimationMode::Idle;
+    m_customerNpcs[entrance.modelIndex].Update(entrance.state, dt,
+                                               entranceMode);
+  }
   m_interactionCooldown = std::max(0.0f, m_interactionCooldown - dt);
   m_feedbackTimer = std::max(0.0f, m_feedbackTimer - dt);
   if (m_feedbackTimer <= 0.0f)
@@ -4099,24 +4202,17 @@ void TavernScene::BuildFrame(FrameData &frame, const ViewContext &view) const {
     const bool customerVisible =
         tableState != TableState::Empty && tableState != TableState::Dirty;
     const auto drawCustomer = [&](const XMFLOAT3 &position, float yaw,
-                                  bool allowImported) {
-      if (allowImported && tableIndex == 0 && ImportedCustomerReady()) {
-        m_customerNpc.BuildFrame(frame, position, yaw);
-      } else {
-        // 入口でも接地する全身の代替モデル。実モデルと同じ約1.62 mに揃える。
-        pushMesh(m_customerBodyMeshId, 0.46f, 0.70f, 0.40f, position.x,
-                 position.y + 0.93f, position.z);
-        pushMesh(m_customerHeadMeshId, 0.34f, 0.34f, 0.34f, position.x,
-                 position.y + 1.40f, position.z);
-        pushMesh(m_customerHairMeshId, 0.36f, 0.18f, 0.36f, position.x,
-                 position.y + 1.53f, position.z);
-        for (const float side : {-1.0f, 1.0f}) {
-          const XMFLOAT3 offset =
-              rotateHorizontalOffset(side * 0.13f, 0.0f, yaw);
-          pushMesh(m_customerBodyMeshId, 0.16f, 0.60f, 0.18f,
-                   position.x + offset.x, position.y + 0.30f, position.z + offset.z);
-        }
-      }
+                                  size_t animationInstanceIndex) {
+      // model と material は共有し、bone palette だけを NPC ごとに分離する。
+      if (animationInstanceIndex >= m_customerAnimationInstances.size())
+        return;
+      const CustomerAnimationInstance &instance =
+          m_customerAnimationInstances[animationInstanceIndex];
+      if (instance.modelIndex >= CustomerModelCount ||
+          !m_customerNpcs[instance.modelIndex].IsReady())
+        return;
+      m_customerNpcs[instance.modelIndex].BuildFrame(
+          frame, position, yaw, instance.state);
     };
     if (customerVisible) {
       std::array<XMFLOAT3, 4> guestPositions{};
@@ -4148,7 +4244,8 @@ void TavernScene::BuildFrame(FrameData &frame, const ViewContext &view) const {
             customerPosition = guestPosition;
         }
         guestPositions[static_cast<std::size_t>(guest)] = guestPosition;
-        drawCustomer(guestPosition, guestYaw, guest == 0);
+        drawCustomer(guestPosition, guestYaw,
+                     TableCustomerAnimationIndex(tableIndex, guest));
       }
       if (tableState == TableState::WaitingOrder)
         pushMesh(m_glowMeshId, 0.16f, 0.52f, 0.16f, tableX[tableIndex], 2.72f,
@@ -4206,7 +4303,7 @@ void TavernScene::BuildFrame(FrameData &frame, const ViewContext &view) const {
                                           kEntranceLeaveSeconds, 0.0f, 1.0f)) * 1.8f;
       drawCustomer(position,
                    waiting.state == EntranceState::Leaving ? XM_PI : 0.0f,
-                   true);
+                   EntranceCustomerAnimationIndex(tableIndex));
       if (waiting.state == EntranceState::Waiting) {
         const float progress = waiting.waitedSeconds / kEntranceWaitSeconds;
         pushMesh(m_darkWoodMeshId, 0.86f, 0.10f, 0.08f,

@@ -98,11 +98,13 @@ public:
                                 const DirectX::XMFLOAT4 &puddleParams =
                                     DirectX::XMFLOAT4(0.85f, 5.0f, 3.2f, 1.0f),
                                 const DirectX::XMFLOAT4 &puddleVisualParams =
-                                    DirectX::XMFLOAT4(0.78f, 0.22f, 1.0f, 0.0f));
+                                    DirectX::XMFLOAT4(0.78f, 0.22f, 1.0f, 0.0f),
+                                const BonePalette *bonePaletteOverride = nullptr);
 
   void DrawMeshShadowInstanced(DxContext &dx, uint32_t meshId,
                                const std::vector<DirectX::XMMATRIX> &worlds,
-                               const DirectX::XMMATRIX &lightViewProj);
+                               const DirectX::XMMATRIX &lightViewProj,
+                               const BonePalette *bonePaletteOverride = nullptr);
 
   void DrawMeshInstanced(DxContext &dx, uint32_t meshId,
                          const std::vector<DirectX::XMMATRIX> &worlds,
@@ -112,7 +114,8 @@ public:
                          const MeshShadowParams &shadow,
                          float gameTime = 0.0f,
                          const DirectX::XMFLOAT4 &waterWaveParams =
-                             DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 0.0f));
+                             DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 0.0f),
+                         const BonePalette *bonePaletteOverride = nullptr);
 
   void DrawMeshTransparentInstanced(
       DxContext &dx, uint32_t meshId,
@@ -123,7 +126,8 @@ public:
       const MeshShadowParams &shadow,
       float gameTime = 0.0f,
       const DirectX::XMFLOAT4 &waterWaveParams =
-          DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 0.0f));
+          DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 0.0f),
+      const BonePalette *bonePaletteOverride = nullptr);
 
   void SetIBLDescriptors(D3D12_GPU_DESCRIPTOR_HANDLE iblTableBase);
 

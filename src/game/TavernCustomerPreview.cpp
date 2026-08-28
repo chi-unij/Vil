@@ -29,12 +29,17 @@ bool MatrixIsFinite(const XMMATRIX &matrix) {
 
 } // namespace
 
-void TavernCustomerPreview::Initialize(DxContext &dx) {
+void TavernCustomerPreview::Initialize(DxContext &dx,
+                                       const std::string &modelLabel,
+                                       const std::string &modelPath) {
   m_dx = &dx;
+  m_modelLabel = modelLabel;
+  m_modelPath = modelPath;
   GltfLoader loader;
-  if (!loader.LoadModel("Assets/models/npc1.glb")) {
-    OutputDebugStringA(
-        "[TavernCustomer] npc1.glb unavailable; procedural fallback active.\n");
+  if (!loader.LoadModel(modelPath)) {
+    const std::string message = "[TavernCustomer] " + modelPath +
+                                " unavailable; model roster incomplete.\n";
+    OutputDebugStringA(message.c_str());
     return;
   }
 
@@ -95,7 +100,9 @@ void TavernCustomerPreview::Initialize(DxContext &dx) {
     m_modelToWorldScale = kTargetCustomerHeightMeters / m_nativeModelHeight;
 
   if (!mesh.hasSkeleton) {
-    OutputDebugStringA("[TavernCustomer] WARNING: npc1.glb has no skeleton.\n");
+    const std::string message =
+        "[TavernCustomer] WARNING: " + modelPath + " has no skeleton.\n";
+    OutputDebugStringA(message.c_str());
     return;
   }
 
@@ -103,13 +110,20 @@ void TavernCustomerPreview::Initialize(DxContext &dx) {
   m_hasSkeleton = true;
   LoadClip("Idle", "Assets/models/animations/Idle_npc1.glb", m_idleClip);
   LoadClip("Walk", "Assets/models/animations/Walk_npc1.glb", m_walkClip);
+  LoadClip("Sitting Idle",
+           "Assets/models/animations/Sitting_Idle_npc2.glb",
+           m_sittingClip);
 
   BonePalette bindPose;
   ComputeBindPose(m_skeleton, bindPose);
   UploadBonePalette(bindPose);
-  OutputDebugStringA(m_ready && m_idleClip.loaded && m_walkClip.loaded
-                         ? "[TavernCustomer] npc1 Idle / Walk ready.\n"
-                         : "[TavernCustomer] npc1 animation set incomplete.\n");
+  const std::string message =
+      "[TavernCustomer] " + modelLabel +
+      (m_ready && m_idleClip.loaded && m_walkClip.loaded &&
+               m_sittingClip.loaded
+           ? " reuses shared Idle / Walk / Sitting Idle.\n"
+           : " shared animation set incomplete.\n");
+  OutputDebugStringA(message.c_str());
 }
 
 bool TavernCustomerPreview::LoadClip(const std::string &label,
@@ -129,72 +143,103 @@ bool TavernCustomerPreview::LoadClip(const std::string &label,
   return true;
 }
 
-int TavernCustomerPreview::ActiveClipIndex() const {
-  return m_walking ? m_walkClip.clipIndex : m_idleClip.clipIndex;
-}
-
-void TavernCustomerPreview::SelectWalking(bool walking) {
-  if (walking == m_walking)
-    return;
-
-  const int previousClipIndex = ActiveClipIndex();
-  m_previousWalking = m_walking;
-  m_previousAnimationTime = m_animationTime;
-  m_walking = walking;
-  m_animationTime = 0.0f;
-  m_transitionElapsed = 0.0f;
-  const int nextClipIndex = ActiveClipIndex();
-  m_transitioning = previousClipIndex >= 0 && nextClipIndex >= 0;
-}
-
-void TavernCustomerPreview::Update(float deltaSeconds, bool walking) {
+void TavernCustomerPreview::InitializeAnimationState(
+    AnimationState &state) const {
+  state = {};
   if (!m_ready || !m_hasSkeleton)
     return;
+  ComputeBindPose(m_skeleton, state.palette);
+  state.paletteFinite = PaletteFinite(state.palette);
+  state.initialized = state.palette.boneCount > 0 && state.paletteFinite;
+}
 
-  SelectWalking(walking);
+int TavernCustomerPreview::ActiveClipIndex(AnimationMode mode) const {
+  switch (mode) {
+  case AnimationMode::Walk:
+    return m_walkClip.clipIndex;
+  case AnimationMode::Sitting:
+    return m_sittingClip.clipIndex;
+  case AnimationMode::Idle:
+  default:
+    return m_idleClip.clipIndex;
+  }
+}
+
+void TavernCustomerPreview::SelectAnimationMode(AnimationState &state,
+                                                AnimationMode mode) const {
+  if (mode == state.mode)
+    return;
+
+  const int previousClipIndex = ActiveClipIndex(state.mode);
+  state.previousMode = state.mode;
+  state.previousAnimationTime = state.animationTime;
+  state.mode = mode;
+  state.animationTime = 0.0f;
+  state.transitionElapsed = 0.0f;
+  const int nextClipIndex = ActiveClipIndex(state.mode);
+  state.transitioning = previousClipIndex >= 0 && nextClipIndex >= 0;
+}
+
+void TavernCustomerPreview::Update(AnimationState &state, float deltaSeconds,
+                                   AnimationMode mode) {
+  if (!m_ready || !m_hasSkeleton)
+    return;
+  if (!state.initialized)
+    InitializeAnimationState(state);
+  if (!state.initialized) {
+    m_bonePaletteFinite = false;
+    return;
+  }
+
+  SelectAnimationMode(state, mode);
   const float dt =
       std::isfinite(deltaSeconds) ? std::max(0.0f, deltaSeconds) : 0.0f;
-  m_animationTime += dt;
-  if (m_walking)
+  state.animationTime += dt;
+  if (state.mode == AnimationMode::Walk)
     ++m_walkPoseUpdateCount;
+  else if (state.mode == AnimationMode::Sitting)
+    ++m_sittingPoseUpdateCount;
   else
     ++m_idlePoseUpdateCount;
 
-  BonePalette palette;
-  const int activeClipIndex = ActiveClipIndex();
-  const int previousClipIndex =
-      m_previousWalking ? m_walkClip.clipIndex : m_idleClip.clipIndex;
-  if (m_transitioning && previousClipIndex >= 0 && activeClipIndex >= 0) {
-    m_previousAnimationTime += dt;
-    m_transitionElapsed += dt;
+  const int activeClipIndex = ActiveClipIndex(state.mode);
+  const int previousClipIndex = ActiveClipIndex(state.previousMode);
+  if (state.transitioning && previousClipIndex >= 0 &&
+      activeClipIndex >= 0) {
+    state.previousAnimationTime += dt;
+    state.transitionElapsed += dt;
     const float linearBlend = std::clamp(
-        m_transitionElapsed / kTransitionDurationSeconds, 0.0f, 1.0f);
+        state.transitionElapsed / kTransitionDurationSeconds, 0.0f, 1.0f);
     const float smoothBlend =
         linearBlend * linearBlend * (3.0f - 2.0f * linearBlend);
     EvaluateAnimationBlend(
-        m_skeleton, m_animations[previousClipIndex], m_previousAnimationTime,
-        m_animations[activeClipIndex], m_animationTime, smoothBlend, palette);
+        m_skeleton, m_animations[previousClipIndex],
+        state.previousAnimationTime, m_animations[activeClipIndex],
+        state.animationTime, smoothBlend, state.palette);
     if (linearBlend >= 1.0f)
-      m_transitioning = false;
+      state.transitioning = false;
   } else if (activeClipIndex >= 0 &&
              activeClipIndex < static_cast<int>(m_animations.size())) {
     EvaluateAnimation(m_skeleton, m_animations[activeClipIndex],
-                      m_animationTime, palette);
+                      state.animationTime, state.palette);
   } else {
-    ComputeProceduralIdle(m_skeleton, m_animationTime, palette);
+    ComputeProceduralIdle(m_skeleton, state.animationTime, state.palette);
   }
-  UploadBonePalette(palette);
+  state.paletteFinite = PaletteFinite(state.palette);
+  m_bonePaletteFinite = m_bonePaletteFinite && state.paletteFinite;
+}
+
+bool TavernCustomerPreview::PaletteFinite(const BonePalette &palette) {
+  const int matrixCount = std::clamp(palette.boneCount, 0, kMaxBones);
+  for (int boneIndex = 0; boneIndex < matrixCount; ++boneIndex) {
+    if (!MatrixIsFinite(palette.matrices[boneIndex]))
+      return false;
+  }
+  return true;
 }
 
 void TavernCustomerPreview::UploadBonePalette(const BonePalette &palette) {
-  m_bonePaletteFinite = true;
-  const int matrixCount = std::clamp(palette.boneCount, 0, kMaxBones);
-  for (int boneIndex = 0; boneIndex < matrixCount; ++boneIndex) {
-    if (!MatrixIsFinite(palette.matrices[boneIndex])) {
-      m_bonePaletteFinite = false;
-      break;
-    }
-  }
+  m_bonePaletteFinite = PaletteFinite(palette);
   if (!m_dx)
     return;
   for (const uint32_t meshId : m_opaqueMeshIds)
@@ -205,8 +250,9 @@ void TavernCustomerPreview::UploadBonePalette(const BonePalette &palette) {
 
 void TavernCustomerPreview::BuildFrame(FrameData &frame,
                                        const XMFLOAT3 &position,
-                                       float yawRadians) const {
-  if (!m_ready)
+                                       float yawRadians,
+                                       const AnimationState &state) const {
+  if (!m_ready || !state.initialized || !state.paletteFinite)
     return;
   const float groundOffset = -m_nativeModelMinY * m_modelToWorldScale;
   const XMMATRIX world =
@@ -216,9 +262,9 @@ void TavernCustomerPreview::BuildFrame(FrameData &frame,
       XMMatrixTranslation(position.x, position.y + groundOffset + 0.01f,
                           position.z);
   for (const uint32_t meshId : m_opaqueMeshIds)
-    frame.opaqueItems.push_back({meshId, world});
+    frame.opaqueItems.push_back({meshId, world, &state.palette});
   for (const uint32_t meshId : m_transparentMeshIds)
-    frame.transparentItems.push_back({meshId, world});
+    frame.transparentItems.push_back({meshId, world, &state.palette});
 }
 
 TavernCustomerPreview::ClipDiagnostics
@@ -243,4 +289,9 @@ TavernCustomerPreview::IdleDiagnostics() const {
 TavernCustomerPreview::ClipDiagnostics
 TavernCustomerPreview::WalkDiagnostics() const {
   return BuildClipDiagnostics(m_walkClip);
+}
+
+TavernCustomerPreview::ClipDiagnostics
+TavernCustomerPreview::SittingDiagnostics() const {
+  return BuildClipDiagnostics(m_sittingClip);
 }

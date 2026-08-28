@@ -11,10 +11,11 @@
 #include <vector>
 
 // 酒場の customer NPC model、Idle / Walk 遷移、描画をまとめる。
-// 最初の一体だけを production table state に接続し、複数 NPC 導入前の
-// asset / skeleton compatibility gate として使用する。
+// model path ごとに一つ保持し、同じ animation set を共有できる roster とする。
 class TavernCustomerPreview {
 public:
+  enum class AnimationMode : std::uint8_t { Idle, Walk, Sitting };
+
   struct ClipDiagnostics {
     std::string label;
     std::string sourcePath;
@@ -23,12 +24,28 @@ public:
     bool loaded = false;
   };
 
-  void Initialize(DxContext &dx);
-  void Update(float deltaSeconds, bool walking);
+  struct AnimationState {
+    BonePalette palette{};
+    bool initialized = false;
+    bool paletteFinite = true;
+    AnimationMode mode = AnimationMode::Idle;
+    AnimationMode previousMode = AnimationMode::Idle;
+    bool transitioning = false;
+    float animationTime = 0.0f;
+    float previousAnimationTime = 0.0f;
+    float transitionElapsed = 0.0f;
+  };
+
+  void Initialize(DxContext &dx, const std::string &modelLabel,
+                  const std::string &modelPath);
+  void InitializeAnimationState(AnimationState &state) const;
+  void Update(AnimationState &state, float deltaSeconds, AnimationMode mode);
   void BuildFrame(FrameData &frame, const DirectX::XMFLOAT3 &position,
-                  float yawRadians) const;
+                  float yawRadians, const AnimationState &state) const;
 
   bool IsReady() const { return m_ready; }
+  const std::string &ModelLabel() const { return m_modelLabel; }
+  const std::string &ModelPath() const { return m_modelPath; }
   bool HasSkeleton() const { return m_hasSkeleton; }
   bool BonePaletteFinite() const { return m_bonePaletteFinite; }
   size_t SkeletonBoneCount() const { return m_skeleton.bones.size(); }
@@ -41,8 +58,10 @@ public:
   }
   ClipDiagnostics IdleDiagnostics() const;
   ClipDiagnostics WalkDiagnostics() const;
+  ClipDiagnostics SittingDiagnostics() const;
   uint64_t IdlePoseUpdateCount() const { return m_idlePoseUpdateCount; }
   uint64_t WalkPoseUpdateCount() const { return m_walkPoseUpdateCount; }
+  uint64_t SittingPoseUpdateCount() const { return m_sittingPoseUpdateCount; }
 
 private:
   struct PreviewClip {
@@ -54,30 +73,29 @@ private:
 
   bool LoadClip(const std::string &label, const std::string &path,
                 PreviewClip &outClip);
-  int ActiveClipIndex() const;
+  int ActiveClipIndex(AnimationMode mode) const;
   ClipDiagnostics BuildClipDiagnostics(const PreviewClip &clip) const;
-  void SelectWalking(bool walking);
+  void SelectAnimationMode(AnimationState &state, AnimationMode mode) const;
   void UploadBonePalette(const BonePalette &palette);
+  static bool PaletteFinite(const BonePalette &palette);
 
   std::vector<uint32_t> m_opaqueMeshIds;
   std::vector<uint32_t> m_transparentMeshIds;
+  std::string m_modelLabel;
+  std::string m_modelPath;
   Skeleton m_skeleton;
   std::vector<AnimationClip> m_animations;
   PreviewClip m_idleClip;
   PreviewClip m_walkClip;
+  PreviewClip m_sittingClip;
   DxContext *m_dx = nullptr;
   bool m_ready = false;
   bool m_hasSkeleton = false;
   bool m_bonePaletteFinite = true;
-  bool m_walking = false;
-  bool m_previousWalking = false;
-  bool m_transitioning = false;
-  float m_animationTime = 0.0f;
-  float m_previousAnimationTime = 0.0f;
-  float m_transitionElapsed = 0.0f;
   float m_nativeModelHeight = 0.0f;
   float m_nativeModelMinY = 0.0f;
   float m_modelToWorldScale = 1.0f;
   uint64_t m_idlePoseUpdateCount = 0;
   uint64_t m_walkPoseUpdateCount = 0;
+  uint64_t m_sittingPoseUpdateCount = 0;
 };

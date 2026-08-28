@@ -14,6 +14,8 @@
 
 class TavernScene {
 public:
+  static constexpr size_t CustomerModelCount = 2;
+
   enum class Action {
     None,
     ReturnToOverworld,
@@ -130,30 +132,56 @@ public:
   bool IsReady() const { return m_ready; }
   bool ImportedArtReady() const { return m_importedArtReady; }
   bool ImportedCustomerReady() const {
-    return m_customerNpc.IsReady() && m_customerNpc.HasSkeleton() &&
-           m_customerNpc.IdleDiagnostics().loaded &&
-           m_customerNpc.WalkDiagnostics().loaded;
+    for (const TavernCustomerPreview &customer : m_customerNpcs) {
+      if (!customer.IsReady() || !customer.HasSkeleton() ||
+          !customer.IdleDiagnostics().loaded ||
+          !customer.WalkDiagnostics().loaded ||
+          !customer.SittingDiagnostics().loaded)
+        return false;
+    }
+    return true;
   }
   bool CustomerBonePaletteFinite() const {
-    return m_customerNpc.BonePaletteFinite();
+    for (const TavernCustomerPreview &customer : m_customerNpcs) {
+      if (!customer.BonePaletteFinite())
+        return false;
+    }
+    return true;
   }
-  size_t CustomerSkeletonBoneCount() const {
-    return m_customerNpc.SkeletonBoneCount();
+  bool CustomerAnimationInstancesIndependent() const;
+  const std::string &CustomerModelLabel(size_t modelIndex) const {
+    return m_customerNpcs[modelIndex % CustomerModelCount].ModelLabel();
   }
-  size_t CustomerMaterialPartCount() const {
-    return m_customerNpc.MaterialPartCount();
+  size_t CustomerSkeletonBoneCount(size_t modelIndex = 0) const {
+    return m_customerNpcs[modelIndex % CustomerModelCount].SkeletonBoneCount();
   }
-  TavernCustomerPreview::ClipDiagnostics CustomerIdleDiagnostics() const {
-    return m_customerNpc.IdleDiagnostics();
+  size_t CustomerMaterialPartCount(size_t modelIndex = 0) const {
+    return m_customerNpcs[modelIndex % CustomerModelCount].MaterialPartCount();
   }
-  TavernCustomerPreview::ClipDiagnostics CustomerWalkDiagnostics() const {
-    return m_customerNpc.WalkDiagnostics();
+  TavernCustomerPreview::ClipDiagnostics
+  CustomerIdleDiagnostics(size_t modelIndex = 0) const {
+    return m_customerNpcs[modelIndex % CustomerModelCount].IdleDiagnostics();
   }
-  uint64_t CustomerIdlePoseUpdateCount() const {
-    return m_customerNpc.IdlePoseUpdateCount();
+  TavernCustomerPreview::ClipDiagnostics
+  CustomerWalkDiagnostics(size_t modelIndex = 0) const {
+    return m_customerNpcs[modelIndex % CustomerModelCount].WalkDiagnostics();
   }
-  uint64_t CustomerWalkPoseUpdateCount() const {
-    return m_customerNpc.WalkPoseUpdateCount();
+  TavernCustomerPreview::ClipDiagnostics
+  CustomerSittingDiagnostics(size_t modelIndex = 0) const {
+    return m_customerNpcs[modelIndex % CustomerModelCount]
+        .SittingDiagnostics();
+  }
+  uint64_t CustomerIdlePoseUpdateCount(size_t modelIndex = 0) const {
+    return m_customerNpcs[modelIndex % CustomerModelCount]
+        .IdlePoseUpdateCount();
+  }
+  uint64_t CustomerWalkPoseUpdateCount(size_t modelIndex = 0) const {
+    return m_customerNpcs[modelIndex % CustomerModelCount]
+        .WalkPoseUpdateCount();
+  }
+  uint64_t CustomerSittingPoseUpdateCount(size_t modelIndex = 0) const {
+    return m_customerNpcs[modelIndex % CustomerModelCount]
+        .SittingPoseUpdateCount();
   }
   bool GameplaySmokeComplete() const {
     return m_tableCompletedCycles[0] >= 1 && m_tableCompletedCycles[1] >= 1 &&
@@ -321,6 +349,17 @@ private:
     float leaveTimer = 0.0f;
   };
 
+  static constexpr std::size_t CustomerGuestsPerTable = 4;
+  static constexpr std::size_t TableCustomerAnimationCount =
+      4 * CustomerGuestsPerTable;
+  static constexpr std::size_t CustomerAnimationInstanceCount =
+      TableCustomerAnimationCount + 4;
+
+  struct CustomerAnimationInstance {
+    std::size_t modelIndex = 0;
+    TavernCustomerPreview::AnimationState state{};
+  };
+
   struct SupplyState {
     int current = 0;
     int capacity = 0;
@@ -337,6 +376,10 @@ private:
   static int DirtyDishCount(const TableSlot &table);
   static void RefreshTableServiceState(TableSlot &table);
   void SpawnCustomer(int tableIndex);
+  void ResetCustomerAnimationInstances();
+  static std::size_t TableCustomerAnimationIndex(int tableIndex,
+                                                  int guestIndex);
+  static std::size_t EntranceCustomerAnimationIndex(int tableIndex);
   void UpdateEntranceCustomers(float dt);
   void DismissEntranceCustomer(int tableIndex, bool penalize);
   void TakeOrder(int tableIndex);
@@ -418,9 +461,6 @@ private:
   uint32_t m_glowMeshId = UINT32_MAX;
   uint32_t m_orderBubbleMeshId = UINT32_MAX;
   uint32_t m_orderBubbleBorderMeshId = UINT32_MAX;
-  uint32_t m_customerBodyMeshId = UINT32_MAX;
-  uint32_t m_customerHeadMeshId = UINT32_MAX;
-  uint32_t m_customerHairMeshId = UINT32_MAX;
   uint32_t m_mugMeshId = UINT32_MAX;
   uint32_t m_filledMugMeshId = UINT32_MAX;
   uint32_t m_dirtyMugMeshId = UINT32_MAX;
@@ -436,7 +476,8 @@ private:
   std::array<std::vector<uint32_t>,
              static_cast<std::size_t>(TavernAsset::Count)>
       m_tavernAssetMeshIds{};
-  TavernCustomerPreview m_customerNpc;
+  std::array<TavernCustomerPreview, CustomerModelCount> m_customerNpcs{};
+  std::vector<CustomerAnimationInstance> m_customerAnimationInstances;
 
   ShiftState m_shiftState = ShiftState::Running;
   std::array<TableSlot, 4> m_tables{};

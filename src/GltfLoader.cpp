@@ -8,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <unordered_map>
 
 // stb_image is compiled inside tinygltf; we only need the header for stbi_load.
@@ -1535,13 +1536,18 @@ bool LoadStaticModelParts(const std::string &path,
 // Mixamo -> VRoid bone name remapping
 // ============================================================================
 
-// Strip common prefixes: "mixamorig:" or "Armature|mixamorig:"
+// Mixamo はアップロード単位で `mixamorig:`、`mixamorig11:` など異なる
+// namespace を付ける。colon より後ろの semantic bone name を共通キーにする。
 static std::string StripMixamoPrefix(const std::string &name) {
-  // Handle "mixamorig:" prefix.
-  const std::string prefix1 = "mixamorig:";
-  auto pos = name.find(prefix1);
-  if (pos != std::string::npos)
-    return name.substr(pos + prefix1.size());
+  constexpr std::string_view marker = "mixamorig";
+  const size_t markerPosition = name.find(marker);
+  if (markerPosition != std::string::npos) {
+    const size_t separatorPosition =
+        name.find(':', markerPosition + marker.size());
+    if (separatorPosition != std::string::npos &&
+        separatorPosition + 1 < name.size())
+      return name.substr(separatorPosition + 1);
+  }
   return name;
 }
 
@@ -1668,6 +1674,16 @@ bool LoadAnimationFile(const std::string &path,
   for (size_t i = 0; i < targetSkeleton.bones.size(); ++i)
     targetBoneMap[targetSkeleton.bones[i].name] = static_cast<int>(i);
 
+  // 同じ Mixamo hierarchy でも namespace 番号が異なる character 間で
+  // animation を共有できるよう、semantic bone name でも target を引く。
+  std::unordered_map<std::string, int> normalizedTargetBoneMap;
+  for (size_t i = 0; i < targetSkeleton.bones.size(); ++i) {
+    const std::string normalizedName =
+        StripMixamoPrefix(targetSkeleton.bones[i].name);
+    if (normalizedName != targetSkeleton.bones[i].name)
+      normalizedTargetBoneMap.emplace(normalizedName, static_cast<int>(i));
+  }
+
   // Build node index -> remapped bone index for the animation file's nodes.
   // The animation file has its own skeleton; we remap by name.
   std::unordered_map<int, int> animNodeToTargetBone;
@@ -1682,8 +1698,15 @@ bool LoadAnimationFile(const std::string &path,
       continue;
     }
 
-    // Try Mixamo name remapping.
+    // Try a namespace-independent direct Mixamo match before VRoid remapping.
     std::string stripped = StripMixamoPrefix(nodeName);
+    auto normalizedIt = normalizedTargetBoneMap.find(stripped);
+    if (normalizedIt != normalizedTargetBoneMap.end()) {
+      animNodeToTargetBone[ni] = normalizedIt->second;
+      continue;
+    }
+
+    // Try Mixamo -> VRoid name remapping.
     auto mixIt = mixamoMap.find(stripped);
     if (mixIt != mixamoMap.end()) {
       auto targetIt = targetBoneMap.find(mixIt->second);
