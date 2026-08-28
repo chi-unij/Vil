@@ -1907,8 +1907,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       const bool escPressed = escNow && !prevEsc;
       const bool tavernMenuOpenBeforeUi =
           appMode == AppMode::Tavern && tavernScene.ManagementMenuOpen();
+      const bool tavernLayoutPlacementBeforeUi =
+          appMode == AppMode::Tavern && tavernScene.LayoutPlacementActive();
       if (!imgui.WantCaptureKeyboard() && !tavernMenuOpenBeforeUi &&
-          escPressed) {
+          !tavernLayoutPlacementBeforeUi && escPressed) {
         showSettings = !showSettings;
       }
       prevEsc = escNow;
@@ -1935,7 +1937,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
           tavernRestartKeyNow && !prevTavernRestartKey;
       prevTavernRestartKey = tavernRestartKeyNow;
       TavernScene::ManagementInput tavernManagementInput;
-      if (tavernMenuOpenBeforeUi) {
+      if (tavernMenuOpenBeforeUi || tavernLayoutPlacementBeforeUi) {
         tavernManagementInput.previousPressed =
             ImGui::IsKeyPressed(ImGuiKey_LeftArrow, false) ||
             input.GamepadButtonPressed(XINPUT_GAMEPAD_DPAD_LEFT);
@@ -1954,6 +1956,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         tavernManagementInput.rotateRightPressed =
             ImGui::IsKeyPressed(ImGuiKey_R, false) ||
             input.GamepadButtonPressed(XINPUT_GAMEPAD_RIGHT_SHOULDER);
+        tavernManagementInput.cyclePressed =
+            ImGui::IsKeyPressed(ImGuiKey_Tab, false) ||
+            input.GamepadButtonPressed(XINPUT_GAMEPAD_Y);
         tavernManagementInput.confirmPressed =
             ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
             ImGui::IsKeyPressed(ImGuiKey_Space, false) ||

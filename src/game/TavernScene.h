@@ -101,6 +101,7 @@ public:
     bool downPressed = false;
     bool rotateLeftPressed = false;
     bool rotateRightPressed = false;
+    bool cyclePressed = false;
     bool confirmPressed = false;
     bool cancelPressed = false;
   };
@@ -163,6 +164,7 @@ public:
   }
   bool PlayerMovementLocked() const;
   bool ManagementMenuOpen() const;
+  bool LayoutPlacementActive() const { return m_layoutEditing; }
   DirectX::XMFLOAT3 ManagementInteractionPosition() const;
   const ManagementUiDiagnostics &GetManagementUiDiagnostics() const {
     return m_managementUiDiagnostics;
@@ -174,7 +176,7 @@ public:
   int AleCapacityLevel() const;
   int TotalMugs() const;
   int CleanBowls() const { return m_cleanBowls; }
-  int TotalBowls() const { return 2; }
+  int TotalBowls() const;
   int FoodServed() const { return m_foodServed; }
   bool KitchenCooking() const;
   bool KitchenReady() const;
@@ -235,6 +237,7 @@ private:
     WaitingOrder,
     WaitingAle,
     WaitingFood,
+    WaitingMixed,
     Eating,
     Leaving,
     Dirty,
@@ -291,9 +294,15 @@ private:
     bool servedCustomer = false;
     bool complaintPlayed = false;
     OrderType order = OrderType::None;
+    std::array<OrderType, 4> guestOrders{};
+    std::array<bool, 4> guestServed{};
     std::string speech;
     float speechTimer = 0.0f;
     int partySize = 1;
+    int orderCount = 0;
+    int servedOrderCount = 0;
+    int dirtyMugs = 0;
+    int dirtyBowls = 0;
   };
 
   struct MugState {
@@ -322,6 +331,11 @@ private:
   static const char *GetOrderName(OrderType order);
   static bool IsMugItem(HeldItem item);
   static bool IsBowlItem(HeldItem item);
+  static bool HasPendingOrder(const TableSlot &table, OrderType order);
+  static int FindPendingGuest(const TableSlot &table, OrderType order);
+  static int PendingOrderCount(const TableSlot &table);
+  static int DirtyDishCount(const TableSlot &table);
+  static void RefreshTableServiceState(TableSlot &table);
   void SpawnCustomer(int tableIndex);
   void UpdateEntranceCustomers(float dt);
   void DismissEntranceCustomer(int tableIndex, bool penalize);
@@ -365,6 +379,8 @@ private:
   bool IsTableOwned(int tableIndex) const;
   int PartySizeForTable(int tableIndex) const;
   DirectX::XMFLOAT3 TableInteractionPosition(int tableIndex) const;
+  DirectX::XMFLOAT3 CustomerSeatPosition(int tableIndex, int guestIndex,
+                                         int partySize, float &yaw) const;
   std::array<DirectX::XMFLOAT3, 5> CustomerRoute(int tableIndex) const;
   float CustomerTravelSeconds(int tableIndex) const;
   DirectX::XMFLOAT3 CustomerRoutePosition(int tableIndex,
@@ -414,6 +430,9 @@ private:
   uint32_t m_stewMeshId = UINT32_MAX;
   uint32_t m_metalMeshId = UINT32_MAX;
   uint32_t m_waterMeshId = UINT32_MAX;
+  uint32_t m_placementGridMeshId = UINT32_MAX;
+  uint32_t m_placementValidMeshId = UINT32_MAX;
+  uint32_t m_placementInvalidMeshId = UINT32_MAX;
   std::array<std::vector<uint32_t>,
              static_cast<std::size_t>(TavernAsset::Count)>
       m_tavernAssetMeshIds{};
@@ -481,6 +500,9 @@ private:
   bool m_layoutEditing = false;
   DirectX::XMFLOAT3 m_layoutEditBackupPosition{};
   float m_layoutEditBackupYaw = 0.0f;
+  DirectX::XMFLOAT3 m_layoutPreviewPosition{};
+  float m_layoutPreviewYaw = 0.0f;
+  bool m_layoutPreviewValid = true;
   bool m_upgradeConfirmationOpen = false;
   bool m_upgradeConfirmBuySelected = false;
   bool m_importedArtReady = false;
