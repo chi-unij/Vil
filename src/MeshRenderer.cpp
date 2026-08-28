@@ -648,7 +648,8 @@ void MeshRenderer::DrawMeshGBufferInstanced(
     const DirectX::XMFLOAT4 &waterWaveParams,
     const DirectX::XMFLOAT4 &wetSurfaceParams,
     const DirectX::XMFLOAT4 &puddleParams,
-    const DirectX::XMFLOAT4 &puddleVisualParams) {
+    const DirectX::XMFLOAT4 &puddleVisualParams,
+    const BonePalette *bonePaletteOverride) {
   CreateGBufferPipelineOnce(dx);
 
   if (meshId >= m_meshes.size() || worlds.empty())
@@ -656,6 +657,8 @@ void MeshRenderer::DrawMeshGBufferInstanced(
   const auto &mesh = m_meshes[meshId];
   if (mesh.indexCount == 0)
     return;
+  const BonePalette &activeBonePalette =
+      bonePaletteOverride ? *bonePaletteOverride : mesh.bonePalette;
 
   auto cmd = dx.m_cmdList.Get();
   cmd->SetPipelineState(m_gbufferPso.Get());
@@ -735,10 +738,10 @@ void MeshRenderer::DrawMeshGBufferInstanced(
     D3D12_GPU_VIRTUAL_ADDRESS boneGpu =
         dx.AllocFrameConstants(boneBytes, &boneCpu);
     auto *boneDst = reinterpret_cast<DirectX::XMFLOAT4X4 *>(boneCpu);
-    if (mesh.bonePalette.boneCount > 0) {
+    if (activeBonePalette.boneCount > 0) {
       for (int b = 0; b < kMaxBones; ++b)
         DirectX::XMStoreFloat4x4(&boneDst[b],
-                                  DirectX::XMMatrixTranspose(mesh.bonePalette.matrices[b]));
+                                  DirectX::XMMatrixTranspose(activeBonePalette.matrices[b]));
     } else {
       for (int b = 0; b < kMaxBones; ++b)
         DirectX::XMStoreFloat4x4(&boneDst[b],
@@ -1370,7 +1373,8 @@ void MeshRenderer::DrawMeshInstanced(
     const std::vector<DirectX::XMMATRIX> &worlds,
     const DirectX::XMMATRIX &view, const DirectX::XMMATRIX &proj,
     const LightParams &lighting, const MeshShadowParams &shadow,
-    float gameTime, const DirectX::XMFLOAT4 &waterWaveParams) {
+    float gameTime, const DirectX::XMFLOAT4 &waterWaveParams,
+    const BonePalette *bonePaletteOverride) {
   if (!m_pso || !m_rootSig)
     return;
   if (meshId >= m_meshes.size() || worlds.empty())
@@ -1378,6 +1382,8 @@ void MeshRenderer::DrawMeshInstanced(
   const auto &mesh = m_meshes[meshId];
   if (mesh.indexCount == 0)
     return;
+  const BonePalette &activeBonePalette =
+      bonePaletteOverride ? *bonePaletteOverride : mesh.bonePalette;
 
   auto cmd = dx.m_cmdList.Get();
   cmd->SetPipelineState(m_pso.Get());
@@ -1487,10 +1493,10 @@ void MeshRenderer::DrawMeshInstanced(
     D3D12_GPU_VIRTUAL_ADDRESS boneGpu =
         dx.AllocFrameConstants(boneBytes, &boneCpu);
     auto *boneDst = reinterpret_cast<DirectX::XMFLOAT4X4 *>(boneCpu);
-    if (mesh.bonePalette.boneCount > 0) {
+    if (activeBonePalette.boneCount > 0) {
       for (int b = 0; b < kMaxBones; ++b)
         DirectX::XMStoreFloat4x4(&boneDst[b],
-                                  DirectX::XMMatrixTranspose(mesh.bonePalette.matrices[b]));
+                                  DirectX::XMMatrixTranspose(activeBonePalette.matrices[b]));
     } else {
       for (int b = 0; b < kMaxBones; ++b)
         DirectX::XMStoreFloat4x4(&boneDst[b],
@@ -1510,7 +1516,8 @@ void MeshRenderer::DrawMeshTransparentInstanced(
     const std::vector<DirectX::XMMATRIX> &worlds,
     const DirectX::XMMATRIX &view, const DirectX::XMMATRIX &proj,
     const LightParams &lighting, const MeshShadowParams &shadow,
-    float gameTime, const DirectX::XMFLOAT4 &waterWaveParams) {
+    float gameTime, const DirectX::XMFLOAT4 &waterWaveParams,
+    const BonePalette *bonePaletteOverride) {
   CreateTransparentPipelineOnce(dx);
   if (!m_transparentPso || !m_rootSig)
     return;
@@ -1519,6 +1526,8 @@ void MeshRenderer::DrawMeshTransparentInstanced(
   const auto &mesh = m_meshes[meshId];
   if (mesh.indexCount == 0)
     return;
+  const BonePalette &activeBonePalette =
+      bonePaletteOverride ? *bonePaletteOverride : mesh.bonePalette;
 
   auto cmd = dx.m_cmdList.Get();
   cmd->SetPipelineState(m_transparentPso.Get());
@@ -1615,10 +1624,10 @@ void MeshRenderer::DrawMeshTransparentInstanced(
     D3D12_GPU_VIRTUAL_ADDRESS boneGpu =
         dx.AllocFrameConstants(boneBytes, &boneCpu);
     auto *boneDst = reinterpret_cast<DirectX::XMFLOAT4X4 *>(boneCpu);
-    if (mesh.bonePalette.boneCount > 0) {
+    if (activeBonePalette.boneCount > 0) {
       for (int b = 0; b < kMaxBones; ++b)
         DirectX::XMStoreFloat4x4(&boneDst[b],
-                                  DirectX::XMMatrixTranspose(mesh.bonePalette.matrices[b]));
+                                  DirectX::XMMatrixTranspose(activeBonePalette.matrices[b]));
     } else {
       for (int b = 0; b < kMaxBones; ++b)
         DirectX::XMStoreFloat4x4(&boneDst[b],
@@ -1643,7 +1652,8 @@ void MeshRenderer::DrawMeshShadow(DxContext &dx, uint32_t meshId,
 void MeshRenderer::DrawMeshShadowInstanced(
     DxContext &dx, uint32_t meshId,
     const std::vector<DirectX::XMMATRIX> &worlds,
-    const DirectX::XMMATRIX &lightViewProj) {
+    const DirectX::XMMATRIX &lightViewProj,
+    const BonePalette *bonePaletteOverride) {
   CreateShadowPipelineOnce(dx);
   if (!m_shadowPso || !m_shadowRootSig)
     return;
@@ -1652,6 +1662,8 @@ void MeshRenderer::DrawMeshShadowInstanced(
   const auto &mesh = m_meshes[meshId];
   if (mesh.indexCount == 0)
     return;
+  const BonePalette &activeBonePalette =
+      bonePaletteOverride ? *bonePaletteOverride : mesh.bonePalette;
 
   auto cmd = dx.m_cmdList.Get();
   cmd->SetPipelineState(m_shadowPso.Get());
@@ -1691,10 +1703,10 @@ void MeshRenderer::DrawMeshShadowInstanced(
     D3D12_GPU_VIRTUAL_ADDRESS boneGpu =
         dx.AllocFrameConstants(boneBytes, &boneCpu);
     auto *boneDst = reinterpret_cast<DirectX::XMFLOAT4X4 *>(boneCpu);
-    if (mesh.bonePalette.boneCount > 0) {
+    if (activeBonePalette.boneCount > 0) {
       for (int b = 0; b < kMaxBones; ++b)
         DirectX::XMStoreFloat4x4(&boneDst[b],
-                                  DirectX::XMMatrixTranspose(mesh.bonePalette.matrices[b]));
+                                  DirectX::XMMatrixTranspose(activeBonePalette.matrices[b]));
     } else {
       for (int b = 0; b < kMaxBones; ++b)
         DirectX::XMStoreFloat4x4(&boneDst[b],

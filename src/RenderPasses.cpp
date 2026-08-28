@@ -27,18 +27,40 @@
 // ============================================================================
 // BuildBatches — group RenderItems by meshId for instanced draw (Phase 12.5).
 // ============================================================================
+struct InstanceBatchKey {
+  uint32_t meshId = UINT32_MAX;
+  const BonePalette *bonePalette = nullptr;
+
+  bool operator==(const InstanceBatchKey &other) const {
+    return meshId == other.meshId && bonePalette == other.bonePalette;
+  }
+};
+
+struct InstanceBatchKeyHash {
+  size_t operator()(const InstanceBatchKey &key) const {
+    const size_t meshHash = std::hash<uint32_t>{}(key.meshId);
+    const size_t paletteHash =
+        std::hash<const BonePalette *>{}(key.bonePalette);
+    return meshHash ^ (paletteHash + 0x9e3779b9u + (meshHash << 6u) +
+                       (meshHash >> 2u));
+  }
+};
+
 static std::vector<InstanceBatch>
 BuildBatches(const std::vector<RenderItem> &items) {
-  // Preserve ordering: first occurrence of a meshId determines batch position.
-  std::unordered_map<uint32_t, size_t> meshToIndex;
+  // Preserve ordering while separating independently animated poses.
+  // Static meshes keep a null pose and retain the original batching behavior.
+  std::unordered_map<InstanceBatchKey, size_t, InstanceBatchKeyHash>
+      batchToIndex;
   std::vector<InstanceBatch> batches;
   for (const auto &item : items) {
     if (item.meshId == UINT32_MAX)
       continue;
-    auto it = meshToIndex.find(item.meshId);
-    if (it == meshToIndex.end()) {
-      meshToIndex[item.meshId] = batches.size();
-      batches.push_back({item.meshId, {item.world}});
+    const InstanceBatchKey key{item.meshId, item.bonePalette};
+    auto it = batchToIndex.find(key);
+    if (it == batchToIndex.end()) {
+      batchToIndex[key] = batches.size();
+      batches.push_back({item.meshId, {item.world}, item.bonePalette});
     } else {
       batches[it->second].worldMatrices.push_back(item.world);
     }
@@ -60,7 +82,8 @@ void ShadowPass::Execute(DxContext &dx, const FrameData &frame) {
     m_shadow.BeginCascade(dx, c);
     for (const auto &batch : batches) {
       m_mesh.DrawMeshShadowInstanced(dx, batch.meshId, batch.worldMatrices,
-                                     frame.cascadeLightViewProj[c]);
+                                     frame.cascadeLightViewProj[c],
+                                     batch.bonePalette);
     }
   }
   if (cascadeCount > 0)
@@ -115,7 +138,8 @@ void OpaquePass::Execute(DxContext &dx, const FrameData &frame) {
   for (const auto &batch : batches) {
     m_mesh.DrawMeshInstanced(dx, batch.meshId, batch.worldMatrices,
                              frame.view, frame.proj, frame.lighting,
-                             shadowParams, frame.gameTime);
+                             shadowParams, frame.gameTime,
+                             frame.waterWaveParams, batch.bonePalette);
   }
 }
 
@@ -149,7 +173,8 @@ void GBufferPass::Execute(DxContext &dx, const FrameData &frame) {
                                     frame.gameTime, frame.waterWaveParams,
                                     frame.wetSurfaceParams,
                                     frame.puddleParams,
-                                    frame.puddleVisualParams);
+                                    frame.puddleVisualParams,
+                                    batch.bonePalette);
   }
 }
 
@@ -716,7 +741,8 @@ void TransparentMeshPass::Execute(DxContext &dx, const FrameData &frame) {
     m_mesh.DrawMeshTransparentInstanced(dx, batch.meshId, batch.worldMatrices,
                                         frame.view, frame.proj, frame.lighting,
                                         shadowParams, frame.gameTime,
-                                        frame.waterWaveParams);
+                                        frame.waterWaveParams,
+                                        batch.bonePalette);
   }
 }
 

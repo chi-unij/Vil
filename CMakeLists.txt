@@ -188,6 +188,8 @@ set(VILLIEN_SOURCES
     src/game/WorldRainParticles.cpp
     src/game/PlayerAnimationPreview.h
     src/game/PlayerAnimationPreview.cpp
+    src/game/TavernCustomerPreview.h
+    src/game/TavernCustomerPreview.cpp
     src/game/TitleScreen.h
     src/game/TitleScreen.cpp
 )

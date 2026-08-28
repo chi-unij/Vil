@@ -38,7 +38,7 @@ public:
               const std::vector<CollisionSystem::Collider> &colliders,
               const std::vector<CollisionSystem::MeshTriangle>
                   &meshTriangles,
-              bool debugFly = false);
+              bool debugFly = false, float movementYawRadians = 0.0f);
   void BuildFrame(FrameData &frame, float scaleMultiplier = 1.0f) const;
   void DrawDebugUi();
   void DrawDebugControls();

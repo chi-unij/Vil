@@ -16,11 +16,13 @@
 
 class DxContext;
 class Emitter;
+struct BonePalette;
 
 // A single drawable mesh reference (mesh ID + world transform).
 struct RenderItem {
   uint32_t meshId = UINT32_MAX;
   DirectX::XMMATRIX world = DirectX::XMMatrixIdentity();
+  const BonePalette *bonePalette = nullptr;
 };
 
 struct DebugLine {
@@ -34,6 +36,7 @@ struct DebugLine {
 struct InstanceBatch {
   uint32_t meshId = UINT32_MAX;
   std::vector<DirectX::XMMATRIX> worldMatrices;
+  const BonePalette *bonePalette = nullptr;
 };
 
 // 反射経路を明示的に切り替え、DXR 非対応環境では SSR を維持する。

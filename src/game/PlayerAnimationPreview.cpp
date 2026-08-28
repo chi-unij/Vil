@@ -80,8 +80,8 @@ void PlayerAnimationPreview::Initialize(DxContext &dx) {
     m_nativeModelMinY = minY;
     m_nativeModelHeight = maxY - minY;
   }
-  // Capsule の half-height 0.85 m に合わせ、全 Scene で見た目を 1.70 m に統一する。
-  constexpr float kTargetPlayerHeightMeters = 1.70f;
+  // 全 Scene で同じ見た目の高さを使い、家具とボス演出に対する比率を安定させる。
+  constexpr float kTargetPlayerHeightMeters = 1.60f;
   if (m_nativeModelHeight > 0.0001f)
     m_modelToWorldScale = kTargetPlayerHeightMeters / m_nativeModelHeight;
 
@@ -524,7 +524,7 @@ void PlayerAnimationPreview::Update(float dt, const Input &input,
                                     const std::vector<
                                         CollisionSystem::MeshTriangle>
                                         &meshTriangles,
-                                    bool debugFly) {
+                                    bool debugFly, float movementYawRadians) {
   if (!m_ready) {
     Update(dt);
     return;
@@ -558,6 +558,13 @@ void PlayerAnimationPreview::Update(float dt, const Input &input,
     moveX *= invLen;
     moveY *= invLen;
     moveZ *= invLen;
+
+    const float localMoveX = moveX;
+    const float localMoveZ = moveZ;
+    const float movementCos = std::cos(movementYawRadians);
+    const float movementSin = std::sin(movementYawRadians);
+    moveX = localMoveX * movementCos + localMoveZ * movementSin;
+    moveZ = localMoveZ * movementCos - localMoveX * movementSin;
 
     const bool running = input.IsKeyDown(VK_SHIFT) ||
                          input.IsGamepadButtonDown(XINPUT_GAMEPAD_A);

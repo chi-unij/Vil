@@ -8,6 +8,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <unordered_map>
 
 // stb_image is compiled inside tinygltf; we only need the header for stbi_load.
@@ -552,53 +553,104 @@ static void ApplyMaterialToPart(const tinygltf::Model &model, int materialIndex,
 // ============================================================================
 // Skeleton extraction from glTF skin
 // ============================================================================
+static int SelectCanonicalSkinIndex(const tinygltf::Model &model) {
+  int canonicalSkinIndex = -1;
+  size_t maximumJointCount = 0;
+  for (int skinIndex = 0; skinIndex < static_cast<int>(model.skins.size());
+       ++skinIndex) {
+    const size_t jointCount = model.skins[skinIndex].joints.size();
+    if (canonicalSkinIndex < 0 || jointCount > maximumJointCount) {
+      canonicalSkinIndex = skinIndex;
+      maximumJointCount = jointCount;
+    }
+  }
+  return canonicalSkinIndex;
+}
+
+static std::vector<int> BuildCanonicalJointNodes(const tinygltf::Model &model) {
+  std::vector<int> jointNodes;
+  std::unordered_map<int, bool> includedNodes;
+  const int seedSkinIndex = SelectCanonicalSkinIndex(model);
+  if (seedSkinIndex >= 0) {
+    for (const int jointNode : model.skins[seedSkinIndex].joints) {
+      if (includedNodes.emplace(jointNode, true).second)
+        jointNodes.push_back(jointNode);
+    }
+  }
+  for (const auto &skin : model.skins) {
+    for (const int jointNode : skin.joints) {
+      if (includedNodes.emplace(jointNode, true).second)
+        jointNodes.push_back(jointNode);
+    }
+  }
+  return jointNodes;
+}
+
 void GltfLoader::ExtractSkeleton(const tinygltf::Model &model) {
   if (model.skins.empty())
     return;
 
-  const auto &skin = model.skins[0]; // use first skin
-  const size_t jointCount = skin.joints.size();
+  // 複数 skin の FBX 変換結果では、衣服ごとに joint subset が分かれる場合が
+  // ある。最大の skin order を seed に全 joint を統合し、各 primitive の
+  // index は LoadModel 側でこの canonical skeleton へ remap する。
+  const std::vector<int> canonicalJointNodes = BuildCanonicalJointNodes(model);
+  const size_t jointCount = canonicalJointNodes.size();
   if (jointCount == 0)
     return;
 
   m_mesh.skeleton.bones.resize(jointCount);
-  m_mesh.skeleton.jointNodeIndices = skin.joints;
+  m_mesh.skeleton.jointNodeIndices = canonicalJointNodes;
 
-  // Read inverse bind matrices.
+  // FBX2glTF は全骨格用 skin に IBM を付けず、衣服用 subset だけに付ける場合が
+  // ある。全 skin から joint node 単位で inverse bind matrix を統合する。
   std::vector<XMFLOAT4X4> ibms(jointCount);
-  if (skin.inverseBindMatrices >= 0 &&
-      skin.inverseBindMatrices < static_cast<int>(model.accessors.size())) {
-    const auto &acc = model.accessors[skin.inverseBindMatrices];
+  std::vector<bool> inverseBindAssigned(jointCount, false);
+  for (XMFLOAT4X4 &inverseBind : ibms)
+    XMStoreFloat4x4(&inverseBind, XMMatrixIdentity());
+
+  std::unordered_map<int, int> nodeToJoint;
+  for (size_t jointIndex = 0; jointIndex < jointCount; ++jointIndex)
+    nodeToJoint[canonicalJointNodes[jointIndex]] = static_cast<int>(jointIndex);
+
+  for (const auto &sourceSkin : model.skins) {
+    if (sourceSkin.inverseBindMatrices < 0 ||
+        sourceSkin.inverseBindMatrices >=
+            static_cast<int>(model.accessors.size()))
+      continue;
+    const auto &acc = model.accessors[sourceSkin.inverseBindMatrices];
     const float *ibmData = nullptr;
     size_t ibmStride = 0;
-    if (GetAccessorFloatData(model, acc, TINYGLTF_TYPE_MAT4, ibmData, ibmStride)) {
-      for (size_t i = 0; i < jointCount && i < acc.count; ++i) {
-        const float *m = reinterpret_cast<const float *>(
-            reinterpret_cast<const uint8_t *>(ibmData) + i * ibmStride);
-        // glTF stores matrices in column-major order. Reading column-major
-        // data directly into row-major XMFLOAT4X4 naturally gives the
-        // transpose, which IS the row-vector equivalent for DirectXMath.
-        ibms[i] = XMFLOAT4X4(
-            m[0],  m[1],  m[2],  m[3],
-            m[4],  m[5],  m[6],  m[7],
-            m[8],  m[9],  m[10], m[11],
-            m[12], m[13], m[14], m[15]);
-      }
+    if (!GetAccessorFloatData(model, acc, TINYGLTF_TYPE_MAT4, ibmData,
+                              ibmStride))
+      continue;
+    const size_t matrixCount = std::min(sourceSkin.joints.size(), acc.count);
+    for (size_t sourceJointIndex = 0; sourceJointIndex < matrixCount;
+         ++sourceJointIndex) {
+      const auto canonicalJoint =
+          nodeToJoint.find(sourceSkin.joints[sourceJointIndex]);
+      if (canonicalJoint == nodeToJoint.end() ||
+          inverseBindAssigned[canonicalJoint->second])
+        continue;
+      const float *matrix = reinterpret_cast<const float *>(
+          reinterpret_cast<const uint8_t *>(ibmData) +
+          sourceJointIndex * ibmStride);
+      ibms[canonicalJoint->second] = XMFLOAT4X4(
+          matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5],
+          matrix[6], matrix[7], matrix[8], matrix[9], matrix[10], matrix[11],
+          matrix[12], matrix[13], matrix[14], matrix[15]);
+      inverseBindAssigned[canonicalJoint->second] = true;
     }
-  } else {
-    // No IBM accessor: use identity.
-    for (size_t i = 0; i < jointCount; ++i)
-      XMStoreFloat4x4(&ibms[i], XMMatrixIdentity());
   }
-
-  // Build a map: node index -> bone index (for parent lookup).
-  std::unordered_map<int, int> nodeToJoint;
-  for (size_t i = 0; i < jointCount; ++i)
-    nodeToJoint[skin.joints[i]] = static_cast<int>(i);
+  const size_t missingInverseBindCount = static_cast<size_t>(std::count(
+      inverseBindAssigned.begin(), inverseBindAssigned.end(), false));
+  if (missingInverseBindCount > 0) {
+    std::cerr << "WARNING: Canonical skeleton has " << missingInverseBindCount
+              << " joint(s) without inverse bind matrices; identity used.\n";
+  }
 
   // Populate bones.
   for (size_t i = 0; i < jointCount; ++i) {
-    const int nodeIdx = skin.joints[i];
+    const int nodeIdx = canonicalJointNodes[i];
     const auto &node = model.nodes[nodeIdx];
 
     auto &bone = m_mesh.skeleton.bones[i];
@@ -610,11 +662,11 @@ void GltfLoader::ExtractSkeleton(const tinygltf::Model &model) {
     if (!node.matrix.empty() && node.matrix.size() == 16) {
       // Column-major in glTF -> read directly into row-major XMFLOAT4X4.
       const auto &gm = node.matrix;
-      XMFLOAT4X4 mat(
-          (float)gm[0],  (float)gm[1],  (float)gm[2],  (float)gm[3],
-          (float)gm[4],  (float)gm[5],  (float)gm[6],  (float)gm[7],
-          (float)gm[8],  (float)gm[9],  (float)gm[10], (float)gm[11],
-          (float)gm[12], (float)gm[13], (float)gm[14], (float)gm[15]);
+      XMFLOAT4X4 mat((float)gm[0], (float)gm[1], (float)gm[2], (float)gm[3],
+                     (float)gm[4], (float)gm[5], (float)gm[6], (float)gm[7],
+                     (float)gm[8], (float)gm[9], (float)gm[10], (float)gm[11],
+                     (float)gm[12], (float)gm[13], (float)gm[14],
+                     (float)gm[15]);
       local = XMLoadFloat4x4(&mat);
     } else {
       XMVECTOR T = XMVectorSet(0, 0, 0, 0);
@@ -631,8 +683,7 @@ void GltfLoader::ExtractSkeleton(const tinygltf::Model &model) {
         S = XMVectorSet((float)node.scale[0], (float)node.scale[1],
                         (float)node.scale[2], 0.0f);
 
-      local = XMMatrixScalingFromVector(S) *
-              XMMatrixRotationQuaternion(R) *
+      local = XMMatrixScalingFromVector(S) * XMMatrixRotationQuaternion(R) *
               XMMatrixTranslationFromVector(T);
     }
     XMStoreFloat4x4(&bone.localTransform, local);
@@ -841,7 +892,44 @@ bool GltfLoader::LoadModel(const std::string &path) {
   // Check if this model has skin data (for JOINTS_0 / WEIGHTS_0 parsing).
   bool hasSkin = !model.skins.empty();
 
-  for (const auto &mesh : model.meshes) {
+  const int canonicalSkinIndex = SelectCanonicalSkinIndex(model);
+  const std::vector<int> canonicalJointNodes = BuildCanonicalJointNodes(model);
+  std::unordered_map<int, uint16_t> canonicalJointByNode;
+  for (size_t jointIndex = 0; jointIndex < canonicalJointNodes.size();
+       ++jointIndex) {
+    if (jointIndex >= static_cast<size_t>(kMaxBones) ||
+        jointIndex >
+            static_cast<size_t>((std::numeric_limits<uint16_t>::max)()))
+      continue;
+    canonicalJointByNode[canonicalJointNodes[jointIndex]] =
+        static_cast<uint16_t>(jointIndex);
+  }
+
+  std::vector<int> meshSkinIndices(model.meshes.size(), -1);
+  for (const auto &node : model.nodes) {
+    if (node.mesh < 0 || node.mesh >= static_cast<int>(model.meshes.size()) ||
+        node.skin < 0 || node.skin >= static_cast<int>(model.skins.size()))
+      continue;
+    int &meshSkinIndex = meshSkinIndices[node.mesh];
+    if (meshSkinIndex < 0) {
+      meshSkinIndex = node.skin;
+    } else if (meshSkinIndex != node.skin) {
+      std::cerr << "WARNING: Mesh " << node.mesh
+                << " is referenced by multiple skins; using skin "
+                << meshSkinIndex << ".\n";
+    }
+  }
+
+  for (size_t meshIndex = 0; meshIndex < model.meshes.size(); ++meshIndex) {
+    const auto &mesh = model.meshes[meshIndex];
+    const int sourceSkinIndex = meshSkinIndices[meshIndex] >= 0
+                                    ? meshSkinIndices[meshIndex]
+                                    : canonicalSkinIndex;
+    const tinygltf::Skin *sourceSkin =
+        sourceSkinIndex >= 0 &&
+                sourceSkinIndex < static_cast<int>(model.skins.size())
+            ? &model.skins[sourceSkinIndex]
+            : nullptr;
     for (const auto &prim : mesh.primitives) {
       if (prim.mode != TINYGLTF_MODE_TRIANGLES)
         continue;
@@ -987,32 +1075,35 @@ bool GltfLoader::LoadModel(const std::string &path) {
           v.tangent[0] = 1.0f; v.tangent[1] = 0.0f; v.tangent[2] = 0.0f; v.tangent[3] = 1.0f;
         }
 
-        // Bone indices (clamped to valid range to prevent out-of-bounds GPU reads)
+        // JOINTS_0 は primitive が参照する skin 内の local index。衣服ごとに
+        // skin が分かれた asset でも全 part が同じ palette を共有できるよう、
+        // joint node を経由して canonical skeleton index へ変換する。
         if (hasJoints && jointBytes) {
           const uint8_t *jPtr = jointBytes + i * jointStride;
+          uint32_t sourceJointIndices[4] = {};
           if (jointComponentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) {
-            v.boneIndices[0] = jPtr[0];
-            v.boneIndices[1] = jPtr[1];
-            v.boneIndices[2] = jPtr[2];
-            v.boneIndices[3] = jPtr[3];
+            for (int boneIndex = 0; boneIndex < 4; ++boneIndex)
+              sourceJointIndices[boneIndex] = jPtr[boneIndex];
           } else { // UNSIGNED_SHORT
             const uint16_t *jPtr16 = reinterpret_cast<const uint16_t *>(jPtr);
-            v.boneIndices[0] = jPtr16[0];
-            v.boneIndices[1] = jPtr16[1];
-            v.boneIndices[2] = jPtr16[2];
-            v.boneIndices[3] = jPtr16[3];
+            for (int boneIndex = 0; boneIndex < 4; ++boneIndex)
+              sourceJointIndices[boneIndex] = jPtr16[boneIndex];
           }
-          // Clamp to min(jointCount-1, kMaxBones-1) to prevent GPU OOB reads.
-          const size_t jointMax = model.skins[0].joints.size() > 0
-              ? model.skins[0].joints.size() - 1 : 0;
-          const uint16_t maxIdx = static_cast<uint16_t>(
-              (std::min)(jointMax, static_cast<size_t>(kMaxBones - 1)));
-          for (int bi = 0; bi < 4; ++bi) {
-            if (v.boneIndices[bi] > maxIdx)
-              v.boneIndices[bi] = 0;
+
+          for (int boneIndex = 0; boneIndex < 4; ++boneIndex) {
+            v.boneIndices[boneIndex] = 0;
+            if (!sourceSkin ||
+                sourceJointIndices[boneIndex] >= sourceSkin->joints.size())
+              continue;
+            const int jointNode =
+                sourceSkin->joints[sourceJointIndices[boneIndex]];
+            const auto canonicalJoint = canonicalJointByNode.find(jointNode);
+            if (canonicalJoint != canonicalJointByNode.end())
+              v.boneIndices[boneIndex] = canonicalJoint->second;
           }
         } else {
-          v.boneIndices[0] = v.boneIndices[1] = v.boneIndices[2] = v.boneIndices[3] = 0;
+          v.boneIndices[0] = v.boneIndices[1] = v.boneIndices[2] =
+              v.boneIndices[3] = 0;
         }
 
         // Bone weights
@@ -1077,23 +1168,25 @@ bool GltfLoader::LoadModel(const std::string &path) {
 
   // Compute tangents from UVs if any primitive lacked them.
   if (anyTangentsMissing) {
-    std::cout << "Computed tangents from UVs (some primitives had no TANGENT attribute).\n";
+    std::cout << "Computed tangents from UVs (some primitives had no TANGENT "
+                 "attribute).\n";
   }
 
   // Log max bone index for diagnostics.
   if (hasSkin) {
-    const size_t jointCount = model.skins[0].joints.size();
+    const size_t jointCount = canonicalJointNodes.size();
     if (jointCount > static_cast<size_t>(kMaxBones))
-      std::cerr << "WARNING: Model has " << jointCount << " joints but kMaxBones="
-                << kMaxBones << ". Excess bone indices clamped to 0.\n";
+      std::cerr << "WARNING: Model has " << jointCount
+                << " joints but kMaxBones=" << kMaxBones
+                << ". Excess bone indices clamped to 0.\n";
     uint16_t maxBoneIdx = 0;
     for (const auto &v : m_mesh.vertices)
       for (int bi = 0; bi < 4; ++bi)
         if (v.boneWeights[bi] > 0.0f && v.boneIndices[bi] > maxBoneIdx)
           maxBoneIdx = v.boneIndices[bi];
     std::cout << "Max bone index in vertices: " << maxBoneIdx
-              << " (joint count: " << jointCount
-              << ", kMaxBones: " << kMaxBones << ")\n";
+              << " (joint count: " << jointCount << ", kMaxBones: " << kMaxBones
+              << ")\n";
   }
 
   std::cout << "Extracted " << m_mesh.vertices.size() << " vertices, "
@@ -1443,13 +1536,18 @@ bool LoadStaticModelParts(const std::string &path,
 // Mixamo -> VRoid bone name remapping
 // ============================================================================
 
-// Strip common prefixes: "mixamorig:" or "Armature|mixamorig:"
+// Mixamo はアップロード単位で `mixamorig:`、`mixamorig11:` など異なる
+// namespace を付ける。colon より後ろの semantic bone name を共通キーにする。
 static std::string StripMixamoPrefix(const std::string &name) {
-  // Handle "mixamorig:" prefix.
-  const std::string prefix1 = "mixamorig:";
-  auto pos = name.find(prefix1);
-  if (pos != std::string::npos)
-    return name.substr(pos + prefix1.size());
+  constexpr std::string_view marker = "mixamorig";
+  const size_t markerPosition = name.find(marker);
+  if (markerPosition != std::string::npos) {
+    const size_t separatorPosition =
+        name.find(':', markerPosition + marker.size());
+    if (separatorPosition != std::string::npos &&
+        separatorPosition + 1 < name.size())
+      return name.substr(separatorPosition + 1);
+  }
   return name;
 }
 
@@ -1576,6 +1674,16 @@ bool LoadAnimationFile(const std::string &path,
   for (size_t i = 0; i < targetSkeleton.bones.size(); ++i)
     targetBoneMap[targetSkeleton.bones[i].name] = static_cast<int>(i);
 
+  // 同じ Mixamo hierarchy でも namespace 番号が異なる character 間で
+  // animation を共有できるよう、semantic bone name でも target を引く。
+  std::unordered_map<std::string, int> normalizedTargetBoneMap;
+  for (size_t i = 0; i < targetSkeleton.bones.size(); ++i) {
+    const std::string normalizedName =
+        StripMixamoPrefix(targetSkeleton.bones[i].name);
+    if (normalizedName != targetSkeleton.bones[i].name)
+      normalizedTargetBoneMap.emplace(normalizedName, static_cast<int>(i));
+  }
+
   // Build node index -> remapped bone index for the animation file's nodes.
   // The animation file has its own skeleton; we remap by name.
   std::unordered_map<int, int> animNodeToTargetBone;
@@ -1590,8 +1698,15 @@ bool LoadAnimationFile(const std::string &path,
       continue;
     }
 
-    // Try Mixamo name remapping.
+    // Try a namespace-independent direct Mixamo match before VRoid remapping.
     std::string stripped = StripMixamoPrefix(nodeName);
+    auto normalizedIt = normalizedTargetBoneMap.find(stripped);
+    if (normalizedIt != normalizedTargetBoneMap.end()) {
+      animNodeToTargetBone[ni] = normalizedIt->second;
+      continue;
+    }
+
+    // Try Mixamo -> VRoid name remapping.
     auto mixIt = mixamoMap.find(stripped);
     if (mixIt != mixamoMap.end()) {
       auto targetIt = targetBoneMap.find(mixIt->second);
