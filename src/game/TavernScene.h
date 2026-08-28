@@ -140,7 +140,8 @@ public:
     return m_customerNpc.WalkPoseUpdateCount();
   }
   bool GameplaySmokeComplete() const {
-    return m_tableCompletedCycles[0] >= 1 && m_tableCompletedCycles[1] >= 1;
+    return m_tableCompletedCycles[0] >= 1 && m_tableCompletedCycles[1] >= 1 &&
+           m_foodServed >= 1;
   }
   bool DayCycleSmokeComplete() const {
     return m_completedDays >= 1 && GameplaySmokeComplete();
@@ -157,6 +158,12 @@ public:
   int AleCapacity() const;
   int AleCapacityLevel() const;
   int TotalMugs() const;
+  int CleanBowls() const { return m_cleanBowls; }
+  int TotalBowls() const { return 2; }
+  int FoodServed() const { return m_foodServed; }
+  bool KitchenCooking() const;
+  bool KitchenReady() const;
+  float KitchenProgress() const;
   bool ExtraMugOwned() const { return m_extraMugLevel > 0; }
   bool Table3Unlocked() const { return m_table3Unlocked; }
   bool Table3Enabled() const { return m_tables[2].enabled; }
@@ -171,7 +178,9 @@ public:
   void ConfigureEntranceWaitingPreview();
   static bool RunEntranceWaitingRegression(std::string &failure);
   void ConfigureOrderBubblePreview();
+  void ConfigureKitchenPreview();
   bool RunOrderBubbleRegression(std::string &failure) const;
+  static bool RunKitchenRegression(std::string &failure);
   int ServedCustomers() const { return m_servedCustomers; }
   int Walkouts() const { return m_walkouts; }
   int TableCompletedCycles(int tableIndex) const {
@@ -204,13 +213,24 @@ private:
     Arriving,
     WaitingOrder,
     WaitingAle,
+    WaitingFood,
     Eating,
     Leaving,
     Dirty,
   };
-  enum class HeldItem { None, EmptyMug, FilledMug, DirtyMug };
+  enum class OrderType { None, Ale, Food };
+  enum class HeldItem {
+    None,
+    EmptyMug,
+    FilledMug,
+    DirtyMug,
+    CleanBowl,
+    FilledBowl,
+    DirtyBowl,
+  };
   enum class EntranceState { None, Waiting, Leaving };
-  enum class WorkState { None, PouringAle, WashingMug };
+  enum class WorkState { None, PouringAle, WashingDish };
+  enum class KitchenState { Idle, Cooking, Ready };
   enum class ManagementPage { Closed, Root, Supplies, Upgrades };
   enum class ManagementSelection { None, Supplies, Upgrades };
   enum class SupplyType : std::size_t { Ale, Count };
@@ -223,6 +243,7 @@ private:
     LongTable,
     Bench,
     Mug,
+    Bowl,
     Plate,
     Sword,
     Halberd,
@@ -248,6 +269,7 @@ private:
     bool enabled = false;
     bool servedCustomer = false;
     bool complaintPlayed = false;
+    OrderType order = OrderType::None;
     std::string speech;
     float speechTimer = 0.0f;
   };
@@ -275,6 +297,9 @@ private:
 
   static const char *GetTableStateName(TableState state);
   static const char *GetHeldItemName(HeldItem item);
+  static const char *GetOrderName(OrderType order);
+  static bool IsMugItem(HeldItem item);
+  static bool IsBowlItem(HeldItem item);
   void SpawnCustomer(int tableIndex);
   void UpdateEntranceCustomers(float dt);
   void DismissEntranceCustomer(int tableIndex, bool penalize);
@@ -286,7 +311,11 @@ private:
   void BeginPouring();
   void FinishPouring();
   void ServeAle(int tableIndex);
-  void CollectDirtyMug(int tableIndex);
+  void StartCooking();
+  void CollectCookedFood();
+  void ReturnCleanBowl();
+  void ServeFood(int tableIndex);
+  void CollectDirtyDish(int tableIndex);
   void BeginWashing();
   void FinishWashing();
   void TriggerWalkout(int tableIndex);
@@ -296,6 +325,7 @@ private:
   bool ManagementInteractionHasPriority() const;
   int FindTableInState(TableState state) const;
   int FindMostUrgentWaitingAleTable() const;
+  int FindMostUrgentWaitingFoodTable() const;
   int NearestCounterMugSlot(float maximumDistance) const;
   bool HasActiveCustomers() const;
   bool IsAfterMidnight() const;
@@ -343,6 +373,7 @@ private:
   uint32_t m_dirtySpotMeshId = UINT32_MAX;
   uint32_t m_aleMeshId = UINT32_MAX;
   uint32_t m_foamMeshId = UINT32_MAX;
+  uint32_t m_stewMeshId = UINT32_MAX;
   uint32_t m_metalMeshId = UINT32_MAX;
   uint32_t m_waterMeshId = UINT32_MAX;
   std::array<std::vector<uint32_t>,
@@ -356,6 +387,7 @@ private:
   std::array<MugState, 2> m_counterMugs{};
   HeldItem m_heldItem = HeldItem::None;
   WorkState m_workState = WorkState::None;
+  KitchenState m_kitchenState = KitchenState::Idle;
   ManagementPage m_managementPage = ManagementPage::Closed;
   ManagementSelection m_managementSelection = ManagementSelection::None;
   ManagementUiDiagnostics m_managementUiDiagnostics{};
@@ -380,6 +412,7 @@ private:
   float m_aleOverflow = 0.0f;
   float m_pourQuality = 1.0f;
   float m_washProgress = 0.0f;
+  float m_cookTimer = 0.0f;
   float m_interactionCooldown = 0.0f;
   float m_feedbackTimer = 0.0f;
   float m_pourVisualTime = 0.0f;
@@ -389,8 +422,11 @@ private:
   int m_completedCycles = 0;
   int m_completedDays = 0;
   int m_cleanMugs = 2;
+  int m_cleanBowls = 2;
+  int m_foodServed = 0;
+  int m_orderSerial = 0;
   int m_perfectPours = 0;
-  int m_heldMugTableIndex = -1;
+  int m_heldDishTableIndex = -1;
   int m_tutorialTableIndex = 0;
   bool m_workActionStarted = false;
   bool m_cycleAwaitingWash = false;

@@ -23,6 +23,7 @@ constexpr std::array<XMFLOAT3, 3> kTableInteractions = {
 constexpr XMFLOAT3 kMugRackInteraction = {-2.7f, 0.0f, 6.90f};
 constexpr XMFLOAT3 kAleTapInteraction = {0.0f, 0.0f, 6.90f};
 constexpr XMFLOAT3 kWashBasinInteraction = {2.7f, 0.0f, 6.90f};
+constexpr XMFLOAT3 kKitchenInteraction = {5.35f, 0.0f, 6.90f};
 constexpr std::array<XMFLOAT3, 2> kCounterMugInteractions = {
     XMFLOAT3{-1.55f, 0.0f, 6.90f}, XMFLOAT3{-0.85f, 0.0f, 6.90f}};
 constexpr std::array<XMFLOAT3, 2> kCounterMugPositions = {
@@ -38,6 +39,7 @@ constexpr float kPerfectPourMinimum = 0.82f;
 constexpr float kPerfectPourMaximum = 0.96f;
 constexpr int kBaseTableCount = 2;
 constexpr int kInitialMugCapacity = 2;
+constexpr int kInitialBowlCapacity = 2;
 constexpr int kInitialAleStock = 6;
 constexpr int kInitialAleCapacity = 6;
 constexpr int kAleSupplyUnitPrice = 2;
@@ -50,12 +52,14 @@ constexpr float kEntranceWaitSeconds = 30.0f;
 constexpr float kEntranceLeaveSeconds = 1.2f;
 constexpr int kEntranceTimeoutPenalty = 20;
 constexpr float kCustomerWalkSpeed = 1.6f;
+constexpr float kCookSeconds = 6.0f;
 constexpr float kMugScaleXZ = 0.345f;
 constexpr float kMugScaleY = 0.465f;
 constexpr float kAleSurfaceScaleXZ = 0.255f;
 constexpr float kImportedMugScale = 1.55f;
 constexpr float kImportedMugHalfHeight = 0.239042f * kImportedMugScale * 0.5f;
 constexpr const char *kAleName = "水鏡エール";
+constexpr const char *kFoodName = "月影シチュー";
 
 LoadedMesh CreateOrderBubbleMesh() {
   // カメラ側（ローカル -Z）を向く角丸の吹き出しと、客を指すしっぽ。
@@ -656,7 +660,7 @@ ManagementCardResult DrawManagementCard(ImDrawList *draw, const char *id,
   return result;
 }
 
-constexpr std::array<const char *, 13> kTavernAssetPaths = {
+constexpr std::array<const char *, 14> kTavernAssetPaths = {
     "Assets/models/models_2/optimized/barrel.glb",
     "Assets/models/models_2/optimized/crate.glb",
     "Assets/models/models_2/optimized/stool.glb",
@@ -665,6 +669,7 @@ constexpr std::array<const char *, 13> kTavernAssetPaths = {
     "Assets/models/models_2/optimized/long_table.glb",
     "Assets/models/models_2/optimized/bench.glb",
     "Assets/models/models_2/optimized/mug.glb",
+    "Assets/models/models_2/optimized/bowl.glb",
     "Assets/models/models_2/optimized/plate.glb",
     "Assets/models/models_2/optimized/sword.glb",
     "Assets/models/models_2/optimized/halberd.glb",
@@ -722,13 +727,15 @@ const char *TavernScene::GetTableStateName(TableState state) {
   case TableState::WaitingOrder:
     return "注文待ち";
   case TableState::WaitingAle:
-    return "提供待ち";
+    return "エール待ち";
+  case TableState::WaitingFood:
+    return "料理待ち";
   case TableState::Eating:
     return "飲食中";
   case TableState::Leaving:
     return "退店中";
   case TableState::Dirty:
-    return "汚れたジョッキ";
+    return "片付け待ち";
   }
   return "不明";
 }
@@ -743,8 +750,36 @@ const char *TavernScene::GetHeldItemName(HeldItem item) {
     return "エール入りジョッキ";
   case HeldItem::DirtyMug:
     return "汚れたジョッキ";
+  case HeldItem::CleanBowl:
+    return "空のボウル";
+  case HeldItem::FilledBowl:
+    return "月影シチュー";
+  case HeldItem::DirtyBowl:
+    return "汚れたボウル";
   }
   return "手ぶら";
+}
+
+const char *TavernScene::GetOrderName(OrderType order) {
+  switch (order) {
+  case OrderType::Ale:
+    return kAleName;
+  case OrderType::Food:
+    return kFoodName;
+  case OrderType::None:
+    break;
+  }
+  return "注文なし";
+}
+
+bool TavernScene::IsMugItem(HeldItem item) {
+  return item == HeldItem::EmptyMug || item == HeldItem::FilledMug ||
+         item == HeldItem::DirtyMug;
+}
+
+bool TavernScene::IsBowlItem(HeldItem item) {
+  return item == HeldItem::CleanBowl || item == HeldItem::FilledBowl ||
+         item == HeldItem::DirtyBowl;
 }
 
 bool TavernScene::PlayerMovementLocked() const {
@@ -786,6 +821,22 @@ int TavernScene::CustomerTableCount() const {
 
 bool TavernScene::AlePourInProgress() const {
   return m_workState == WorkState::PouringAle;
+}
+
+bool TavernScene::KitchenCooking() const {
+  return m_kitchenState == KitchenState::Cooking;
+}
+
+bool TavernScene::KitchenReady() const {
+  return m_kitchenState == KitchenState::Ready;
+}
+
+float TavernScene::KitchenProgress() const {
+  if (m_kitchenState == KitchenState::Ready)
+    return 1.0f;
+  if (m_kitchenState != KitchenState::Cooking)
+    return 0.0f;
+  return std::clamp(1.0f - m_cookTimer / kCookSeconds, 0.0f, 1.0f);
 }
 
 int TavernScene::AleUnitPrice() const { return kAleSupplyUnitPrice; }
@@ -1175,6 +1226,14 @@ void TavernScene::Initialize(DxContext &dx) {
   foamMaterial.rayTracingVisible = false;
   m_foamMeshId = dx.CreateMeshResources(cylinderMesh, {}, foamMaterial);
 
+  Material stewMaterial{};
+  stewMaterial.baseColorFactor = {0.42f, 0.14f, 0.045f, 1.0f};
+  stewMaterial.metallicFactor = 0.0f;
+  stewMaterial.roughnessFactor = 0.58f;
+  stewMaterial.emissiveFactor = {0.10f, 0.022f, 0.004f};
+  stewMaterial.rayTracingVisible = false;
+  m_stewMeshId = dx.CreateMeshResources(cylinderMesh, {}, stewMaterial);
+
   Material metalMaterial{};
   metalMaterial.baseColorFactor = {0.28f, 0.34f, 0.35f, 1.0f};
   metalMaterial.metallicFactor = 0.75f;
@@ -1182,12 +1241,16 @@ void TavernScene::Initialize(DxContext &dx) {
   m_metalMeshId = dx.CreateMeshResources(cubeMesh, {}, metalMaterial);
 
   Material waterMaterial{};
-  waterMaterial.baseColorFactor = {0.10f, 0.46f, 0.58f, 1.0f};
+  waterMaterial.baseColorFactor = {0.075f, 0.28f, 0.34f, 1.0f};
   waterMaterial.metallicFactor = 0.0f;
-  waterMaterial.roughnessFactor = 0.16f;
-  waterMaterial.emissiveFactor = {0.025f, 0.16f, 0.22f};
+  waterMaterial.roughnessFactor = 0.035f;
+  waterMaterial.emissiveFactor = {0.004f, 0.012f, 0.018f};
+  waterMaterial.uvTiling = {1.8f, 1.8f};
+  waterMaterial.proceduralTypeId = 6.0f;
+  waterMaterial.reflectionReceiver = ReflectionReceiver::Water;
+  waterMaterial.reflectionStrength = 0.78f;
   waterMaterial.rayTracingVisible = false;
-  m_waterMeshId = dx.CreateMeshResources(cubeMesh, {}, waterMaterial);
+  m_waterMeshId = dx.CreateMeshResources(cylinderMesh, {}, waterMaterial);
 
   static_assert(kTavernAssetPaths.size() ==
                 static_cast<std::size_t>(TavernAsset::Count));
@@ -1206,7 +1269,7 @@ void TavernScene::Initialize(DxContext &dx) {
       hasAsset(TavernAsset::Barrel) && hasAsset(TavernAsset::Crate) &&
       hasAsset(TavernAsset::Stool) && hasAsset(TavernAsset::Chest) &&
       hasAsset(TavernAsset::RoundTable) && hasAsset(TavernAsset::Mug) &&
-      hasAsset(TavernAsset::Candle);
+      hasAsset(TavernAsset::Bowl) && hasAsset(TavernAsset::Candle);
   OutputDebugStringA(m_importedArtReady
                          ? "[TavernScene] optimized tavern art set ready\n"
                          : "[TavernScene] optimized art incomplete; procedural "
@@ -1256,6 +1319,11 @@ void TavernScene::Initialize(DxContext &dx) {
        0.0f,
        true},
       {CollisionSystem::ShapeType::Box,
+       {5.35f, 0.59f, 8.18f},
+       {2.20f, 1.18f, 1.20f},
+       0.0f,
+       true},
+      {CollisionSystem::ShapeType::Box,
        {kManagementTablePosition.x, 0.55f, kManagementTablePosition.z},
        {1.65f, 1.10f, 1.15f},
        0.0f,
@@ -1269,7 +1337,8 @@ void TavernScene::Initialize(DxContext &dx) {
             m_customerHairMeshId != UINT32_MAX && m_mugMeshId != UINT32_MAX &&
             m_filledMugMeshId != UINT32_MAX && m_dirtyMugMeshId != UINT32_MAX &&
             m_dirtySpotMeshId != UINT32_MAX && m_aleMeshId != UINT32_MAX &&
-            m_foamMeshId != UINT32_MAX && m_metalMeshId != UINT32_MAX &&
+            m_foamMeshId != UINT32_MAX && m_stewMeshId != UINT32_MAX &&
+            m_metalMeshId != UINT32_MAX &&
             m_waterMeshId != UINT32_MAX && m_orderBubbleMeshId != UINT32_MAX &&
             m_orderBubbleBorderMeshId != UINT32_MAX;
   Reset();
@@ -1285,6 +1354,8 @@ void TavernScene::Reset(float startingHour) {
   m_completedCycles = 0;
   m_completedDays = 0;
   m_tableCompletedCycles = {};
+  m_foodServed = 0;
+  m_orderSerial = 0;
   m_supplies = {};
   AleSupply() = {kInitialAleStock, kInitialAleCapacity};
   m_supplyPurchaseSerial = 0;
@@ -1314,6 +1385,7 @@ void TavernScene::ResetShiftRuntime(float startingHour) {
     m_spawnTimers[2] = CustomerSpawnDelay(2);
   m_heldItem = HeldItem::None;
   m_workState = WorkState::None;
+  m_kitchenState = KitchenState::Idle;
   m_managementPage = ManagementPage::Closed;
   m_managementSelection = ManagementSelection::None;
   m_managementActivationSerial = 0;
@@ -1330,11 +1402,13 @@ void TavernScene::ResetShiftRuntime(float startingHour) {
   m_aleOverflow = 0.0f;
   m_pourQuality = 1.0f;
   m_washProgress = 0.0f;
+  m_cookTimer = 0.0f;
   m_interactionCooldown = 0.35f;
   m_feedbackTimer = 0.0f;
   m_pourVisualTime = 0.0f;
   m_cleanMugs = TotalMugs();
-  m_heldMugTableIndex = -1;
+  m_cleanBowls = kInitialBowlCapacity;
+  m_heldDishTableIndex = -1;
   m_tutorialTableIndex = 0;
   m_workActionStarted = false;
   m_cycleAwaitingWash = false;
@@ -1457,6 +1531,24 @@ void TavernScene::ConfigureOrderBubblePreview() {
   }
 }
 
+void TavernScene::ConfigureKitchenPreview() {
+  Reset(12.0f);
+  m_tutorialStep = TutorialStep::Complete;
+  m_tables = {};
+  m_entranceCustomers = {};
+  m_tables[0].enabled = true;
+  m_tables[0].state = TableState::WaitingFood;
+  m_tables[0].order = OrderType::Food;
+  m_tables[0].satisfaction = 100.0f;
+  m_tables[1].enabled = true;
+  m_spawnTimers = {120.0f, 120.0f, 0.0f};
+  m_cleanBowls = kInitialBowlCapacity - 1;
+  m_kitchenState = KitchenState::Cooking;
+  m_cookTimer = 4.0f;
+  m_feedbackText = std::string(kFoodName) + "を煮込み中";
+  m_feedbackTimer = 2.0f;
+}
+
 bool TavernScene::RunOrderBubbleRegression(std::string &failure) const {
   failure.clear();
   const auto fail = [&](const char *reason) {
@@ -1472,10 +1564,15 @@ bool TavernScene::RunOrderBubbleRegression(std::string &failure) const {
   probe.m_orderBubbleMeshId = m_orderBubbleMeshId;
   probe.m_orderBubbleBorderMeshId = m_orderBubbleBorderMeshId;
   probe.m_filledMugMeshId = m_filledMugMeshId;
+  probe.m_mugMeshId = m_mugMeshId;
   probe.m_aleMeshId = m_aleMeshId;
   probe.m_foamMeshId = m_foamMeshId;
+  probe.m_stewMeshId = m_stewMeshId;
+  probe.m_glowMeshId = m_glowMeshId;
   const auto mugIndex = static_cast<std::size_t>(TavernAsset::Mug);
+  const auto bowlIndex = static_cast<std::size_t>(TavernAsset::Bowl);
   probe.m_tavernAssetMeshIds[mugIndex] = m_tavernAssetMeshIds[mugIndex];
+  probe.m_tavernAssetMeshIds[bowlIndex] = m_tavernAssetMeshIds[bowlIndex];
   ViewContext view{};
   const auto bubbleCount = [&]() {
     FrameData frame;
@@ -1519,11 +1616,17 @@ bool TavernScene::RunOrderBubbleRegression(std::string &failure) const {
             std::abs(anchor.x - kTableInteractions[bubbles].x) > 0.001f ||
             std::abs(anchor.y - 2.18f) > 0.001f)
           return fail("Order bubble detached from its customer or camera");
-        const auto &mugIds = probe.m_tavernAssetMeshIds[mugIndex];
-        const uint32_t iconMesh = mugIds.empty() ? m_filledMugMeshId : mugIds.front();
+        const bool foodOrder =
+            probe.m_tables[static_cast<std::size_t>(bubbles)].order ==
+            OrderType::Food;
+        const auto &iconIds = probe.m_tavernAssetMeshIds[
+            foodOrder ? bowlIndex : mugIndex];
+        const uint32_t iconMesh =
+            iconIds.empty() ? (foodOrder ? m_mugMeshId : m_filledMugMeshId)
+                            : iconIds.front();
         if (i + 2 >= frame.opaqueItems.size() ||
             frame.opaqueItems[i + 2].meshId != iconMesh)
-          return fail("Order bubble is missing its actual mug model");
+          return fail("Order bubble is missing its ordered item model");
         ++bubbles;
       }
       if (bubbles != 3)
@@ -1533,9 +1636,8 @@ bool TavernScene::RunOrderBubbleRegression(std::string &failure) const {
   probe.m_tavernAssetMeshIds[mugIndex].clear();
   if (bubbleCount() != 3)
     return fail("Missing imported mug must retain fallback order bubbles");
-  probe.m_heldItem = HeldItem::FilledMug;
-  probe.m_aleFill = 0.90f;
-  probe.ServeAle(0);
+  probe.m_heldItem = HeldItem::FilledBowl;
+  probe.ServeFood(0);
   if (bubbleCount() != 2)
     return fail("Serving must remove only that customer's order bubble");
   probe.TriggerWalkout(1);
@@ -1552,6 +1654,101 @@ bool TavernScene::RunOrderBubbleRegression(std::string &failure) const {
   probe.Reset();
   if (bubbleCount() != 0)
     return fail("New Game must clear order bubbles");
+  return true;
+}
+
+bool TavernScene::RunKitchenRegression(std::string &failure) {
+  TavernScene probe;
+  failure.clear();
+  const auto fail = [&](const char *reason) {
+    failure = reason;
+    return false;
+  };
+  const auto tick = [&](float seconds,
+                        const XMFLOAT3 &position = XMFLOAT3{}) {
+    while (seconds > 0.0f) {
+      const float dt = std::min(0.25f, seconds);
+      probe.Update(dt, position, false, false, false);
+      seconds -= dt;
+    }
+  };
+
+  probe.Reset();
+  probe.m_tutorialStep = TutorialStep::Complete;
+  probe.ResetShiftRuntime(5.0f);
+  probe.m_tables[0].state = TableState::WaitingOrder;
+  probe.TakeOrder(0);
+  if (probe.m_tables[0].state != TableState::WaitingFood ||
+      probe.m_tables[0].order != OrderType::Food)
+    return fail("最初の通常注文が料理にならない");
+
+  probe.StartCooking();
+  if (!probe.KitchenCooking() || probe.CleanBowls() != 1 ||
+      probe.PlayerMovementLocked())
+    return fail("調理開始時のボウル消費または非ブロッキング契約が不正");
+  tick(kCookSeconds * 0.5f, probe.PlayerSpawnPosition());
+  const float pausedProgress = probe.KitchenProgress();
+  if (!probe.KitchenCooking() || pausedProgress < 0.45f ||
+      pausedProgress > 0.55f)
+    return fail("厨房を離れた後に調理タイマーが進まない");
+
+  probe.m_interactionCooldown = 0.0f;
+  probe.Update(0.0f, kManagementTableInteraction, true, false, false);
+  tick(1.0f, kManagementTableInteraction);
+  if (!probe.ManagementMenuOpen() ||
+      std::abs(probe.KitchenProgress() - pausedProgress) > 0.001f)
+    return fail("管理メニュー中に調理タイマーが進んだ");
+  probe.Update(0.0f, kManagementTableInteraction, true, false, false);
+  tick(kCookSeconds * 0.5f, probe.PlayerSpawnPosition());
+  if (!probe.KitchenReady())
+    return fail("調理完了後に受取可能にならない");
+
+  probe.m_interactionCooldown = 0.0f;
+  probe.Update(0.0f, kKitchenInteraction, true, false, false);
+  if (probe.m_heldItem != HeldItem::FilledBowl || probe.KitchenReady())
+    return fail("完成料理を厨房から受け取れない");
+  probe.Update(0.0f, kTableInteractions[0], true, false, false);
+  if (probe.m_tables[0].state != TableState::Eating ||
+      probe.m_heldItem != HeldItem::None || probe.FoodServed() != 1 ||
+      probe.Gold() != 13)
+    return fail("料理の提供、報酬、または提供数が不正");
+
+  tick(5.5f + CustomerTravelSeconds(0) + 0.5f,
+       probe.PlayerSpawnPosition());
+  if (probe.m_tables[0].state != TableState::Dirty ||
+      probe.m_tables[0].order != OrderType::Food)
+    return fail("食事後に汚れたボウルが卓へ残らない");
+  probe.m_interactionCooldown = 0.0f;
+  probe.Update(0.0f, kTableInteractions[0], true, false, false);
+  if (probe.m_heldItem != HeldItem::DirtyBowl ||
+      probe.m_heldDishTableIndex != 0)
+    return fail("汚れたボウルを回収できない");
+  probe.Update(0.0f, kWashBasinInteraction, true, false, false);
+  for (int i = 0; i < 5; ++i)
+    probe.Update(0.25f, kWashBasinInteraction, false, true, false);
+  if (probe.m_heldItem != HeldItem::CleanBowl ||
+      probe.TableCompletedCycles(0) != 1 || probe.CleanBowls() != 1)
+    return fail("ボウル洗浄または料理サイクル完了が不正");
+  probe.m_interactionCooldown = 0.0f;
+  probe.Update(0.0f, kKitchenInteraction, true, false, false);
+  if (probe.m_heldItem != HeldItem::None ||
+      probe.CleanBowls() != probe.TotalBowls())
+    return fail("洗浄済みボウルを厨房へ戻せない");
+
+  probe.m_tables[0].state = TableState::WaitingOrder;
+  probe.m_orderSerial = 0;
+  probe.TakeOrder(0);
+  probe.StartCooking();
+  probe.TriggerWalkout(0);
+  tick(kCookSeconds, probe.PlayerSpawnPosition());
+  if (!probe.KitchenReady() || probe.m_tables[0].state != TableState::Leaving)
+    return fail("退店時に調理品を安全に保持できない");
+
+  probe.Reset();
+  if (probe.KitchenCooking() || probe.KitchenReady() ||
+      probe.CleanBowls() != probe.TotalBowls() || probe.FoodServed() != 0 ||
+      probe.m_heldItem != HeldItem::None)
+    return fail("New Game後に厨房状態またはボウルが残った");
   return true;
 }
 
@@ -1621,7 +1818,7 @@ bool TavernScene::RunEntranceWaitingRegression(std::string &failure) {
   tick(0.25f);
   if (probe.m_entranceCustomers[0].state != EntranceState::None ||
       probe.m_tables[0].state != TableState::Arriving ||
-      probe.m_heldItem != HeldItem::DirtyMug || probe.m_heldMugTableIndex != 0 ||
+      probe.m_heldItem != HeldItem::DirtyMug || probe.m_heldDishTableIndex != 0 ||
       mugCount() != probe.TotalMugs() || probe.Gold() != 50 || probe.Walkouts() != 0)
     return fail("回収後の案内でジョッキが失われた、または不要な罰金が発生");
   tick(CustomerTravelSeconds(0) + 0.25f);
@@ -1637,7 +1834,7 @@ bool TavernScene::RunEntranceWaitingRegression(std::string &failure) {
   setup();
   probe.m_spawnTimers[0] = 4.0f;
   tick(1.0f);
-  probe.CollectDirtyMug(0);
+  probe.CollectDirtyDish(0);
   if (std::abs(probe.m_spawnTimers[0] - 3.0f) > 0.001f)
     return fail("早めの回収で来客タイマーが再設定された");
   tick(3.0f);
@@ -1722,11 +1919,16 @@ bool TavernScene::RunEntranceWaitingRegression(std::string &failure) {
 void TavernScene::TakeOrder(int tableIndex) {
   TableSlot &table = m_tables[tableIndex];
   if (CanServeCustomers() && table.state == TableState::WaitingOrder) {
-    table.state = TableState::WaitingAle;
+    table.order = m_tutorialStep == TutorialStep::Complete &&
+                          (m_orderSerial++ % 2) == 0
+                      ? OrderType::Food
+                      : OrderType::Ale;
+    table.state = table.order == OrderType::Food ? TableState::WaitingFood
+                                                 : TableState::WaitingAle;
     // 注文内容は頭上の模型で表示し、苦情などの台詞は従来のHUDに残す。
     table.speech.clear();
     table.speechTimer = 0.0f;
-    m_feedbackText = "注文を受けた";
+    m_feedbackText = std::string("注文：") + GetOrderName(table.order);
     m_feedbackTimer = 1.6f;
     if (m_tutorialStep == TutorialStep::TakeOrder) {
       m_tutorialTableIndex = tableIndex;
@@ -1753,7 +1955,7 @@ void TavernScene::ReturnEmptyMug() {
 
 void TavernScene::PlaceHeldMug(int slotIndex) {
   if (slotIndex < 0 || slotIndex >= static_cast<int>(m_counterMugs.size()) ||
-      m_heldItem == HeldItem::None ||
+      !IsMugItem(m_heldItem) ||
       m_counterMugs[slotIndex].item != HeldItem::None)
     return;
 
@@ -1762,7 +1964,7 @@ void TavernScene::PlaceHeldMug(int slotIndex) {
   mug.aleFill = m_aleFill;
   mug.aleFoam = m_aleFoam;
   mug.pourQuality = m_pourQuality;
-  mug.sourceTableIndex = m_heldMugTableIndex;
+  mug.sourceTableIndex = m_heldDishTableIndex;
   mug.cycleAwaitingWash = m_cycleAwaitingWash;
   mug.lastPourPerfect = m_lastPourPerfect;
 
@@ -1770,7 +1972,7 @@ void TavernScene::PlaceHeldMug(int slotIndex) {
   m_aleFill = 0.0f;
   m_aleFoam = 0.0f;
   m_pourQuality = 1.0f;
-  m_heldMugTableIndex = -1;
+  m_heldDishTableIndex = -1;
   m_cycleAwaitingWash = false;
   m_lastPourPerfect = false;
   m_feedbackText = "ジョッキをカウンターに置いた";
@@ -1788,7 +1990,7 @@ void TavernScene::PickUpPlacedMug(int slotIndex) {
   m_aleFill = mug.aleFill;
   m_aleFoam = mug.aleFoam;
   m_pourQuality = mug.pourQuality;
-  m_heldMugTableIndex = mug.sourceTableIndex;
+  m_heldDishTableIndex = mug.sourceTableIndex;
   m_cycleAwaitingWash = mug.cycleAwaitingWash;
   m_lastPourPerfect = mug.lastPourPerfect;
   mug = {};
@@ -1885,12 +2087,78 @@ void TavernScene::ServeAle(int tableIndex) {
   m_feedbackTimer = 1.8f;
 }
 
-void TavernScene::CollectDirtyMug(int tableIndex) {
+void TavernScene::StartCooking() {
+  if (m_kitchenState != KitchenState::Idle ||
+      FindMostUrgentWaitingFoodTable() < 0)
+    return;
+
+  if (m_heldItem == HeldItem::CleanBowl) {
+    m_heldItem = HeldItem::None;
+  } else if (m_heldItem == HeldItem::None && m_cleanBowls > 0) {
+    --m_cleanBowls;
+  } else {
+    m_feedbackText = "空のボウルが必要";
+    m_feedbackTimer = 1.6f;
+    return;
+  }
+
+  m_kitchenState = KitchenState::Cooking;
+  m_cookTimer = kCookSeconds;
+  m_feedbackText = std::string(kFoodName) + "を煮込み始めた";
+  m_feedbackTimer = 1.8f;
+}
+
+void TavernScene::CollectCookedFood() {
+  if (m_kitchenState != KitchenState::Ready || m_heldItem != HeldItem::None)
+    return;
+  m_kitchenState = KitchenState::Idle;
+  m_cookTimer = 0.0f;
+  m_heldItem = HeldItem::FilledBowl;
+  m_feedbackText = std::string(kFoodName) + "を受け取った";
+  m_feedbackTimer = 1.4f;
+}
+
+void TavernScene::ReturnCleanBowl() {
+  if (m_heldItem != HeldItem::CleanBowl)
+    return;
+  m_heldItem = HeldItem::None;
+  m_cleanBowls = std::min(kInitialBowlCapacity, m_cleanBowls + 1);
+  m_feedbackText = "ボウルを厨房へ戻した";
+  m_feedbackTimer = 1.2f;
+}
+
+void TavernScene::ServeFood(int tableIndex) {
+  TableSlot &table = m_tables[tableIndex];
+  if (!CanServeCustomers() || table.state != TableState::WaitingFood ||
+      m_heldItem != HeldItem::FilledBowl)
+    return;
+
+  constexpr int baseGold = 9;
+  const int patienceBonus =
+      table.satisfaction >= 80.0f ? 4 : (table.satisfaction >= 50.0f ? 2 : 0);
+  const int earnedGold = baseGold + patienceBonus;
+  m_gold += earnedGold;
+  ++m_servedCustomers;
+  ++m_foodServed;
+  table.state = TableState::Eating;
+  table.stateTimer = 5.5f;
+  table.servedCustomer = true;
+  table.speech = table.satisfaction >= 50.0f ? "温かくてうまい！"
+                                             : "待ったかいがあったよ";
+  table.speechTimer = 2.8f;
+  m_heldItem = HeldItem::None;
+  m_feedbackText = "+" + std::to_string(earnedGold) +
+                   " G  料理9 + 待ち" + std::to_string(patienceBonus);
+  m_feedbackTimer = 1.8f;
+}
+
+void TavernScene::CollectDirtyDish(int tableIndex) {
   TableSlot &table = m_tables[tableIndex];
   if (table.state != TableState::Dirty || m_heldItem != HeldItem::None)
     return;
-  m_heldItem = HeldItem::DirtyMug;
-  m_heldMugTableIndex = tableIndex;
+  m_heldItem = table.order == OrderType::Food ? HeldItem::DirtyBowl
+                                              : HeldItem::DirtyMug;
+  m_heldDishTableIndex = tableIndex;
   table = {};
   table.enabled = true;
   // 来客計時はDirtyへ遷移した時点から継続する。回収で待ち直させない。
@@ -1902,26 +2170,29 @@ void TavernScene::CollectDirtyMug(int tableIndex) {
 }
 
 void TavernScene::BeginWashing() {
-  if (m_heldItem != HeldItem::DirtyMug || m_workState != WorkState::None)
+  if ((m_heldItem != HeldItem::DirtyMug &&
+       m_heldItem != HeldItem::DirtyBowl) ||
+      m_workState != WorkState::None)
     return;
-  m_workState = WorkState::WashingMug;
+  m_workState = WorkState::WashingDish;
   m_washProgress = 0.0f;
   m_workActionStarted = false;
 }
 
 void TavernScene::FinishWashing() {
-  if (m_workState != WorkState::WashingMug)
+  if (m_workState != WorkState::WashingDish)
     return;
   m_workState = WorkState::None;
-  m_heldItem = HeldItem::EmptyMug;
+  m_heldItem = m_heldItem == HeldItem::DirtyBowl ? HeldItem::CleanBowl
+                                                 : HeldItem::EmptyMug;
   m_washProgress = 1.0f;
   m_workActionStarted = false;
   if (m_cycleAwaitingWash) {
     ++m_completedCycles;
-    if (m_heldMugTableIndex >= 0 &&
-        m_heldMugTableIndex < static_cast<int>(m_tableCompletedCycles.size()))
-      ++m_tableCompletedCycles[m_heldMugTableIndex];
-    m_heldMugTableIndex = -1;
+    if (m_heldDishTableIndex >= 0 &&
+        m_heldDishTableIndex < static_cast<int>(m_tableCompletedCycles.size()))
+      ++m_tableCompletedCycles[m_heldDishTableIndex];
+    m_heldDishTableIndex = -1;
     m_cycleAwaitingWash = false;
   }
   if (m_tutorialStep == TutorialStep::WashMug) {
@@ -1987,6 +2258,20 @@ int TavernScene::FindMostUrgentWaitingAleTable() const {
   for (int tableIndex = 0; tableIndex < CustomerTableCount(); ++tableIndex) {
     const TableSlot &table = m_tables[tableIndex];
     if (table.enabled && table.state == TableState::WaitingAle &&
+        table.satisfaction < lowestSatisfaction) {
+      lowestSatisfaction = table.satisfaction;
+      urgentTable = tableIndex;
+    }
+  }
+  return urgentTable;
+}
+
+int TavernScene::FindMostUrgentWaitingFoodTable() const {
+  int urgentTable = -1;
+  float lowestSatisfaction = 101.0f;
+  for (int tableIndex = 0; tableIndex < CustomerTableCount(); ++tableIndex) {
+    const TableSlot &table = m_tables[tableIndex];
+    if (table.enabled && table.state == TableState::WaitingFood &&
         table.satisfaction < lowestSatisfaction) {
       lowestSatisfaction = table.satisfaction;
       urgentTable = tableIndex;
@@ -2069,6 +2354,9 @@ uint32_t TavernScene::MugMeshForState(HeldItem item) const {
     return m_dirtyMugMeshId;
   case HeldItem::None:
   case HeldItem::EmptyMug:
+  case HeldItem::CleanBowl:
+  case HeldItem::FilledBowl:
+  case HeldItem::DirtyBowl:
     return m_mugMeshId;
   }
   return m_mugMeshId;
@@ -2085,6 +2373,7 @@ void TavernScene::RunAutomation() {
   }
 
   const int aleTable = FindMostUrgentWaitingAleTable();
+  const int foodTable = FindMostUrgentWaitingFoodTable();
   if (aleTable >= 0 && AleStock() <= 0) {
     const int affordableQuantity = m_gold / kAleSupplyUnitPrice;
     m_aleOrderQuantity =
@@ -2096,7 +2385,13 @@ void TavernScene::RunAutomation() {
       ServeAle(aleTable);
     return;
   }
-  if (m_heldItem == HeldItem::DirtyMug) {
+  if (m_heldItem == HeldItem::FilledBowl) {
+    if (foodTable >= 0)
+      ServeFood(foodTable);
+    return;
+  }
+  if (m_heldItem == HeldItem::DirtyMug ||
+      m_heldItem == HeldItem::DirtyBowl) {
     BeginWashing();
     return;
   }
@@ -2107,6 +2402,22 @@ void TavernScene::RunAutomation() {
       ReturnEmptyMug();
     return;
   }
+  if (m_heldItem == HeldItem::CleanBowl) {
+    if (foodTable >= 0 && m_kitchenState == KitchenState::Idle)
+      StartCooking();
+    else
+      ReturnCleanBowl();
+    return;
+  }
+  if (foodTable >= 0 && m_kitchenState == KitchenState::Ready) {
+    CollectCookedFood();
+    return;
+  }
+  if (foodTable >= 0 && m_kitchenState == KitchenState::Idle &&
+      m_cleanBowls > 0) {
+    StartCooking();
+    return;
+  }
   if (aleTable >= 0 && m_cleanMugs > 0) {
     PickUpEmptyMug();
     return;
@@ -2114,7 +2425,7 @@ void TavernScene::RunAutomation() {
 
   const int dirtyTable = FindTableInState(TableState::Dirty);
   if (dirtyTable >= 0)
-    CollectDirtyMug(dirtyTable);
+    CollectDirtyDish(dirtyTable);
 }
 
 void TavernScene::UpdateNearbyPrompt() {
@@ -2133,8 +2444,10 @@ void TavernScene::UpdateNearbyPrompt() {
     m_nearbyPrompt = "左クリック長押し：注ぐ　ちょうど良い量で離す";
     return;
   }
-  if (m_workState == WorkState::WashingMug) {
-    m_nearbyPrompt = "左クリック長押し：ジョッキを洗う";
+  if (m_workState == WorkState::WashingDish) {
+    m_nearbyPrompt = IsBowlItem(m_heldItem)
+                         ? "左クリック長押し：ボウルを洗う"
+                         : "左クリック長押し：ジョッキを洗う";
     return;
   }
   if (m_shiftState == ShiftState::Complete) {
@@ -2160,10 +2473,15 @@ void TavernScene::UpdateNearbyPrompt() {
     else if (table.state == TableState::WaitingAle &&
              m_heldItem == HeldItem::FilledMug)
       m_nearbyPrompt = "E：" + tableName + " に水鏡エールを渡す";
+    else if (table.state == TableState::WaitingFood &&
+             m_heldItem == HeldItem::FilledBowl)
+      m_nearbyPrompt = "E：" + tableName + " に月影シチューを渡す";
     else if (table.state == TableState::Dirty && m_heldItem == HeldItem::None)
-      m_nearbyPrompt = "E：" + tableName + " のジョッキを回収";
+      m_nearbyPrompt = "E：" + tableName + " の食器を回収";
     else if (table.state == TableState::WaitingAle)
       m_nearbyPrompt = tableName + "　注文：水鏡エール";
+    else if (table.state == TableState::WaitingFood)
+      m_nearbyPrompt = tableName + "　注文：月影シチュー";
     else
       m_nearbyPrompt =
           tableName + "：" + std::string(GetTableStateName(table.state));
@@ -2173,8 +2491,10 @@ void TavernScene::UpdateNearbyPrompt() {
     const MugState &mug = m_counterMugs[counterSlot];
     if (m_heldItem == HeldItem::None && mug.item != HeldItem::None)
       m_nearbyPrompt = "E：置いたジョッキを取る";
-    else if (m_heldItem != HeldItem::None && mug.item == HeldItem::None)
+    else if (IsMugItem(m_heldItem) && mug.item == HeldItem::None)
       m_nearbyPrompt = "E：持っているジョッキを置く";
+    else if (IsBowlItem(m_heldItem))
+      m_nearbyPrompt = "ここにはジョッキだけ置ける";
     else if (m_heldItem == HeldItem::None)
       m_nearbyPrompt = "カウンター：ジョッキを一時置きできる";
     else
@@ -2198,14 +2518,42 @@ void TavernScene::UpdateNearbyPrompt() {
       m_nearbyPrompt = m_heldItem == HeldItem::EmptyMug
                            ? "E：ジョッキを置いてエールを注ぐ"
                            : "エール樽：空のジョッキが必要";
+  } else if (DistanceXZ(m_playerPosition, kKitchenInteraction) <=
+             kStationInteractionRange) {
+    if (m_kitchenState == KitchenState::Cooking) {
+      const int percent = static_cast<int>(KitchenProgress() * 100.0f);
+      m_nearbyPrompt = "煮込み中 " + std::to_string(percent) +
+                       "%　その場を離れても調理は続く";
+    } else if (m_kitchenState == KitchenState::Ready &&
+               m_heldItem == HeldItem::None) {
+      m_nearbyPrompt = "E：完成した月影シチューを受け取る";
+    } else if (m_kitchenState == KitchenState::Ready) {
+      m_nearbyPrompt = "月影シチュー完成：手を空けて受け取る";
+    } else if (m_heldItem == HeldItem::CleanBowl &&
+               FindMostUrgentWaitingFoodTable() >= 0) {
+      m_nearbyPrompt = "E：ボウルを使って月影シチューを作る";
+    } else if (m_heldItem == HeldItem::CleanBowl) {
+      m_nearbyPrompt = "E：空のボウルを厨房へ戻す";
+    } else if (m_heldItem == HeldItem::None &&
+               FindMostUrgentWaitingFoodTable() >= 0 && m_cleanBowls > 0) {
+      m_nearbyPrompt = "E：月影シチューを作る（6秒）";
+    } else if (FindMostUrgentWaitingFoodTable() >= 0 && m_cleanBowls <= 0) {
+      m_nearbyPrompt = "空のボウルがない：使用済みを回収して洗う";
+    } else {
+      m_nearbyPrompt = "厨房：料理の注文を待っている";
+    }
   } else if (DistanceXZ(m_playerPosition, kWashBasinInteraction) <=
              kStationInteractionRange) {
     if (m_heldItem == HeldItem::DirtyMug)
       m_nearbyPrompt = "E：ジョッキを洗い始める";
+    else if (m_heldItem == HeldItem::DirtyBowl)
+      m_nearbyPrompt = "E：ボウルを洗い始める";
     else if (m_heldItem == HeldItem::FilledMug)
       m_nearbyPrompt = "E：エールを捨てる";
+    else if (m_heldItem == HeldItem::FilledBowl)
+      m_nearbyPrompt = "E：料理を捨ててボウルを洗う";
     else
-      m_nearbyPrompt = "洗い場：汚れたジョッキを持ってくる";
+      m_nearbyPrompt = "洗い場：汚れた食器を持ってくる";
   } else if (const int orderTable = FindTableInState(TableState::WaitingOrder);
              orderTable >= 0) {
     m_nearbyPrompt =
@@ -2216,6 +2564,14 @@ void TavernScene::UpdateNearbyPrompt() {
   } else if (FindMostUrgentWaitingAleTable() >= 0 &&
              m_heldItem == HeldItem::None) {
     m_nearbyPrompt = "使用済みジョッキを回収して洗う";
+  } else if (FindMostUrgentWaitingFoodTable() >= 0 &&
+             m_kitchenState == KitchenState::Ready &&
+             m_heldItem == HeldItem::None) {
+    m_nearbyPrompt = "右奥の厨房から月影シチューを受け取る";
+  } else if (FindMostUrgentWaitingFoodTable() >= 0 &&
+             m_kitchenState == KitchenState::Idle &&
+             m_heldItem == HeldItem::None) {
+    m_nearbyPrompt = "右奥の厨房で月影シチューを作る";
   } else if (m_heldItem == HeldItem::EmptyMug &&
              FindTableInState(TableState::Dirty) >= 0 &&
              FindMostUrgentWaitingAleTable() < 0) {
@@ -2228,12 +2584,22 @@ void TavernScene::UpdateNearbyPrompt() {
         aleTable >= 0
             ? "水鏡エールを TABLE " + std::to_string(aleTable + 1) + " へ運ぶ"
             : "注文待ちのテーブルへ運ぶ";
-  } else if (m_heldItem == HeldItem::DirtyMug) {
+  } else if (m_heldItem == HeldItem::FilledBowl) {
+    const int foodTable = FindMostUrgentWaitingFoodTable();
+    m_nearbyPrompt =
+        foodTable >= 0
+            ? "月影シチューを TABLE " + std::to_string(foodTable + 1) +
+                  " へ運ぶ"
+            : "料理注文を待つか、洗い場で処分する";
+  } else if (m_heldItem == HeldItem::DirtyMug ||
+             m_heldItem == HeldItem::DirtyBowl) {
     m_nearbyPrompt = "カウンター右の洗い場へ運ぶ";
+  } else if (m_heldItem == HeldItem::CleanBowl) {
+    m_nearbyPrompt = "右奥の厨房へボウルを戻す";
   } else if (const int dirtyTable = FindTableInState(TableState::Dirty);
              dirtyTable >= 0) {
     m_nearbyPrompt = "TABLE " + std::to_string(dirtyTable + 1) +
-                     " の使用済みジョッキを回収する";
+                     " の使用済み食器を回収する";
   } else if (m_shiftState == ShiftState::Closing) {
     m_nearbyPrompt = "就寝準備中　店内の客を見送ろう";
   } else if (IsAfterMidnight()) {
@@ -2330,6 +2696,15 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
     return Action::None;
   }
 
+  if (m_kitchenState == KitchenState::Cooking) {
+    m_cookTimer = std::max(0.0f, m_cookTimer - dt);
+    if (m_cookTimer <= 0.0f) {
+      m_kitchenState = KitchenState::Ready;
+      m_feedbackText = std::string(kFoodName) + "が完成した";
+      m_feedbackTimer = 2.0f;
+    }
+  }
+
   if (restartPressed) {
     if (m_shiftState == ShiftState::Failed ||
         m_shiftState == ShiftState::Complete) {
@@ -2376,7 +2751,7 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
       } else if (m_workActionStarted) {
         FinishPouring();
       }
-    } else if (m_workState == WorkState::WashingMug) {
+    } else if (m_workState == WorkState::WashingDish) {
       const bool shouldWash = automateGameplay || primaryActionDown;
       if (shouldWash) {
         m_workActionStarted = true;
@@ -2420,6 +2795,14 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
           table.speechTimer = 2.0f;
         }
         break;
+      case TableState::WaitingFood:
+        table.satisfaction -= 3.0f * dt;
+        if (table.satisfaction <= 35.0f && !table.complaintPlayed) {
+          table.complaintPlayed = true;
+          table.speech = "料理はまだかい？";
+          table.speechTimer = 2.0f;
+        }
+        break;
       case TableState::Eating:
         table.stateTimer -= dt;
         if (table.stateTimer <= 0.0f) {
@@ -2449,7 +2832,8 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
       }
 
       if ((table.state == TableState::WaitingOrder ||
-           table.state == TableState::WaitingAle) &&
+           table.state == TableState::WaitingAle ||
+           table.state == TableState::WaitingFood) &&
           table.satisfaction <= 0.0f) {
         table.satisfaction = 0.0f;
         TriggerWalkout(tableIndex);
@@ -2482,8 +2866,11 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
       else if (table.state == TableState::WaitingAle &&
                m_heldItem == HeldItem::FilledMug)
         ServeAle(tableIndex);
+      else if (table.state == TableState::WaitingFood &&
+               m_heldItem == HeldItem::FilledBowl)
+        ServeFood(tableIndex);
       else if (table.state == TableState::Dirty && m_heldItem == HeldItem::None)
-        CollectDirtyMug(tableIndex);
+        CollectDirtyDish(tableIndex);
     } else if (const int counterSlot =
                    NearestCounterMugSlot(kCounterMugInteractionRange);
                counterSlot >= 0) {
@@ -2501,14 +2888,32 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
                    kStationInteractionRange &&
                m_heldItem == HeldItem::EmptyMug) {
       BeginPouring();
+    } else if (DistanceXZ(m_playerPosition, kKitchenInteraction) <=
+               kStationInteractionRange) {
+      if (m_kitchenState == KitchenState::Ready &&
+          m_heldItem == HeldItem::None)
+        CollectCookedFood();
+      else if (m_kitchenState == KitchenState::Idle &&
+               (m_heldItem == HeldItem::CleanBowl ||
+                (m_heldItem == HeldItem::None && m_cleanBowls > 0)) &&
+               FindMostUrgentWaitingFoodTable() >= 0)
+        StartCooking();
+      else if (m_kitchenState == KitchenState::Idle &&
+               m_heldItem == HeldItem::CleanBowl)
+        ReturnCleanBowl();
     } else if (DistanceXZ(m_playerPosition, kWashBasinInteraction) <=
                kStationInteractionRange) {
-      if (m_heldItem == HeldItem::DirtyMug)
+      if (m_heldItem == HeldItem::DirtyMug ||
+          m_heldItem == HeldItem::DirtyBowl)
         BeginWashing();
       else if (m_heldItem == HeldItem::FilledMug) {
         m_heldItem = HeldItem::EmptyMug;
         m_aleFill = 0.0f;
         m_aleFoam = 0.0f;
+      } else if (m_heldItem == HeldItem::FilledBowl) {
+        m_heldItem = HeldItem::DirtyBowl;
+        m_heldDishTableIndex = -1;
+        m_cycleAwaitingWash = false;
       }
     }
   }
@@ -2548,6 +2953,8 @@ void TavernScene::BuildFrame(FrameData &frame, const ViewContext &view) const {
   };
   const bool hasImportedMug =
       !m_tavernAssetMeshIds[static_cast<std::size_t>(TavernAsset::Mug)].empty();
+  const bool hasImportedBowl =
+      !m_tavernAssetMeshIds[static_cast<std::size_t>(TavernAsset::Bowl)].empty();
   const auto rotateHorizontalOffset = [](float x, float z, float yaw) {
     const float yawCos = std::cos(yaw);
     const float yawSin = std::sin(yaw);
@@ -2598,6 +3005,45 @@ void TavernScene::BuildFrame(FrameData &frame, const ViewContext &view) const {
         pushMesh(m_foamMeshId, 0.265f, foamScale, 0.265f, position.x,
                  position.y - 0.15f + visibleFill * 0.34f, position.z);
       }
+    }
+  };
+  const auto pushStateBowl = [&](HeldItem item, const XMFLOAT3 &position,
+                                 float yaw, float modelScale = 1.0f) {
+    if (!IsBowlItem(item))
+      return;
+    if (hasImportedBowl) {
+      pushAsset(TavernAsset::Bowl,
+                {modelScale, modelScale, modelScale},
+                {0.0f, yaw, 0.0f}, position);
+    } else {
+      pushTransform(m_mugMeshId,
+                    {0.48f * modelScale, 0.13f * modelScale,
+                     0.48f * modelScale},
+                    {0.0f, yaw, 0.0f},
+                    {position.x, position.y + 0.065f * modelScale,
+                     position.z});
+    }
+    if (item == HeldItem::FilledBowl) {
+      pushMesh(m_stewMeshId, 0.37f * modelScale, 0.035f * modelScale,
+               0.37f * modelScale, position.x,
+               position.y + 0.105f * modelScale, position.z);
+      pushMesh(m_glowMeshId, 0.045f * modelScale, 0.025f * modelScale,
+               0.045f * modelScale,
+               position.x - 0.12f * modelScale,
+               position.y + 0.14f * modelScale,
+               position.z + 0.04f * modelScale);
+      pushMesh(m_glowMeshId, 0.035f * modelScale, 0.020f * modelScale,
+               0.035f * modelScale,
+               position.x + 0.11f * modelScale,
+               position.y + 0.14f * modelScale,
+               position.z - 0.06f * modelScale);
+    } else if (item == HeldItem::DirtyBowl) {
+      pushMesh(m_dirtySpotMeshId, 0.10f * modelScale,
+               0.025f * modelScale, 0.08f * modelScale,
+               position.x - 0.09f * modelScale,
+               position.y + 0.12f * modelScale, position.z);
+      pushMesh(m_dirtySpotMeshId, 0.07f, 0.020f, 0.06f, position.x + 0.10f,
+               position.y + 0.12f, position.z + 0.05f);
     }
   };
 
@@ -2808,8 +3254,46 @@ void TavernScene::BuildFrame(FrameData &frame, const ViewContext &view) const {
              -0.18f + static_cast<float>(level) * 0.18f, 2.82f, 8.47f);
   }
 
-  pushMesh(m_metalMeshId, 1.55f, 0.24f, 0.88f, 2.7f, 1.50f, 7.78f);
-  pushMesh(m_waterMeshId, 1.18f, 0.05f, 0.58f, 2.7f, 1.65f, 7.78f);
+  // 洗い場は大きな木鉢と、その内側だけに収まる反射水面で構成する。
+  if (hasImportedBowl) {
+    pushAsset(TavernAsset::Bowl, {2.45f, 1.20f, 1.85f},
+              {0.0f, 0.0f, 0.0f}, {2.70f, 1.45f, 7.78f});
+  } else {
+    pushMesh(m_metalMeshId, 1.55f, 0.24f, 0.88f, 2.70f, 1.50f, 7.78f);
+  }
+  pushMesh(m_waterMeshId, 0.92f, 0.025f, 0.70f, 2.70f, 1.58f, 7.78f);
+
+  // 右奥の厨房。調理は非ブロッキングで進み、完成品を受取口へ出す。
+  pushMesh(m_darkWoodMeshId, 2.20f, 1.18f, 1.20f, 5.35f, 0.59f, 8.18f);
+  pushMesh(m_woodMeshId, 2.34f, 0.14f, 1.32f, 5.35f, 1.25f, 8.18f);
+  pushMesh(m_metalMeshId, 1.38f, 0.24f, 0.92f, 5.35f, 1.43f, 8.35f);
+  const float stewSurfaceY = hasImportedBowl ? 1.72f : 1.84f;
+  if (hasImportedBowl)
+    pushAsset(TavernAsset::Bowl, {1.38f, 1.38f, 1.38f},
+              {0.0f, 0.0f, 0.0f}, {5.35f, 1.55f, 8.35f});
+  else
+    pushTransform(m_mugMeshId, {0.72f, 0.38f, 0.72f},
+                  {0.0f, 0.0f, 0.0f}, {5.35f, 1.66f, 8.35f});
+  const float kitchenProgress = KitchenProgress();
+  if (m_kitchenState == KitchenState::Cooking) {
+    pushMesh(m_stewMeshId, 0.52f, 0.045f, 0.52f, 5.35f, stewSurfaceY,
+             8.35f);
+    const float pulse = 0.85f + 0.15f * std::sin(m_pourVisualTime * 9.0f);
+    pushMesh(m_glowMeshId, 0.72f * pulse, 0.08f, 0.54f * pulse, 5.35f,
+             1.30f, 8.35f);
+  }
+  pushMesh(m_darkWoodMeshId, 1.54f, 0.08f, 0.10f, 5.35f, 2.28f, 8.72f);
+  if (kitchenProgress > 0.0f)
+    pushMesh(m_glowMeshId, 1.46f * kitchenProgress, 0.045f, 0.12f,
+             4.62f + 0.73f * kitchenProgress, 2.28f, 8.70f);
+  for (int bowlIndex = 0; bowlIndex < m_cleanBowls; ++bowlIndex)
+    pushStateBowl(HeldItem::CleanBowl,
+                  {4.22f, 1.45f + static_cast<float>(bowlIndex) * 0.11f,
+                   7.76f},
+                  0.0f, 0.85f);
+  if (m_kitchenState == KitchenState::Ready)
+    pushStateBowl(HeldItem::FilledBowl, {5.92f, 1.45f, 7.76f}, 0.0f,
+                  0.85f);
 
   for (int tableIndex = 0; tableIndex < CustomerTableCount(); ++tableIndex) {
     const TableState tableState = m_tables[tableIndex].state;
@@ -2846,7 +3330,8 @@ void TavernScene::BuildFrame(FrameData &frame, const ViewContext &view) const {
       if (tableState == TableState::WaitingOrder)
         pushMesh(m_glowMeshId, 0.16f, 0.52f, 0.16f, tableX[tableIndex], 2.72f,
                  customerZ - 0.10f);
-      if (tableState == TableState::WaitingAle) {
+      if (tableState == TableState::WaitingAle ||
+          tableState == TableState::WaitingFood) {
         // 吹き出しと模型を同じカメラ基底に置き、どの方向からも読めるようにする。
         const XMMATRIX bubbleWorld =
             XMMatrixRotationRollPitchYaw(-view.cameraPitch, view.cameraYaw, 0.0f) *
@@ -2857,8 +3342,11 @@ void TavernScene::BuildFrame(FrameData &frame, const ViewContext &view) const {
             XMMatrixScaling(1.08f, 1.08f, 1.0f) *
             XMMatrixTranslation(0.0f, 0.0f, 0.015f) * bubbleWorld});
         const size_t iconStart = frame.opaqueItems.size();
-        pushStateMug(HeldItem::FilledMug, {0.0f, 0.0f, 0.0f}, 0.90f, 0.04f,
-                     -0.60f);
+        if (tableState == TableState::WaitingFood)
+          pushStateBowl(HeldItem::FilledBowl, {0.0f, 0.0f, 0.0f}, -0.60f);
+        else
+          pushStateMug(HeldItem::FilledMug, {0.0f, 0.0f, 0.0f}, 0.90f,
+                       0.04f, -0.60f);
         // 模型を面より手前に置く際の視差を補正し、画面端でも中央に収める。
         const XMVECTOR localEye = XMVector3TransformCoord(
             XMLoadFloat3(&view.cameraPosition), XMMatrixInverse(nullptr, bubbleWorld));
@@ -2895,13 +3383,20 @@ void TavernScene::BuildFrame(FrameData &frame, const ViewContext &view) const {
 
     if (tableState == TableState::Eating || tableState == TableState::Dirty ||
         (tableState == TableState::Leaving && m_tables[tableIndex].servedCustomer)) {
-      const XMFLOAT3 tableMugPosition = {tableX[tableIndex],
-                                         hasImportedMug ? 1.18f : 1.27f, 4.32f};
-      if (tableState == TableState::Eating)
-        pushStateMug(HeldItem::FilledMug, tableMugPosition, 0.90f, 0.04f,
-                     0.0f);
-      else
-        pushStateMug(HeldItem::DirtyMug, tableMugPosition, 0.0f, 0.0f, 0.0f);
+      if (m_tables[tableIndex].order == OrderType::Food) {
+        const XMFLOAT3 tableBowlPosition = {tableX[tableIndex], 1.02f, 4.32f};
+        pushStateBowl(tableState == TableState::Eating ? HeldItem::FilledBowl
+                                                        : HeldItem::DirtyBowl,
+                      tableBowlPosition, 0.0f);
+      } else {
+        const XMFLOAT3 tableMugPosition = {
+            tableX[tableIndex], hasImportedMug ? 1.18f : 1.27f, 4.32f};
+        if (tableState == TableState::Eating)
+          pushStateMug(HeldItem::FilledMug, tableMugPosition, 0.90f, 0.04f,
+                       0.0f);
+        else
+          pushStateMug(HeldItem::DirtyMug, tableMugPosition, 0.0f, 0.0f, 0.0f);
+      }
     }
   }
 
@@ -2929,7 +3424,7 @@ void TavernScene::BuildFrame(FrameData &frame, const ViewContext &view) const {
   }
   if (m_workState == WorkState::PouringAle)
     carriedMugPosition = {0.0f, 1.64f, 7.38f};
-  else if (m_workState == WorkState::WashingMug)
+  else if (m_workState == WorkState::WashingDish)
     carriedMugPosition = {2.7f, 1.86f, 7.65f};
 
   if (m_heldItem != HeldItem::None) {
@@ -2951,9 +3446,14 @@ void TavernScene::BuildFrame(FrameData &frame, const ViewContext &view) const {
                    carriedMugPosition.z);
         }
       }
-    } else {
+    } else if (IsMugItem(m_heldItem)) {
       pushStateMug(m_heldItem, carriedMugPosition, m_aleFill, m_aleFoam,
                    carriedMugYaw);
+    } else {
+      pushStateBowl(m_heldItem,
+                    {carriedMugPosition.x, carriedMugPosition.y - 0.12f,
+                     carriedMugPosition.z},
+                    carriedMugYaw);
     }
   }
 
@@ -3837,7 +4337,7 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
   }
 
   const ImVec2 heldMin(viewportSize.x - 278.0f, 28.0f);
-  const ImVec2 heldMax(viewportSize.x - 28.0f, 174.0f);
+  const ImVec2 heldMax(viewportSize.x - 28.0f, 252.0f);
   DrawPanel(draw, heldMin, heldMax, goldBorder);
   draw->AddText(ImVec2(heldMin.x + 18.0f, heldMin.y + 14.0f),
                 TavernUiColor(0.72f, 0.66f, 0.58f, 1.0f), "持ち物");
@@ -3847,13 +4347,33 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
   std::snprintf(line, sizeof(line), "棚のジョッキ  %d / %d", m_cleanMugs,
                 TotalMugs());
   draw->AddText(ImVec2(heldMin.x + 18.0f, heldMin.y + 75.0f),
+                 TavernUiColor(0.82f, 0.76f, 0.68f, 1.0f), line);
+  std::snprintf(line, sizeof(line), "厨房のボウル  %d / %d", m_cleanBowls,
+                TotalBowls());
+  draw->AddText(ImVec2(heldMin.x + 18.0f, heldMin.y + 105.0f),
                 TavernUiColor(0.82f, 0.76f, 0.68f, 1.0f), line);
   std::snprintf(line, sizeof(line), "ALE STOCK  %d / %d", AleStock(),
                 AleCapacity());
-  draw->AddText(ImVec2(heldMin.x + 18.0f, heldMin.y + 105.0f),
+  draw->AddText(ImVec2(heldMin.x + 18.0f, heldMin.y + 135.0f),
                 AleStock() == 0 ? TavernUiColor(1.0f, 0.30f, 0.16f, 1.0f)
                                 : TavernUiColor(1.0f, 0.72f, 0.28f, 1.0f),
                 line);
+  if (m_kitchenState == KitchenState::Cooking) {
+    std::snprintf(line, sizeof(line), "厨房  煮込み中 %d%%",
+                  static_cast<int>(KitchenProgress() * 100.0f));
+  } else if (m_kitchenState == KitchenState::Ready) {
+    std::snprintf(line, sizeof(line), "厨房  料理完成");
+  } else {
+    std::snprintf(line, sizeof(line), "厨房  待機中");
+  }
+  draw->AddText(ImVec2(heldMin.x + 18.0f, heldMin.y + 165.0f),
+                m_kitchenState == KitchenState::Ready
+                    ? TavernUiColor(0.38f, 1.0f, 0.58f, 1.0f)
+                    : TavernUiColor(1.0f, 0.62f, 0.24f, 1.0f),
+                line);
+  draw->AddText(ImVec2(heldMin.x + 18.0f, heldMin.y + 195.0f),
+                TavernUiColor(0.66f, 0.70f, 0.64f, 1.0f),
+                "料理提供  高報酬 / ボウル回収");
 
   if (m_tutorialStep != TutorialStep::Complete) {
     std::string tutorialTitle;
@@ -3984,14 +4504,16 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
       draw->AddText(ImVec2(panelMin.x + 160.0f, panelMin.y + 426.0f),
                     TavernUiColor(1.0f, 0.25f, 0.12f, 1.0f), "OVERFLOW!");
     }
-  } else if (m_workState == WorkState::WashingMug) {
+  } else if (m_workState == WorkState::WashingDish) {
     const ImVec2 panelSize(470.0f, 170.0f);
     const ImVec2 panelMin((viewportSize.x - panelSize.x) * 0.5f,
                           viewportSize.y * 0.42f);
     const ImVec2 panelMax(panelMin.x + panelSize.x, panelMin.y + panelSize.y);
     DrawPanel(draw, panelMin, panelMax, goldBorder, 14.0f);
     draw->AddText(ImVec2(panelMin.x + 28.0f, panelMin.y + 24.0f),
-                  TavernUiColor(1.0f, 0.84f, 0.62f, 1.0f), "ジョッキを洗う");
+                  TavernUiColor(1.0f, 0.84f, 0.62f, 1.0f),
+                  m_heldItem == HeldItem::DirtyBowl ? "ボウルを洗う"
+                                                     : "ジョッキを洗う");
     draw->AddText(ImVec2(panelMin.x + 28.0f, panelMin.y + 54.0f),
                   TavernUiColor(0.82f, 0.76f, 0.68f, 1.0f),
                   "左クリックを押し続ける");
@@ -4042,8 +4564,10 @@ TavernScene::Action TavernScene::DrawHud(int viewportWidth,
                   TavernUiColor(1.0f, 0.82f, 0.56f, 1.0f),
                   m_shiftState == ShiftState::Complete ? "営業終了"
                                                        : "営業失敗");
-    std::snprintf(line, sizeof(line), "売上 %d G　提供 %d　PERFECT %d　退店 %d",
-                  m_gold, m_servedCustomers, m_perfectPours, m_walkouts);
+    std::snprintf(line, sizeof(line),
+                  "売上 %d G　提供 %d（料理 %d）　PERFECT %d　退店 %d",
+                  m_gold, m_servedCustomers, m_foodServed, m_perfectPours,
+                  m_walkouts);
     draw->AddText(ImVec2(resultMin.x + 32.0f, resultMin.y + 88.0f),
                   TavernUiColor(0.90f, 0.84f, 0.76f, 1.0f), line);
     draw->AddText(ImVec2(resultMin.x + 32.0f, resultMin.y + 150.0f),
@@ -4142,6 +4666,12 @@ void TavernScene::DrawDebugPanel(float &timeOfDayHours, bool &automaticTime) {
   ImGui::Text("客流：%s", CustomerTrafficName());
   ImGui::Text("提供：%d  退店：%d  PERFECT：%d", m_servedCustomers, m_walkouts,
               m_perfectPours);
+  ImGui::Text("料理提供：%d  ボウル：%d / %d  厨房：%s %.0f%%", m_foodServed,
+              m_cleanBowls, TotalBowls(),
+              m_kitchenState == KitchenState::Cooking
+                  ? "COOKING"
+                  : (m_kitchenState == KitchenState::Ready ? "READY" : "IDLE"),
+              KitchenProgress() * 100.0f);
   ImGui::Text("手持：%s", GetHeldItemName(m_heldItem));
   ImGui::Text("棚のジョッキ：%d / %d  一時置き：%d / %zu", m_cleanMugs,
               TotalMugs(), placedMugs, m_counterMugs.size());

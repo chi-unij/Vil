@@ -653,6 +653,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         HasCommandLineSwitch(commandLine, L"--tavern-waiting-preview");
     const bool tavernOrderPreviewRequested =
         HasCommandLineSwitch(commandLine, L"--tavern-order-preview");
+    const bool tavernKitchenPreviewRequested =
+        HasCommandLineSwitch(commandLine, L"--tavern-kitchen-preview");
     const bool tavernDaySmokeRequested =
         HasCommandLineSwitch(commandLine, L"--tavern-day-smoke");
     const bool tavernManagementSmokeRequested =
@@ -674,6 +676,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     const bool tavernRequested =
         HasCommandLineSwitch(commandLine, L"--tavern") ||
         tavernWaitingPreviewRequested || tavernOrderPreviewRequested ||
+        tavernKitchenPreviewRequested ||
         tavernThirdPersonRequested ||
         tavernSmokeRequested || tavernGameplaySmokeRequested ||
         tavernDaySmokeRequested || tavernManagementSmokeRequested ||
@@ -1310,7 +1313,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         requestQuit = true;
       } else {
         TraceAppEvent("Tavern order bubble regression: PASS; acceptance, persistence, "
-                      "Table 3, billboard, mug model, fallback, serve, walkout, reset");
+                      "Table 3, billboard, Ale/Food models, fallback, serve, "
+                      "walkout, reset");
+      }
+      std::string kitchenFailure;
+      if (!TavernScene::RunKitchenRegression(kitchenFailure)) {
+        TraceAppEvent(("Tavern Kitchen regression: FAIL; " + kitchenFailure)
+                          .c_str());
+        applicationExitCode = 2;
+        requestQuit = true;
+      } else {
+        TraceAppEvent("Tavern Kitchen regression: PASS; mixed order, asynchronous "
+                      "cooking, pause, serve, bowl wash, walkout, reset");
       }
     }
     if (tavernWaitingPreviewRequested && tavernSmokeModeCount == 0) {
@@ -1322,6 +1336,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     if (tavernOrderPreviewRequested && tavernSmokeModeCount == 0) {
       tavernScene.ConfigureOrderBubblePreview();
       playerPreview.SetPosition({0.0f, 0.0f, -0.35f});
+      cam.SetYawPitch(0.0f, tavernFirstPersonEnabled ? -0.06f : -0.28f);
+    }
+    if (tavernKitchenPreviewRequested && tavernSmokeModeCount == 0) {
+      tavernScene.ConfigureKitchenPreview();
+      playerPreview.SetPosition({4.75f, 0.0f, 5.75f});
+      playerPreview.SetYaw(0.0f);
       cam.SetYawPitch(0.0f, tavernFirstPersonEnabled ? -0.06f : -0.28f);
     }
     if (tavernManagementSmokeRequested) {
@@ -4354,11 +4374,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
           continue;
         }
         std::ostringstream message;
-        message << "Tavern gameplay smoke: completed both table Ale service "
-                   "and wash cycles; cycles="
+        message << "Tavern gameplay smoke: completed mixed Ale/Food service "
+                   "and dish-wash cycles; cycles="
                 << tavernScene.CompletedCycles()
                 << " gold=" << tavernScene.Gold()
                 << " served=" << tavernScene.ServedCustomers()
+                << " food=" << tavernScene.FoodServed()
                 << " walkouts=" << tavernScene.Walkouts()
                 << " npcParts=" << tavernScene.CustomerMaterialPartCount()
                 << " npcBones=" << tavernScene.CustomerSkeletonBoneCount()
