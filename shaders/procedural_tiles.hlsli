@@ -365,30 +365,30 @@ ProceduralResult ProceduralWater(float2 worldXZ, float time)
 {
     ProceduralResult r;
 
-    float2 uv = worldXZ * 0.45f;
-    float waveA = sin(uv.x * 5.0f + time * 1.3f) * 0.5f + 0.5f;
-    float waveB = sin((uv.x + uv.y) * 3.2f - time * 0.9f) * 0.5f + 0.5f;
-    float ripple = warpedFbm(uv * 1.8f + float2(time * 0.05f, -time * 0.04f),
-                             time * 0.35f, 4);
-    float foam = smoothstep(0.78f, 0.94f, waveA * 0.45f + waveB * 0.25f + ripple * 0.55f);
+    // 洗い場の水は発光する青い板ではなく、雨の水溜まりと同様に
+    // 周囲の反射を主役にする。色と波を抑え、SSR が読める面を保つ。
+    float2 uv = worldXZ * 0.72f;
+    float waveA = sin(uv.x * 5.4f + uv.y * 1.8f + time * 0.72f) * 0.5f + 0.5f;
+    float waveB = sin((uv.x - uv.y) * 4.1f - time * 0.58f) * 0.5f + 0.5f;
+    float ripple = warpedFbm(uv * 1.45f +
+                                 float2(time * 0.022f, -time * 0.018f),
+                             time * 0.16f, 3);
 
-    float3 shallow = float3(0.16f, 0.42f, 0.50f);
-    float3 deep = float3(0.02f, 0.16f, 0.27f);
-    float3 highlight = float3(0.72f, 0.92f, 0.96f);
-    float waterMix = saturate(ripple * 0.75f + waveB * 0.25f);
+    float3 shallow = float3(0.085f, 0.185f, 0.195f);
+    float3 deep = float3(0.018f, 0.060f, 0.072f);
+    float waterMix = saturate(ripple * 0.58f + waveA * 0.24f + waveB * 0.18f);
 
     r.albedo = lerp(deep, shallow, waterMix);
-    r.albedo = lerp(r.albedo, highlight, foam * 0.38f);
-    r.emissive = float3(0.0f, 0.03f, 0.055f) + highlight * foam * 0.08f;
+    r.emissive = float3(0.0f, 0.0f, 0.0f);
 
     float hL = warpedFbm((worldXZ + float2(-0.12f, 0.0f)) * 0.8f, time * 0.35f, 3);
     float hR = warpedFbm((worldXZ + float2(0.12f, 0.0f)) * 0.8f, time * 0.35f, 3);
     float hD = warpedFbm((worldXZ + float2(0.0f, -0.12f)) * 0.8f, time * 0.35f, 3);
     float hU = warpedFbm((worldXZ + float2(0.0f, 0.12f)) * 0.8f, time * 0.35f, 3);
-    r.normalTS = normalize(float3((hL - hR) * 0.55f, (hD - hU) * 0.55f, 1.0f));
+    r.normalTS = normalize(float3((hL - hR) * 0.20f, (hD - hU) * 0.20f, 1.0f));
 
     r.metallic = 0.0f;
-    r.roughness = lerp(0.06f, 0.18f, ripple);
+    r.roughness = lerp(0.045f, 0.095f, ripple);
     r.ao = 1.0f;
 
     return r;

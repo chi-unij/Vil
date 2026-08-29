@@ -12,10 +12,14 @@
   https://sketchfab.com/3d-models/low-poly-forest-tree-pack-5ff5a51e74324845a4e4905f182dfb2b
 - **Shrine gate** — Tahir.Muhamad.Ajmal. / CC BY 4.0
   https://sketchfab.com/3d-models/shrine-gate-db22a40569c148b1a4e25d82888819fb
+- **Medieval Tavern Asset Pack** — Matthew Theobald / CC BY 4.0
+  https://sketchfab.com/3d-models/medieval-tavern-asset-pack-95da3564dbd0489d9854ae89a7a51752
 - **Japanese Shrine Lantern** — Sam Feng / CC BY-NC 4.0
   https://sketchfab.com/3d-models/japanese-shrine-lantern-8c19d6525acf441b9cf3c1fd91598ff6
   本作品では就職活動用の非商用ポートフォリオ素材として使用しています。
-- **Mixamo animations** — Adobe Mixamo
+- **Mixamo characters** — Ch27（NPC1）、Remy / Adobe Mixamo
+  https://helpx.adobe.com/creative-cloud/faq/mixamo-faq.html
+- **Mixamo animations** — Breathing Idle、Walk、Run、Taking Item、Sitting Idle / Adobe Mixamo
   https://helpx.adobe.com/creative-cloud/faq/mixamo-faq.html
 - **Player model (`MyFirstChar.vrm`)** — Chihiro / VRoid Studio 2.11.0で制作
   VRM内の作者情報と利用条件は制作者本人が設定しています。

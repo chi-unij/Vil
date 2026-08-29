@@ -137,6 +137,37 @@ PSIn VSMain(VSIn v, uint instId : SV_InstanceID)
         float edgeFade = smoothstep(0.0f, 0.08f, edgeDistance);
         posW.y += wave * height * edgeFade;
     }
+    else if ((int)(gWaterWaveParams.w + 0.5f) == 9)
+    {
+        // 洗い場専用。固定された円盤の外周を避けるため、外縁を水平方向にも動かす。
+        // 洗浄中は CPU から agitation を上げ、縁の持ち上がりと波を強める。
+        float2 radialUv = (v.uv - 0.5f) * 2.0f;
+        float radialDistance = length(radialUv);
+        float2 radialDirection = radialDistance > 0.001f
+            ? radialUv / radialDistance
+            : float2(0.0f, 0.0f);
+        float edgeBand = smoothstep(0.68f, 0.98f, radialDistance);
+        float interiorBand = smoothstep(0.04f, 0.24f, radialDistance)
+                           * (1.0f - smoothstep(0.82f, 1.0f, radialDistance));
+        float angle = atan2(radialUv.y, radialUv.x);
+        float agitation = max(gWaterWaveParams.x, 0.0f);
+        float t = gAnimParams.x * max(gWaterWaveParams.y, 0.1f);
+        float edgeWave =
+            sin(angle * 5.0f + t * 2.2f) * 0.62f +
+            sin(angle * 9.0f - t * 1.45f + 0.8f) * 0.28f +
+            sin(angle * 14.0f + t * 1.05f - 0.35f) * 0.16f;
+        float motionScale = 0.55f + agitation * 0.85f;
+        posW.xz += radialDirection * edgeWave * 0.0065f
+                 * motionScale * edgeBand;
+
+        float surfaceWave =
+            sin((posW.x + posW.z * 0.72f) * 13.0f + t * 2.4f) * 0.0035f +
+            sin((posW.x * 0.58f - posW.z) * 18.0f - t * 1.75f) * 0.0022f;
+        float splashLift = max(edgeWave, 0.0f) * 0.010f
+                         * agitation * edgeBand;
+        posW.y += surfaceWave * motionScale * (interiorBand + edgeBand * 0.55f)
+                + splashLift;
+    }
 
     float4x4 viewProj = mul(gView, gProj);
 

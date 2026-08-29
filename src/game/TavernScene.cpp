@@ -107,6 +107,70 @@ LoadedMesh CreateOrderBubbleMesh() {
   return mesh;
 }
 
+LoadedMesh CreateWashBasinWaterSurfaceMesh() {
+  // 同心円を細かく分割し、外周だけを複数周波数で崩す。
+  // 完全な円盤シルエットを避けつつ、内側にも波を伝えられる頂点密度を持たせる。
+  LoadedMesh mesh;
+  constexpr uint32_t segments = 96;
+  constexpr uint32_t rings = 8;
+  mesh.vertices.reserve(1 + segments * rings);
+  mesh.indices.reserve(segments * 3 + (rings - 1) * segments * 6);
+
+  const auto pushVertex = [&mesh](float x, float z, float u, float v) {
+    MeshVertex vertex{};
+    vertex.pos[0] = x;
+    vertex.pos[2] = z;
+    vertex.normal[1] = 1.0f;
+    vertex.uv[0] = u;
+    vertex.uv[1] = v;
+    vertex.tangent[0] = 1.0f;
+    vertex.tangent[3] = 1.0f;
+    mesh.vertices.push_back(vertex);
+  };
+
+  pushVertex(0.0f, 0.0f, 0.5f, 0.5f);
+  for (uint32_t ring = 1; ring <= rings; ++ring) {
+    const float ringRatio =
+        static_cast<float>(ring) / static_cast<float>(rings);
+    const float edgeWeight = ringRatio * ringRatio * ringRatio;
+    for (uint32_t segment = 0; segment < segments; ++segment) {
+      const float angle = static_cast<float>(segment) /
+                          static_cast<float>(segments) * XM_2PI;
+      const float irregularEdge =
+          1.0f + edgeWeight *
+                     (std::sin(angle * 3.0f + 0.35f) * 0.024f +
+                      std::sin(angle * 7.0f - 1.10f) * 0.015f +
+                      std::sin(angle * 13.0f + 0.70f) * 0.008f);
+      const float radius = ringRatio * 0.5f * irregularEdge;
+      const float x = std::cos(angle) * radius;
+      const float z = std::sin(angle) * radius;
+      pushVertex(x, z, std::cos(angle) * ringRatio * 0.5f + 0.5f,
+                 std::sin(angle) * ringRatio * 0.5f + 0.5f);
+    }
+  }
+
+  for (uint32_t segment = 0; segment < segments; ++segment) {
+    const uint32_t current = segment + 1;
+    const uint32_t next = (segment + 1) % segments + 1;
+    mesh.indices.insert(mesh.indices.end(), {0, next, current});
+  }
+  for (uint32_t ring = 1; ring < rings; ++ring) {
+    const uint32_t innerBase = 1 + (ring - 1) * segments;
+    const uint32_t outerBase = innerBase + segments;
+    for (uint32_t segment = 0; segment < segments; ++segment) {
+      const uint32_t nextSegment = (segment + 1) % segments;
+      const uint32_t innerCurrent = innerBase + segment;
+      const uint32_t innerNext = innerBase + nextSegment;
+      const uint32_t outerCurrent = outerBase + segment;
+      const uint32_t outerNext = outerBase + nextSegment;
+      mesh.indices.insert(mesh.indices.end(),
+                          {innerCurrent, outerNext, outerCurrent,
+                           innerCurrent, innerNext, outerNext});
+    }
+  }
+  return mesh;
+}
+
 float DistanceXZ(const XMFLOAT3 &a, const XMFLOAT3 &b) {
   const float dx = a.x - b.x;
   const float dz = a.z - b.z;
@@ -1389,6 +1453,7 @@ void TavernScene::Initialize(DxContext &dx) {
   const LoadedMesh cubeMesh = ProceduralMesh::CreateCube(1.0f);
   const LoadedMesh cylinderMesh =
       ProceduralMesh::CreateCylinder(0.5f, 1.0f, 20);
+  const LoadedMesh washBasinWaterMesh = CreateWashBasinWaterSurfaceMesh();
   const LoadedMesh headMesh = ProceduralMesh::CreateSphere(0.5f, 10, 20);
 
   Material floorMaterial{};
@@ -1514,16 +1579,18 @@ void TavernScene::Initialize(DxContext &dx) {
   m_metalMeshId = dx.CreateMeshResources(cubeMesh, {}, metalMaterial);
 
   Material waterMaterial{};
-  waterMaterial.baseColorFactor = {0.075f, 0.28f, 0.34f, 1.0f};
+  waterMaterial.baseColorFactor = {0.035f, 0.11f, 0.13f, 1.0f};
   waterMaterial.metallicFactor = 0.0f;
-  waterMaterial.roughnessFactor = 0.035f;
-  waterMaterial.emissiveFactor = {0.004f, 0.012f, 0.018f};
-  waterMaterial.uvTiling = {1.8f, 1.8f};
+  waterMaterial.roughnessFactor = 0.055f;
+  waterMaterial.emissiveFactor = {0.0f, 0.0f, 0.0f};
+  waterMaterial.uvTiling = {1.0f, 1.0f};
   waterMaterial.proceduralTypeId = 6.0f;
+  waterMaterial.vertexDeformTypeId = 9.0f;
   waterMaterial.reflectionReceiver = ReflectionReceiver::Water;
-  waterMaterial.reflectionStrength = 0.78f;
+  waterMaterial.reflectionStrength = 0.84f;
   waterMaterial.rayTracingVisible = false;
-  m_waterMeshId = dx.CreateMeshResources(cylinderMesh, {}, waterMaterial);
+  m_waterMeshId =
+      dx.CreateMeshResources(washBasinWaterMesh, {}, waterMaterial);
 
   static_assert(kTavernAssetPaths.size() ==
                 static_cast<std::size_t>(TavernAsset::Count));
@@ -2042,22 +2109,32 @@ bool TavernScene::RunOrderBubbleRegression(std::string &failure) const {
         const auto &item = frame.opaqueItems[i];
         if (item.meshId != m_orderBubbleMeshId)
           continue;
-        const XMVECTOR normal = XMVector3TransformNormal(
-            XMVectorSet(0, 0, -1, 0), item.world);
-        const XMVECTOR forward = XMVectorSet(std::cos(pitch) * std::sin(yaw),
-            std::sin(pitch), std::cos(pitch) * std::cos(yaw), 0);
+        const XMVECTOR normal =
+            XMVector3TransformNormal(XMVectorSet(0, 0, -1, 0), item.world);
+        const XMVECTOR forward =
+            XMVectorSet(std::cos(pitch) * std::sin(yaw), std::sin(pitch),
+                        std::cos(pitch) * std::cos(yaw), 0);
         XMFLOAT3 anchor;
         XMStoreFloat3(&anchor, item.world.r[3]);
-        if (bubbles >= 3 ||
-            XMVectorGetX(XMVector3Dot(normal, forward)) > -0.999f ||
-            std::abs(anchor.x - kTableInteractions[bubbles].x) > 0.001f ||
-            std::abs(anchor.y - 2.18f) > 0.001f)
+        if (bubbles >= 3)
+          return fail("Order bubble detached from its customer or camera");
+        const int tableIndex = bubbles;
+        const int partySize = std::clamp(
+            probe.m_tables[static_cast<std::size_t>(tableIndex)].partySize, 1,
+            probe.TableCapacity(tableIndex));
+        float seatYaw = 0.0f;
+        const XMFLOAT3 seatPosition =
+            probe.CustomerSeatPosition(tableIndex, 0, partySize, seatYaw);
+        if (XMVectorGetX(XMVector3Dot(normal, forward)) > -0.999f ||
+            std::abs(anchor.x - seatPosition.x) > 0.001f ||
+            std::abs(anchor.y - (seatPosition.y + 2.18f)) > 0.001f ||
+            std::abs(anchor.z - seatPosition.z) > 0.001f)
           return fail("Order bubble detached from its customer or camera");
         const bool foodOrder =
             probe.m_tables[static_cast<std::size_t>(bubbles)].order ==
             OrderType::Food;
-        const auto &iconIds = probe.m_tavernAssetMeshIds[
-            foodOrder ? bowlIndex : mugIndex];
+        const auto &iconIds =
+            probe.m_tavernAssetMeshIds[foodOrder ? bowlIndex : mugIndex];
         const uint32_t iconMesh =
             iconIds.empty() ? (foodOrder ? m_mugMeshId : m_filledMugMeshId)
                             : iconIds.front();
@@ -4163,7 +4240,12 @@ void TavernScene::BuildFrame(FrameData &frame, const ViewContext &view) const {
   } else {
     pushMesh(m_metalMeshId, 1.55f, 0.24f, 0.88f, 2.70f, 1.50f, 7.78f);
   }
-  pushMesh(m_waterMeshId, 0.92f, 0.025f, 0.70f, 2.70f, 1.58f, 7.78f);
+  // Bowl の実測内周より少し内側へ収め、縁から約 3.7 cm 下げて
+  // 内壁が水面境界を隠しつつ、水量が少なく見えない高さにする。
+  const float washAgitation = std::clamp(m_washProgress * 2.0f, 0.0f, 1.0f);
+  frame.waterWaveParams = {0.35f + washAgitation * 1.25f,
+                           0.80f + washAgitation * 0.75f, 1.0f, 0.0f};
+  pushMesh(m_waterMeshId, 1.02f, 1.0f, 0.77f, 2.70f, 1.56f, 7.78f);
 
   // 右奥の厨房。調理は非ブロッキングで進み、完成品を受取口へ出す。
   pushMesh(m_darkWoodMeshId, 2.20f, 1.18f, 1.20f, 5.35f, 0.59f, 8.18f);

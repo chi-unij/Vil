@@ -3987,8 +3987,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         frame.bloomEnabled = true;
         frame.bloomThreshold = 0.72f;
         frame.bloomIntensity = 0.58f;
-        frame.ssrEnabled = false;
-        frame.reflectionMode = ReflectionMode::Off;
+        // 洗い場の水面だけを receiver mask で反射させる。
+        frame.ssrEnabled = true;
+        frame.reflectionMode = ReflectionMode::SSR;
+        frame.ssrReflectionParams = {1.05f, 8.0f, 0.07f, 0.06f};
       } else if (appMode == AppMode::BossArena) {
         frame.gridEnabled = false;
         frame.waterWaveParams = {0.0f, 1.0f, 1.0f, 0.0f};
@@ -4537,48 +4539,56 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       if (debugLog)
         dx.DumpDebugMessages(debugLog);
     }
+#if defined(_DEBUG)
+    const auto d3dDebugReportIsClean = [](const std::string &report) {
+      return report.find("D3D12 Error/Corruption messages:\n  (none)\n") !=
+             std::string::npos;
+    };
+    constexpr const char *kD3D12SmokeStatus = "d3dErrors=0";
+#else
+    const auto d3dDebugReportIsClean = [](const std::string &) { return true; };
+    constexpr const char *kD3D12SmokeStatus = "d3dDebug=disabled";
+#endif
     if (tavernManagementSmokeRequested) {
       std::ostringstream debugReport;
       dx.DumpDebugMessages(debugReport);
       const std::string debugReportText = debugReport.str();
-      if (debugReportText.find(
-              "D3D12 Error/Corruption messages:\n  (none)\n") ==
-          std::string::npos) {
+      if (!d3dDebugReportIsClean(debugReportText)) {
         failTavernManagementSmoke(
             "D3D12 debug layer reported an error/corruption message");
       } else if (tavernManagementSmokeCompleted &&
                  !tavernManagementSmokeFailed) {
-        TraceAppEvent("Tavern management smoke: PASS; menu=open cards=2 "
-                      "order=Supplies,Upgrades selection=Upgrades activated=1 "
-                      "upgradesPage=1 navigation=B>B "
-                      "tablePriority=nearer economyDelta=0 close=unlocked "
-                      "d3dErrors=0");
+        std::string passMessage =
+            "Tavern management smoke: PASS; menu=open cards=2 "
+            "order=Supplies,Upgrades selection=Upgrades activated=1 "
+            "upgradesPage=1 navigation=B>B "
+            "tablePriority=nearer economyDelta=0 close=unlocked ";
+        passMessage += kD3D12SmokeStatus;
+        TraceAppEvent(passMessage.c_str());
       }
     }
     if (tavernSuppliesSmokeRequested) {
       std::ostringstream debugReport;
       dx.DumpDebugMessages(debugReport);
       const std::string debugReportText = debugReport.str();
-      if (debugReportText.find(
-              "D3D12 Error/Corruption messages:\n  (none)\n") ==
-          std::string::npos) {
+      if (!d3dDebugReportIsClean(debugReportText)) {
         failTavernSuppliesSmoke(
             "D3D12 debug layer reported an error/corruption message");
       } else if (tavernSuppliesSmokeCompleted && !tavernSuppliesSmokeFailed) {
-        TraceAppEvent("Tavern supplies smoke: PASS; initial=6/6 fullGuard=1 "
-                      "navigation=B>B cancelNoCost=1 serviceConsumption=1 "
-                      "purchase=1@2G "
-                      "insufficientNoOp=1 recoveryFloor=2 affordableFloor=0 "
-                      "d3dErrors=0");
+        std::string passMessage =
+            "Tavern supplies smoke: PASS; initial=6/6 fullGuard=1 "
+            "navigation=B>B cancelNoCost=1 serviceConsumption=1 "
+            "purchase=1@2G "
+            "insufficientNoOp=1 recoveryFloor=2 affordableFloor=0 ";
+        passMessage += kD3D12SmokeStatus;
+        TraceAppEvent(passMessage.c_str());
       }
     }
     if (tavernUpgradesSmokeRequested) {
       std::ostringstream debugReport;
       dx.DumpDebugMessages(debugReport);
       const std::string debugReportText = debugReport.str();
-      if (debugReportText.find(
-              "D3D12 Error/Corruption messages:\n  (none)\n") ==
-          std::string::npos) {
+      if (!d3dDebugReportIsClean(debugReportText)) {
         failTavernUpgradesSmoke(
             "D3D12 debug layer reported an error/corruption message");
       } else if (tavernUpgradesSmokeCompleted && !tavernUpgradesSmokeFailed) {
@@ -4590,7 +4600,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                        "table3Cycles="
                     << tavernScene.TableCompletedCycles(2)
                     << " purchases=5 goldBeforeService="
-                    << tavernUpgradesExpectedGold << " d3dErrors=0";
+                    << tavernUpgradesExpectedGold << " " << kD3D12SmokeStatus;
         TraceAppEvent(passMessage.str().c_str());
       }
     }
@@ -4602,9 +4612,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                              std::ios::out | std::ios::trunc);
       if (debugLog)
         debugLog << debugReportText;
-      if (debugReportText.find(
-              "D3D12 Error/Corruption messages:\n  (none)\n") ==
-          std::string::npos) {
+      if (!d3dDebugReportIsClean(debugReportText)) {
         failPlayerAnimationSmoke(
             "D3D12 debug layer reported an error/corruption message");
       } else if (playerAnimationSmokeSequenceCompleted &&
@@ -4624,8 +4632,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                     << " takingItemOneShotFrames="
                     << playerAnimationSmokeActionRenderedFrames
                     << " takingItemPoseFrames="
-                    << playerAnimationSmokeRenderedActionPoseFrames
-                    << " d3dErrors=0";
+                    << playerAnimationSmokeRenderedActionPoseFrames << " "
+                    << kD3D12SmokeStatus;
         TraceAppEvent(passMessage.str().c_str());
       }
     }
@@ -4637,9 +4645,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                              std::ios::out | std::ios::trunc);
       if (debugLog)
         debugLog << debugReportText;
-      if (debugReportText.find(
-              "D3D12 Error/Corruption messages:\n  (none)\n") ==
-          std::string::npos) {
+      if (!d3dDebugReportIsClean(debugReportText)) {
         failBossMirrorPickupSmoke(
             "D3D12 debug layer reported an error/corruption message");
       } else if (bossMirrorPickupSmokeCompleted &&
@@ -4650,8 +4656,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                     << bossMirrorPickupSmokeFrames << " renderedActionFrames="
                     << bossMirrorPickupRenderedActionFrames
                     << " renderedResponses="
-                    << bossMirrorPickupRenderedResponses
-                    << " return=Idle d3dErrors=0";
+                    << bossMirrorPickupRenderedResponses << " return=Idle "
+                    << kD3D12SmokeStatus;
         TraceAppEvent(passMessage.str().c_str());
       }
     }

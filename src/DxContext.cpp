@@ -76,6 +76,10 @@ void DxContext::Initialize(HWND hwnd, uint32_t width, uint32_t height,
 
 void DxContext::DumpDebugMessages(std::ostream &out) const {
   out << std::dec;
+  if (!m_enableDebugLayer) {
+    out << "D3D12 debug layer: disabled\n";
+    return;
+  }
   if (!m_device)
     return;
 
