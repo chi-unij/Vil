@@ -87,7 +87,22 @@ struct EditorRuntimeBindings {
   std::function<void()> drawAnimationControls;
   std::function<void()> playTitle;
   std::function<void()> playOverworld;
+  std::function<void()> playTavern;
   std::function<void()> playBossArena;
+
+  // 反射モードは 0=Off、1=SSR、2=Hybrid DXR として公開する。
+  // Hybrid DXR を利用できない環境では setReflectionMode(2) は false を返す。
+  std::function<int()> getReflectionMode;
+  std::function<int()> getActiveReflectionMode;
+  std::function<bool(int)> setReflectionMode;
+  std::function<bool()> dxrSupported;
+  std::function<bool()> dxrShaderAvailable;
+  std::function<bool()> dxrSceneReady;
+  std::function<std::string()> dxrStatus;
+  std::function<D3D12_RAYTRACING_TIER()> dxrTier;
+  std::function<uint32_t()> dxrInstanceCount;
+  std::function<uint32_t()> dxrBlasCount;
+
   std::function<bool()> saveRuntimeSettings;
   std::function<bool()> loadRuntimeSettings;
 };
@@ -101,8 +116,8 @@ struct AssetEntry {
   AssetType type;
 };
 
-// Parsed from feature.md. The complete inventory and the curated showcase
-// registry stay data-driven while runtime routes remain explicit and honest.
+// feature.md の全 inventory と feature_catalog.md の正式 Showcase を
+// data-driven で保持し、runtime route は明示的に接続する。
 struct FeatureInventoryEntry {
   std::string section;
   std::string category;

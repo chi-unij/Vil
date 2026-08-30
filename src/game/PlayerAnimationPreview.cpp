@@ -81,7 +81,7 @@ void PlayerAnimationPreview::Initialize(DxContext &dx) {
     m_nativeModelHeight = maxY - minY;
   }
   // 全 Scene で同じ見た目の高さを使い、家具とボス演出に対する比率を安定させる。
-  constexpr float kTargetPlayerHeightMeters = 1.60f;
+  constexpr float kTargetPlayerHeightMeters = 1.20f;
   if (m_nativeModelHeight > 0.0001f)
     m_modelToWorldScale = kTargetPlayerHeightMeters / m_nativeModelHeight;
 
@@ -582,6 +582,15 @@ void PlayerAnimationPreview::Update(float dt, const Input &input,
       m_previewPosition = desiredPosition;
     } else {
       CollisionSystem::Capsule capsule{};
+      // 現行の XZ footprint radius を見た目の身長に合わせて調整する。
+      // halfHeight は将来の vertical capsule 判定に備えた metadata として同期する。
+      constexpr float kReferencePlayerHeightMeters = 1.60f;
+      constexpr float kReferenceCapsuleRadiusMeters = 0.45f;
+      constexpr float kReferenceCapsuleHalfHeightMeters = 0.85f;
+      const float collisionScale =
+          std::max(0.01f, WorldModelHeight()) / kReferencePlayerHeightMeters;
+      capsule.radius = kReferenceCapsuleRadiusMeters * collisionScale;
+      capsule.halfHeight = kReferenceCapsuleHalfHeightMeters * collisionScale;
       m_previewPosition =
           CollisionSystem::ResolveCapsuleAgainstCollidersAndMesh(
               desiredPosition, capsule, colliders, meshTriangles,
@@ -649,7 +658,8 @@ void PlayerAnimationPreview::BuildFrame(FrameData &frame,
     frame.transparentItems.push_back({meshId, world});
 
   GPUPointLight light{};
-  light.position = {m_previewPosition.x, 1.1f, m_previewPosition.z - 1.5f};
+  light.position = {m_previewPosition.x, m_previewPosition.y + 1.1f,
+                    m_previewPosition.z - 1.5f};
   light.range = 4.0f;
   light.color = {0.9f, 0.8f, 0.65f};
   light.intensity = 1.6f;

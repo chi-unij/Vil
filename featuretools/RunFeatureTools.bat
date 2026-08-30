@@ -2,11 +2,20 @@
 setlocal EnableExtensions
 
 for %%I in ("%~dp0..") do set "VILLIEN_ROOT=%%~fI"
-set "VILLIEN_BUILD=%VILLIEN_ROOT%\build-codex"
+set "VILLIEN_BUILD=%VILLIEN_ROOT%\build"
 set "VILLIEN_EDITOR=%VILLIEN_BUILD%\bin\Debug\VillienEditor.exe"
 
 if not exist "%VILLIEN_ROOT%\CMakeLists.txt" goto :missing_root
 
+set "VSDEVCMD="
+for %%E in (Community Professional Enterprise BuildTools) do (
+    if not defined VSDEVCMD if exist "%ProgramFiles%\Microsoft Visual Studio\18\%%E\Common7\Tools\VsDevCmd.bat" set "VSDEVCMD=%ProgramFiles%\Microsoft Visual Studio\18\%%E\Common7\Tools\VsDevCmd.bat"
+)
+if not defined VSDEVCMD goto :dev_shell_ready
+call "%VSDEVCMD%" -arch=x64 -host_arch=x64 >nul
+if errorlevel 1 goto :dev_shell_failed
+
+:dev_shell_ready
 set "CMAKE_EXE=cmake"
 where cmake >nul 2>&1
 if not errorlevel 1 goto :cmake_ready
@@ -45,10 +54,17 @@ echo Expected: "%VILLIEN_ROOT%\CMakeLists.txt"
 pause
 exit /b 1
 
+:dev_shell_failed
+echo [VILLIEN Editor] Visual Studio 2026 Developer environment initialization failed.
+echo Repair the Desktop development with C++ workload, then run this launcher again.
+pause
+exit /b 1
+
 :configure_failed
 echo.
 echo [VILLIEN Editor] Root project configuration failed.
-echo Review the CMake error above, then delete only "%VILLIEN_BUILD%" if the cache uses the wrong generator.
+echo Review the CMake error above and repair the existing root build directory.
+echo Required build directory: "%VILLIEN_BUILD%"
 pause
 exit /b 1
 

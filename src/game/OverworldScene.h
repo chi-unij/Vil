@@ -39,6 +39,7 @@ public:
 
   void Initialize(DxContext &dx);
   void BuildFrame(FrameData &frame) const;
+  static float GroundHeightAt(float worldX, float worldZ);
   DirectX::XMFLOAT3 PlayerSpawnPosition() const;
   DirectX::XMFLOAT3 BossWarpPosition() const;
   bool IsPlayerInsideBossWarp(const DirectX::XMFLOAT3 &playerPosition) const;

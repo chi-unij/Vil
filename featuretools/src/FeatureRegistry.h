@@ -11,6 +11,8 @@ struct LabFeatureEntry {
   std::wstring category;
   std::wstring name;
   std::wstring description;
+  std::string route;
+  std::string defaultMode;
   bool defaultEnabled = true;
   bool enabled = true;
 };
@@ -23,7 +25,10 @@ struct LabRegistryLoadResult {
 
 class FeatureRegistry {
 public:
-  LabRegistryLoadResult Load(const std::filesystem::path &path);
+  LabRegistryLoadResult Load(
+      const std::filesystem::path &path,
+      std::string_view registryHeading =
+          "## Standalone 3D Feature Lab Registry");
 
   [[nodiscard]] const std::vector<LabFeatureEntry> &Entries() const noexcept {
     return m_entries;

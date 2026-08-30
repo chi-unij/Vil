@@ -837,6 +837,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                 hybridReflection.IsSupported()
             ? ReflectionMode::HybridDXR
             : ReflectionMode::SSR;
+    // requested mode と frame 実行後の active mode を分離して fallback を可視化する。
+    ReflectionMode activeReflectionMode = reflectionMode;
     const std::string dxrStartupStatus =
         "DXR preflight: " + hybridReflection.Status();
     TraceAppEvent(dxrStartupStatus.c_str());
@@ -1040,7 +1042,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     TraceAppEvent("startup: boss arena ready");
     OverworldScene overworldScene;
     overworldScene.Initialize(dx);
-    TraceAppEvent("startup: overworld ready");
+    if (overworldScene.IsReady()) {
+      TraceAppEvent("startup: overworld heightfield ready");
+    } else {
+      TraceAppEvent("startup: overworld heightfield FAILED");
+      if (dxrOverworldSmokeRequested)
+        return 5;
+    }
     TavernScene tavernScene;
     tavernScene.Initialize(dx);
     TraceAppEvent(tavernScene.ImportedArtReady()
@@ -1283,7 +1291,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       playerPreview.SetPosition(overworldScene.TavernReturnPosition());
       playerPreview.SetYaw(0.0f);
       const DirectX::XMFLOAT3 playerPosition = playerPreview.Position();
-      gameCameraPosition = {playerPosition.x, 3.2f, playerPosition.z - 5.8f};
+      gameCameraPosition = {playerPosition.x, playerPosition.y + 3.2f,
+                            playerPosition.z - 5.8f};
       cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
                       gameCameraPosition.z);
       cam.SetYawPitch(0.0f, -0.28f);
@@ -1409,7 +1418,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       playerPreview.SetPosition(overworldScene.PlayerSpawnPosition());
       playerPreview.SetYaw(0.0f);
       const DirectX::XMFLOAT3 spawn = playerPreview.Position();
-      gameCameraPosition = {spawn.x, 3.2f, spawn.z - 5.8f};
+      gameCameraPosition = {spawn.x, spawn.y + 3.2f, spawn.z - 5.8f};
       cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
                       gameCameraPosition.z);
       cam.SetYawPitch(0.0f, -0.28f);
@@ -1526,7 +1535,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       playerPreview.SetPosition(overworldScene.PlayerSpawnPosition());
       playerPreview.SetYaw(0.0f);
       const DirectX::XMFLOAT3 spawn = playerPreview.Position();
-      gameCameraPosition = {spawn.x, 3.2f, spawn.z - 5.8f};
+      gameCameraPosition = {spawn.x, spawn.y + 3.2f, spawn.z - 5.8f};
       cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
                       gameCameraPosition.z);
       cam.SetYawPitch(0.0f, -0.28f);
@@ -1534,6 +1543,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                   static_cast<float>(window.Width()) /
                       static_cast<float>(window.Height()),
                   0.1f, 1000.0f);
+    };
+    editorRuntimeBindings.playTavern = [&]() {
+      stopEditorScenePreview();
+      editorReturnCamera = cam.MakePreset("Editor Return");
+      editorReturnCameraValid = true;
+      enterTavernMode();
     };
     editorRuntimeBindings.playBossArena = [&]() {
       stopEditorScenePreview();
@@ -1554,6 +1569,62 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                       static_cast<float>(window.Height()),
                   0.1f, 1000.0f);
     };
+    editorRuntimeBindings.getReflectionMode = [&]() {
+      switch (reflectionMode) {
+      case ReflectionMode::Off:
+        return 0;
+      case ReflectionMode::SSR:
+        return 1;
+      case ReflectionMode::HybridDXR:
+        return 2;
+      }
+      return 1;
+    };
+    editorRuntimeBindings.getActiveReflectionMode = [&]() {
+      switch (activeReflectionMode) {
+      case ReflectionMode::Off:
+        return 0;
+      case ReflectionMode::SSR:
+        return 1;
+      case ReflectionMode::HybridDXR:
+        return 2;
+      }
+      return 1;
+    };
+    editorRuntimeBindings.setReflectionMode = [&](int requestedMode) {
+      switch (requestedMode) {
+      case 0:
+        reflectionMode = ReflectionMode::Off;
+        return true;
+      case 1:
+        reflectionMode = ReflectionMode::SSR;
+        return true;
+      case 2:
+        if (!hybridReflection.IsSupported()) {
+          // Hybrid DXR が利用できない場合も、既存の SSR 経路を維持する。
+          reflectionMode = ReflectionMode::SSR;
+          return false;
+        }
+        reflectionMode = ReflectionMode::HybridDXR;
+        return true;
+      default:
+        return false;
+      }
+    };
+    editorRuntimeBindings.dxrSupported =
+        [&]() { return hybridReflection.IsSupported(); };
+    editorRuntimeBindings.dxrShaderAvailable =
+        [&]() { return hybridReflection.ShaderAvailable(); };
+    editorRuntimeBindings.dxrSceneReady =
+        [&]() { return hybridReflection.SceneReady(); };
+    editorRuntimeBindings.dxrStatus =
+        [&]() { return hybridReflection.Status(); };
+    editorRuntimeBindings.dxrTier =
+        [&]() { return hybridReflection.RaytracingTier(); };
+    editorRuntimeBindings.dxrInstanceCount =
+        [&]() { return hybridReflection.SceneInstanceCount(); };
+    editorRuntimeBindings.dxrBlasCount =
+        [&]() { return hybridReflection.BlasCount(); };
     editorRuntimeBindings.saveRuntimeSettings = [&]() {
       try {
         nlohmann::json settings = {
@@ -2258,10 +2329,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         } else {
           playerPreview.Update(
               activeGameplayDt, input,
-              inBossArena
-                  ? (bossArenaScene.DebugNoClipEnabled()
-                         ? 1000.0f
-                         : bossArenaScene.ArenaHalfExtent() + 6.0f)
+              inBossArena ? (bossArenaScene.DebugNoClipEnabled()
+                                 ? 1000.0f
+                                 : bossArenaScene.ArenaHalfExtent() + 6.0f)
                           : OverworldScene::kFloorSizeMeters * 0.5f,
               inBossArena ? emptyCollisionColliders
                           : overworldCollisionColliders,
@@ -2270,14 +2340,19 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                                  ? overworldScene.StageCollisionTriangles()
                                  : emptyMeshTriangles),
               inBossArena && bossArenaScene.DebugNoClipEnabled());
+          if (!inBossArena) {
+            DirectX::XMFLOAT3 groundedPosition = playerPreview.Position();
+            groundedPosition.y = OverworldScene::GroundHeightAt(
+                groundedPosition.x, groundedPosition.z);
+            playerPreview.SetPosition(groundedPosition);
+          }
           if (!inBossArena && tavernInteractPressed &&
               overworldScene.IsPlayerNearTavernEntrance(
                   playerPreview.Position())) {
             enterTavernMode();
             enteredTavern = true;
-          } else if (!inBossArena &&
-                     overworldScene.IsPlayerInsideBossWarp(
-                         playerPreview.Position())) {
+          } else if (!inBossArena && overworldScene.IsPlayerInsideBossWarp(
+                                         playerPreview.Position())) {
             TraceAppEvent("overworld warp: boss arena");
             appMode = AppMode::BossArena;
             inBossArena = true;
@@ -2369,7 +2444,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
           const DirectX::XMFLOAT3 playerPos = playerPreview.Position();
           const DirectX::XMFLOAT3 targetCameraPos = {
               playerPos.x,
-              (inBossArena && bossArenaScene.DebugNoClipEnabled())
+              (!inBossArena || bossArenaScene.DebugNoClipEnabled())
                   ? playerPos.y + 3.2f
                   : 3.2f,
               playerPos.z - 5.8f};
@@ -2428,7 +2503,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
           playerPreview.SetYaw(0.0f);
           {
             const DirectX::XMFLOAT3 spawn = playerPreview.Position();
-            gameCameraPosition = {spawn.x, 3.2f, spawn.z - 5.8f};
+            gameCameraPosition = {spawn.x, spawn.y + 3.2f, spawn.z - 5.8f};
           }
           cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
                           gameCameraPosition.z);
@@ -2744,7 +2819,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
 
           playerPreview.SetYaw(0.0f);
           const DirectX::XMFLOAT3 restartPosition = playerPreview.Position();
-          gameCameraPosition = {restartPosition.x, 3.2f,
+          gameCameraPosition = {restartPosition.x, restartPosition.y + 3.2f,
                                 restartPosition.z - 5.8f};
           cam.SetPosition(gameCameraPosition.x, gameCameraPosition.y,
                           gameCameraPosition.z);
@@ -4208,6 +4283,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
           frame.reflectionMode = ReflectionMode::SSR;
         }
       }
+      activeReflectionMode = frame.reflectionMode;
       // SSR は opaque scene と対応する depth だけを参照する。
       // Particle／debug overlay を先に描くと、深度を持たない色が水面へ伸びる。
       if (traceGameFrame)

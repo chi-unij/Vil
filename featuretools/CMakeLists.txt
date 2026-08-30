@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.25)
 
 project(VillienFeatureTools VERSION 2.0.0 LANGUAGES CXX)
 
+set(VILLIEN_FEATURE_CATALOG
+    "${CMAKE_CURRENT_SOURCE_DIR}/feature_catalog.md")
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -49,8 +52,8 @@ target_link_libraries(FeatureTools PRIVATE
 )
 
 if(MSVC)
-  target_compile_options(FeatureLabCore PRIVATE /W4 /permissive- /utf-8)
-  target_compile_options(FeatureTools PRIVATE /W4 /permissive- /utf-8)
+  target_compile_options(FeatureLabCore PRIVATE /W4 /permissive- /utf-8 /EHsc)
+  target_compile_options(FeatureTools PRIVATE /W4 /permissive- /utf-8 /EHsc)
 endif()
 
 set_target_properties(FeatureTools PROPERTIES
@@ -64,13 +67,13 @@ add_custom_command(TARGET FeatureTools POST_BUILD
           "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
           "$<TARGET_FILE_DIR:FeatureTools>/shaders"
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-          "${CMAKE_CURRENT_SOURCE_DIR}/../feature.md"
+          "${VILLIEN_FEATURE_CATALOG}"
           "$<TARGET_FILE_DIR:FeatureTools>/feature.md"
-  COMMENT "Copying Feature Lab shaders and feature.md"
+  COMMENT "Copying Feature Lab shaders and public feature catalog"
 )
 
 set_property(TARGET FeatureTools APPEND PROPERTY LINK_DEPENDS
-  "${CMAKE_CURRENT_SOURCE_DIR}/../feature.md"
+  "${VILLIEN_FEATURE_CATALOG}"
 )
 
 enable_testing()
@@ -83,10 +86,10 @@ target_compile_definitions(FeatureLabTests PRIVATE
 )
 target_link_libraries(FeatureLabTests PRIVATE FeatureLabCore)
 if(MSVC)
-  target_compile_options(FeatureLabTests PRIVATE /W4 /permissive- /utf-8)
+  target_compile_options(FeatureLabTests PRIVATE /W4 /permissive- /utf-8 /EHsc)
 endif()
 
 add_test(
   NAME FeatureLabTests
-  COMMAND FeatureLabTests "${CMAKE_CURRENT_SOURCE_DIR}/../feature.md"
+  COMMAND FeatureLabTests "${VILLIEN_FEATURE_CATALOG}"
 )

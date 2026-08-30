@@ -12,9 +12,6 @@
 
 namespace {
 
-constexpr std::string_view kRegistryHeading =
-    "## Standalone 3D Feature Lab Registry";
-
 std::string Trim(std::string value) {
   const auto first = std::find_if_not(value.begin(), value.end(), [](char c) {
     return std::isspace(static_cast<unsigned char>(c)) != 0;
@@ -127,7 +124,9 @@ std::string LabWideToUtf8(std::wstring_view text) {
   return result;
 }
 
-LabRegistryLoadResult FeatureRegistry::Load(const std::filesystem::path &path) {
+LabRegistryLoadResult
+FeatureRegistry::Load(const std::filesystem::path &path,
+                      std::string_view registryHeading) {
   LabRegistryLoadResult result;
   m_entries.clear();
   m_index.clear();
@@ -155,7 +154,7 @@ LabRegistryLoadResult FeatureRegistry::Load(const std::filesystem::path &path) {
   while (std::getline(stream, line)) {
     if (!line.empty() && line.back() == '\r')
       line.pop_back();
-    if (line == kRegistryHeading) {
+    if (line == registryHeading) {
       inRegistry = true;
       haveHeader = false;
       continue;
@@ -182,7 +181,10 @@ LabRegistryLoadResult FeatureRegistry::Load(const std::filesystem::path &path) {
     const int categoryColumn = Column(headers, "Category");
     const int featureColumn = Column(headers, "Feature");
     const int defaultColumn = Column(headers, "Default");
-    const int descriptionColumn = Column(headers, "說明");
+    const int routeColumn = Column(headers, "Route");
+    int descriptionColumn = Column(headers, "說明");
+    if (descriptionColumn < 0)
+      descriptionColumn = Column(headers, "説明");
     if (idColumn < 0 || featureColumn < 0) {
       result.error = L"Feature Lab registry header が不正です。";
       return result;
@@ -193,7 +195,9 @@ LabRegistryLoadResult FeatureRegistry::Load(const std::filesystem::path &path) {
     entry.category = LabUtf8ToWide(Cell(cells, categoryColumn));
     entry.name = LabUtf8ToWide(Cell(cells, featureColumn));
     entry.description = LabUtf8ToWide(Cell(cells, descriptionColumn));
-    entry.defaultEnabled = ParseDefault(Cell(cells, defaultColumn));
+    entry.route = Cell(cells, routeColumn);
+    entry.defaultMode = Cell(cells, defaultColumn);
+    entry.defaultEnabled = ParseDefault(entry.defaultMode);
     entry.enabled = entry.defaultEnabled;
     if (entry.id.empty() || entry.name.empty()) {
       result.error = L"Feature Lab registry に空の ID または Feature があります。";
@@ -208,7 +212,8 @@ LabRegistryLoadResult FeatureRegistry::Load(const std::filesystem::path &path) {
   }
 
   if (!inRegistry) {
-    result.error = L"Standalone 3D Feature Lab Registry section がありません。";
+    result.error = L"Registry section がありません: " +
+                   LabUtf8ToWide(registryHeading);
     return result;
   }
   if (m_entries.empty()) {

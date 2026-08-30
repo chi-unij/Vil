@@ -26,6 +26,7 @@
 #include <fstream>
 #include <sstream>
 #include <string_view>
+#include <unordered_map>
 
 #include <windows.h>
 #include <commdlg.h>
@@ -233,13 +234,73 @@ enum class FeatureRoute {
   Vfx,
   Camera,
   Overworld,
+  Tavern,
   Boss,
   Observed,
   Legacy,
   Unmapped,
 };
 
+// feature_catalog.md の Route 列を唯一の正式な Showcase 導線として保持する。
+// ヘッダーを変更せず、旧 standalone registry の互換導線だけを fallback に残す。
+std::unordered_map<std::string, FeatureRoute> g_featureShowcaseRoutes;
+
+std::string NormalizeRouteKey(std::string value) {
+  value = LowerAscii(MakeAsciiUiText(std::move(value)));
+  value.erase(std::remove_if(value.begin(), value.end(),
+                             [](unsigned char c) {
+                               return std::isalnum(c) == 0;
+                             }),
+              value.end());
+  return value;
+}
+
+FeatureRoute RouteFromCatalogCell(const std::string &routeCell) {
+  const std::string route = NormalizeRouteKey(routeCell);
+  if (route.empty() || route == "unmapped")
+    return FeatureRoute::Unmapped;
+  if (route.find("legacy") != std::string::npos)
+    return FeatureRoute::Legacy;
+  if (route.find("overworld") != std::string::npos)
+    return FeatureRoute::Overworld;
+  if (route.find("tavern") != std::string::npos)
+    return FeatureRoute::Tavern;
+  if (route.find("boss") != std::string::npos)
+    return FeatureRoute::Boss;
+  if (route.find("observed") != std::string::npos ||
+      route.find("core") != std::string::npos ||
+      route.find("gameview") != std::string::npos)
+    return FeatureRoute::Observed;
+  if (route.find("environment") != std::string::npos ||
+      route == "lighting")
+    return FeatureRoute::Environment;
+  if (route.find("render") != std::string::npos ||
+      route.find("postprocess") != std::string::npos ||
+      route.find("reflection") != std::string::npos)
+    return FeatureRoute::Rendering;
+  if (route.find("vfx") != std::string::npos ||
+      route.find("animation") != std::string::npos ||
+      route.find("effect") != std::string::npos)
+    return FeatureRoute::Vfx;
+  if (route.find("camera") != std::string::npos)
+    return FeatureRoute::Camera;
+  if (route.find("world") != std::string::npos || route == "water" ||
+      route == "physics")
+    return FeatureRoute::World;
+  if (route.find("scene") != std::string::npos ||
+      route.find("inspector") != std::string::npos ||
+      route.find("material") != std::string::npos || route == "editor")
+    return FeatureRoute::SceneObjects;
+  return FeatureRoute::Unmapped;
+}
+
 FeatureRoute RouteForShowcaseId(std::string_view id) {
+  const std::string normalizedId = LowerAscii(std::string(id));
+  const auto catalogRoute = g_featureShowcaseRoutes.find(normalizedId);
+  if (catalogRoute != g_featureShowcaseRoutes.end())
+    return catalogRoute->second;
+
+  // 旧 registry を表示する過去データ向けの互換経路。
   if (id == "fog" || id == "wireframe" || id == "camera_auto_move" ||
       id == "auto_demo")
     return FeatureRoute::Legacy;
@@ -389,111 +450,220 @@ void SceneEditor::DrawUI(Scene &scene, DxContext &dx,
 void SceneEditor::LoadFeatureInventory() {
   m_featureInventory.clear();
   m_featureShowcase.clear();
+  g_featureShowcaseRoutes.clear();
   m_featureInventoryLoaded = true;
 
   std::error_code ec;
   std::filesystem::path searchRoot = std::filesystem::current_path(ec);
   std::filesystem::path featurePath;
+  std::filesystem::path catalogPath;
   for (int depth = 0; !searchRoot.empty() && depth < 8; ++depth) {
-    const std::filesystem::path candidate = searchRoot / "feature.md";
-    if (std::filesystem::is_regular_file(candidate, ec)) {
-      featurePath = candidate;
+    const std::filesystem::path featureCandidate = searchRoot / "feature.md";
+    const std::filesystem::path catalogCandidate =
+        searchRoot / "featuretools" / "feature_catalog.md";
+    if (featurePath.empty() &&
+        std::filesystem::is_regular_file(featureCandidate, ec))
+      featurePath = featureCandidate;
+    ec.clear();
+    if (catalogPath.empty() &&
+        std::filesystem::is_regular_file(catalogCandidate, ec))
+      catalogPath = catalogCandidate;
+    ec.clear();
+    if (!featurePath.empty() && !catalogPath.empty())
       break;
-    }
     const std::filesystem::path parent = searchRoot.parent_path();
     if (parent == searchRoot)
       break;
     searchRoot = parent;
   }
 
-  if (featurePath.empty()) {
-    m_featureInventoryMessage =
-        "feature.md was not found in the project root or its parents.";
-    return;
-  }
-
-  std::ifstream input(featurePath, std::ios::binary);
-  if (!input) {
-    m_featureInventoryMessage = "feature.md could not be opened.";
-    return;
-  }
-
-  std::vector<std::string> lines;
-  std::string line;
-  while (std::getline(input, line)) {
-    if (!line.empty() && line.back() == '\r')
-      line.pop_back();
-    lines.push_back(std::move(line));
-  }
-
-  std::string section;
-  for (size_t i = 0; i < lines.size(); ++i) {
-    if (lines[i].rfind("## ", 0) == 0) {
-      section = TrimMarkdownText(lines[i].substr(3));
-      continue;
+  const auto readMarkdown = [](const std::filesystem::path &path,
+                               std::vector<std::string> &lines) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+      return false;
+    std::string line;
+    while (std::getline(input, line)) {
+      if (!line.empty() && line.back() == '\r')
+        line.pop_back();
+      lines.push_back(std::move(line));
     }
-    if (lines[i].empty() || lines[i].front() != '|' ||
-        i + 1 >= lines.size() || !IsMarkdownSeparatorRow(lines[i + 1])) {
-      continue;
-    }
+    return true;
+  };
 
-    const std::vector<std::string> headers = SplitMarkdownRow(lines[i]);
-    const int categoryColumn = FindMarkdownColumn(headers, "category");
-    const int statusColumn = FindMarkdownColumn(headers, "status");
-    int featureColumn = FindMarkdownColumn(headers, "feature");
-    // Gameplay VFX uses "VFX / Emitter" instead of "Feature".
-    if (featureColumn < 0 && statusColumn >= 0)
-      featureColumn = FindMarkdownColumn(headers, "vfx");
-    if (featureColumn < 0)
-      continue;
+  const auto headingText = [](const std::string &line) {
+    size_t markerCount = 0;
+    while (markerCount < line.size() && line[markerCount] == '#')
+      ++markerCount;
+    if (markerCount < 2 || markerCount >= line.size() ||
+        line[markerCount] != ' ')
+      return std::string{};
+    return TrimMarkdownText(line.substr(markerCount + 1));
+  };
 
-    const int sourceColumn = FindMarkdownColumn(headers, "source");
-    const int idColumn = FindMarkdownColumn(headers, "lab id");
-    const int defaultColumn = FindMarkdownColumn(headers, "default");
-    const bool showcaseTable =
-        section.find("Standalone 3D Feature Lab Registry") !=
-        std::string::npos;
+  bool featureReadFailed = false;
+  if (!featurePath.empty()) {
+    std::vector<std::string> lines;
+    if (!readMarkdown(featurePath, lines)) {
+      featureReadFailed = true;
+    } else {
+      std::string section;
+      for (size_t i = 0; i < lines.size(); ++i) {
+        const std::string heading = headingText(lines[i]);
+        if (!heading.empty()) {
+          section = heading;
+          continue;
+        }
+        if (lines[i].empty() || lines[i].front() != '|' ||
+            i + 1 >= lines.size() ||
+            !IsMarkdownSeparatorRow(lines[i + 1]))
+          continue;
 
-    size_t row = i + 2;
-    for (; row < lines.size() && !lines[row].empty() &&
-           lines[row].front() == '|';
-         ++row) {
-      const std::vector<std::string> cells = SplitMarkdownRow(lines[row]);
-      const auto cell = [&cells](int index) -> std::string {
-        if (index < 0 || index >= static_cast<int>(cells.size()))
-          return {};
-        return cells[index];
-      };
+        const std::string normalizedSection =
+            LowerAscii(MakeAsciiUiText(section));
+        // 旧 Standalone registry は互換資料であり、正式 Showcase ではない。
+        if (normalizedSection.find("standalone 3d feature lab registry") !=
+                std::string::npos ||
+            normalizedSection.find(
+                "villieneditor technology showcase registry") !=
+                std::string::npos)
+          continue;
 
-      if (showcaseTable) {
-        FeatureShowcaseEntry entry;
-        entry.id = MakeAsciiUiText(cell(idColumn));
-        entry.category = MakeAsciiUiText(cell(categoryColumn));
-        entry.feature = MakeAsciiUiText(cell(featureColumn));
-        entry.defaultValue = MakeAsciiUiText(cell(defaultColumn));
-        const int detailColumn =
-            sourceColumn > 0 ? sourceColumn - 1
-                             : static_cast<int>(cells.size()) - 1;
-        entry.detail = MakeAsciiUiText(cell(detailColumn));
-        if (!entry.id.empty() && !entry.feature.empty())
-          m_featureShowcase.push_back(std::move(entry));
-        continue;
+        const std::vector<std::string> headers = SplitMarkdownRow(lines[i]);
+        const int categoryColumn = FindMarkdownColumn(headers, "category");
+        const int statusColumn = FindMarkdownColumn(headers, "status");
+        int featureColumn = FindMarkdownColumn(headers, "feature");
+        // Gameplay VFX は "VFX / Emitter" 列を使用する。
+        if (featureColumn < 0 && statusColumn >= 0)
+          featureColumn = FindMarkdownColumn(headers, "vfx");
+        if (featureColumn < 0 || statusColumn < 0)
+          continue;
+
+        const int sourceColumn = FindMarkdownColumn(headers, "source");
+        int detailColumn = FindMarkdownColumn(headers, "description");
+        if (detailColumn < 0)
+          detailColumn = FindMarkdownColumn(headers, "detail");
+        if (detailColumn < 0)
+          detailColumn = sourceColumn > 0
+                             ? sourceColumn - 1
+                             : static_cast<int>(headers.size()) - 1;
+
+        size_t row = i + 2;
+        for (; row < lines.size() && !lines[row].empty() &&
+               lines[row].front() == '|';
+             ++row) {
+          const std::vector<std::string> cells = SplitMarkdownRow(lines[row]);
+          const auto cell = [&cells](int index) -> std::string {
+            if (index < 0 || index >= static_cast<int>(cells.size()))
+              return {};
+            return cells[index];
+          };
+
+          FeatureInventoryEntry entry;
+          entry.section = MakeAsciiUiText(section);
+          entry.category = MakeAsciiUiText(cell(categoryColumn));
+          entry.feature = MakeAsciiUiText(cell(featureColumn));
+          entry.status = MakeAsciiUiText(cell(statusColumn));
+          entry.source = MakeAsciiUiText(cell(sourceColumn));
+          entry.detail = MakeAsciiUiText(cell(detailColumn));
+          if (!entry.feature.empty())
+            m_featureInventory.push_back(std::move(entry));
+        }
+        i = row > 0 ? row - 1 : row;
       }
-
-      FeatureInventoryEntry entry;
-      entry.section = MakeAsciiUiText(section);
-      entry.category = MakeAsciiUiText(cell(categoryColumn));
-      entry.feature = MakeAsciiUiText(cell(featureColumn));
-      entry.status = MakeAsciiUiText(cell(statusColumn));
-      entry.source = MakeAsciiUiText(cell(sourceColumn));
-      const int detailColumn =
-          sourceColumn > 0 ? sourceColumn - 1
-                           : static_cast<int>(cells.size()) - 1;
-      entry.detail = MakeAsciiUiText(cell(detailColumn));
-      if (!entry.feature.empty())
-        m_featureInventory.push_back(std::move(entry));
     }
-    i = row > 0 ? row - 1 : row;
+  }
+
+  bool catalogReadFailed = false;
+  bool formalRegistryFound = false;
+  bool routeColumnFound = false;
+  if (!catalogPath.empty()) {
+    std::vector<std::string> lines;
+    if (!readMarkdown(catalogPath, lines)) {
+      catalogReadFailed = true;
+    } else {
+      std::string section;
+      for (size_t i = 0; i < lines.size(); ++i) {
+        const std::string heading = headingText(lines[i]);
+        if (!heading.empty()) {
+          section = heading;
+          continue;
+        }
+
+        const std::string normalizedSection =
+            LowerAscii(MakeAsciiUiText(section));
+        if (normalizedSection.find(
+                "villieneditor technology showcase registry") ==
+                std::string::npos ||
+            lines[i].empty() || lines[i].front() != '|' ||
+            i + 1 >= lines.size() ||
+            !IsMarkdownSeparatorRow(lines[i + 1]))
+          continue;
+
+        formalRegistryFound = true;
+        const std::vector<std::string> headers = SplitMarkdownRow(lines[i]);
+        const int idColumn = FindMarkdownColumn(headers, "lab id");
+        const int categoryColumn = FindMarkdownColumn(headers, "category");
+        const int featureColumn = FindMarkdownColumn(headers, "feature");
+        const int defaultColumn = FindMarkdownColumn(headers, "default");
+        const int routeColumn = FindMarkdownColumn(headers, "route");
+        routeColumnFound = routeColumn >= 0;
+        int detailColumn = FindMarkdownColumn(headers, "description");
+        if (detailColumn < 0)
+          detailColumn = FindMarkdownColumn(headers, "detail");
+        if (detailColumn < 0)
+          detailColumn = static_cast<int>(headers.size()) - 1;
+        if (idColumn < 0 || featureColumn < 0)
+          continue;
+
+        size_t row = i + 2;
+        for (; row < lines.size() && !lines[row].empty() &&
+               lines[row].front() == '|';
+             ++row) {
+          const std::vector<std::string> cells = SplitMarkdownRow(lines[row]);
+          const auto cell = [&cells](int index) -> std::string {
+            if (index < 0 || index >= static_cast<int>(cells.size()))
+              return {};
+            return cells[index];
+          };
+
+          FeatureShowcaseEntry entry;
+          entry.id = LowerAscii(MakeAsciiUiText(cell(idColumn)));
+          entry.category = MakeAsciiUiText(cell(categoryColumn));
+          entry.feature = MakeAsciiUiText(cell(featureColumn));
+          entry.defaultValue = MakeAsciiUiText(cell(defaultColumn));
+          entry.detail = MakeAsciiUiText(cell(detailColumn));
+          if (entry.id.empty() || entry.feature.empty())
+            continue;
+
+          // 空欄・未知 Route も明示的に Unmapped として contract に残す。
+          const FeatureRoute route = RouteFromCatalogCell(cell(routeColumn));
+          g_featureShowcaseRoutes.emplace(entry.id, route);
+          m_featureShowcase.push_back(std::move(entry));
+        }
+        i = row > 0 ? row - 1 : row;
+      }
+    }
+  }
+
+  bool inventorySynthesized = false;
+  if (m_featureInventory.empty() && !m_featureShowcase.empty()) {
+    inventorySynthesized = true;
+    for (const FeatureShowcaseEntry &showcase : m_featureShowcase) {
+      FeatureInventoryEntry entry;
+      entry.section = "VillienEditor Technology Showcase Registry";
+      entry.category = showcase.category;
+      entry.feature = showcase.feature;
+      entry.status = "Implemented";
+      entry.detail = showcase.detail;
+      if (!showcase.defaultValue.empty()) {
+        if (!entry.detail.empty())
+          entry.detail += " ";
+        entry.detail += "Default: " + showcase.defaultValue;
+      }
+      entry.source = "featuretools/feature_catalog.md";
+      m_featureInventory.push_back(std::move(entry));
+    }
   }
 
   size_t unmapped = 0;
@@ -514,12 +684,24 @@ void SceneEditor::LoadFeatureInventory() {
   std::ostringstream message;
   message << "Loaded " << m_featureInventory.size()
           << " inventory rows and " << m_featureShowcase.size()
-          << " showcase routes from feature.md.";
-  if (m_featureShowcase.size() != 42 || unmapped != 0 || duplicateIds != 0) {
-    message << " Contract warning: expected 42 unique mapped Lab IDs; "
-            << unmapped << " unmapped and " << duplicateIds
-            << " duplicate IDs found.";
+          << " formal showcase routes";
+  if (!featurePath.empty() && !featureReadFailed)
+    message << " from feature.md";
+  if (!catalogPath.empty() && !catalogReadFailed)
+    message << (featurePath.empty() || featureReadFailed ? " from " : " + ")
+            << "featuretools/feature_catalog.md";
+  message << ". " << (m_featureShowcase.size() - unmapped) << " / "
+          << m_featureShowcase.size() << " mapped, " << unmapped
+          << " unmapped, " << duplicateIds << " duplicate IDs.";
+  if (inventorySynthesized)
+    message << " Inventory was synthesized from the catalog.";
+  if (catalogPath.empty() || catalogReadFailed || !formalRegistryFound ||
+      !routeColumnFound) {
+    message << " Contract warning: the formal catalog registry or Route "
+               "column is unavailable.";
   }
+  if (featureReadFailed)
+    message << " feature.md could not be opened.";
   m_featureInventoryMessage = message.str();
 }
 
@@ -1822,6 +2004,85 @@ void SceneEditor::DrawRuntimeSystemsPanel(Scene &scene, DxContext &dx,
         return false;
       };
 
+      if (ImGui::CollapsingHeader("Reflections and DXR",
+                                  ImGuiTreeNodeFlags_DefaultOpen)) {
+        const bool bridgeReady = runtime && runtime->getReflectionMode &&
+                                 runtime->setReflectionMode;
+        if (!bridgeReady) {
+          ImGui::TextDisabled("Reflection runtime bindings are unavailable.");
+        } else {
+          const auto modeLabel = [](int mode) {
+            return mode == 0   ? "Off"
+                   : mode == 2 ? "Hybrid DXR"
+                               : "SSR";
+          };
+          const int requestedMode = runtime->getReflectionMode();
+          const int activeMode = runtime->getActiveReflectionMode
+                                     ? runtime->getActiveReflectionMode()
+                                     : requestedMode;
+          const bool dxrSupported =
+              runtime->dxrSupported && runtime->dxrSupported();
+
+          ImGui::Text("Requested: %s", modeLabel(requestedMode));
+          ImGui::SameLine();
+          ImGui::Text("Active: %s", modeLabel(activeMode));
+          static constexpr const char *kModeLabels[] = {"Off", "SSR",
+                                                        "Hybrid DXR"};
+          for (int mode = 0; mode < 3; ++mode) {
+            if (mode > 0)
+              ImGui::SameLine();
+            const bool disableChoice = mode == 2 && !dxrSupported;
+            if (disableChoice)
+              ImGui::BeginDisabled();
+            ImGui::PushID(mode);
+            if (ImGui::RadioButton(kModeLabels[mode],
+                                   requestedMode == mode)) {
+              runtime->setReflectionMode(mode);
+            }
+            ImGui::PopID();
+            if (disableChoice)
+              ImGui::EndDisabled();
+          }
+
+          if (requestedMode != activeMode) {
+            ImGui::TextColored(ImVec4(1.0f, 0.62f, 0.25f, 1.0f),
+                               "Fallback active: requested %s, using %s.",
+                               modeLabel(requestedMode), modeLabel(activeMode));
+          }
+
+          const bool dxilReady = runtime->dxrShaderAvailable &&
+                                 runtime->dxrShaderAvailable();
+          const bool sceneReady =
+              runtime->dxrSceneReady && runtime->dxrSceneReady();
+          const D3D12_RAYTRACING_TIER tier =
+              runtime->dxrTier ? runtime->dxrTier()
+                               : D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
+          const char *tierLabel =
+              tier >= D3D12_RAYTRACING_TIER_1_1
+                  ? "1.1"
+                  : (tier >= D3D12_RAYTRACING_TIER_1_0 ? "1.0"
+                                                       : "Unavailable");
+          const uint32_t instanceCount = runtime->dxrInstanceCount
+                                             ? runtime->dxrInstanceCount()
+                                             : 0;
+          const uint32_t blasCount =
+              runtime->dxrBlasCount ? runtime->dxrBlasCount() : 0;
+          ImGui::TextColored(
+              dxrSupported ? ImVec4(0.35f, 0.90f, 0.45f, 1.0f)
+                           : ImVec4(1.0f, 0.45f, 0.30f, 1.0f),
+              "Tier %s | DXIL %s | Scene %s", tierLabel,
+              dxilReady ? "Ready" : "Missing",
+              sceneReady ? "Ready" : "Pending");
+          ImGui::Text("TLAS instances: %u | Cached BLAS: %u", instanceCount,
+                      blasCount);
+          if (runtime->dxrStatus) {
+            const std::string status = MakeAsciiUiText(runtime->dxrStatus());
+            if (!status.empty())
+              ImGui::TextWrapped("%s", status.c_str());
+          }
+        }
+      }
+
       if (ImGui::CollapsingHeader("Cascaded Shadows",
                                   ImGuiTreeNodeFlags_DefaultOpen)) {
         shadowCheckbox("Enabled##Shadows", &ss.shadowsEnabled);
@@ -2162,7 +2423,7 @@ void SceneEditor::DrawFeatureCoveragePanel(
   if (!m_featureInventoryLoaded)
     LoadFeatureInventory();
 
-  if (ImGui::Button("Reload feature.md"))
+  if (ImGui::Button("Reload feature coverage"))
     LoadFeatureInventory();
   ImGui::SameLine();
   ImGui::Text("%zu + %zu", m_featureInventory.size(),
@@ -2170,24 +2431,34 @@ void SceneEditor::DrawFeatureCoveragePanel(
   if (!m_featureInventoryMessage.empty()) {
     const bool warning =
         m_featureInventoryMessage.find("warning") != std::string::npos ||
+        m_featureInventoryMessage.find("unavailable") != std::string::npos ||
+        m_featureInventoryMessage.find("fallback") != std::string::npos ||
         m_featureInventory.empty() || m_featureShowcase.empty();
-    ImGui::TextColored(warning ? ImVec4(1.0f, 0.40f, 0.30f, 1.0f)
-                               : ImVec4(0.35f, 0.90f, 0.45f, 1.0f),
-                       "%s", m_featureInventoryMessage.c_str());
+    ImGui::PushStyleColor(ImGuiCol_Text,
+                          warning ? ImVec4(1.0f, 0.40f, 0.30f, 1.0f)
+                                  : ImVec4(0.35f, 0.90f, 0.45f, 1.0f));
+    ImGui::TextWrapped("%s", m_featureInventoryMessage.c_str());
+    ImGui::PopStyleColor();
   }
 
   if (runtime &&
       (runtime->playTitle || runtime->playOverworld ||
-       runtime->playBossArena)) {
-    if (runtime->playTitle && ImGui::SmallButton("Run Title"))
-      runtime->playTitle();
-    if (runtime->playOverworld && ImGui::SmallButton("Run Overworld"))
-      runtime->playOverworld();
-    if (runtime->playBossArena) {
-      ImGui::SameLine();
-      if (ImGui::SmallButton("Run Boss"))
-        runtime->playBossArena();
-    }
+       runtime->playTavern || runtime->playBossArena)) {
+    bool hasPreviousLauncher = false;
+    const auto launcher = [&](const char *label,
+                              const std::function<void()> &callback) {
+      if (!callback)
+        return;
+      if (hasPreviousLauncher)
+        ImGui::SameLine();
+      if (ImGui::SmallButton(label))
+        callback();
+      hasPreviousLauncher = true;
+    };
+    launcher("Run Title", runtime->playTitle);
+    launcher("Run Overworld", runtime->playOverworld);
+    launcher("Run Tavern", runtime->playTavern);
+    launcher("Run Boss", runtime->playBossArena);
     ImGui::TextDisabled("F1 returns to the Editor.");
   }
 
@@ -2207,126 +2478,318 @@ void SceneEditor::DrawFeatureCoveragePanel(
           }
         }
       }
-      if (m_featureShowcase.size() == 42 && unmapped == 0 &&
-          duplicateIds == 0) {
-        ImGui::TextColored(ImVec4(0.35f, 0.90f, 0.45f, 1.0f),
-                           "42 / 42 feature.md routes mapped");
-      } else {
-        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.28f, 1.0f),
-                           "%zu routes, %zu unmapped, %zu duplicate",
-                           m_featureShowcase.size(), unmapped, duplicateIds);
-      }
+      const size_t mapped = m_featureShowcase.size() - unmapped;
+      const ImVec4 contractColor =
+          unmapped == 0 && duplicateIds == 0
+              ? ImVec4(0.35f, 0.90f, 0.45f, 1.0f)
+              : ImVec4(1.0f, 0.35f, 0.28f, 1.0f);
+      ImGui::TextColored(contractColor,
+                         "%zu / %zu catalog routes mapped | %zu unmapped | "
+                         "%zu duplicate IDs",
+                         mapped, m_featureShowcase.size(), unmapped,
+                         duplicateIds);
       ImGui::TextWrapped(
           "Checkboxes change real runtime state. Open/Run routes lead to "
-          "the real control panel or Game View. Core and Legacy entries are "
+          "the real control panel or Game View. Renderer foundations are "
           "never represented by fake switches.");
-      ImGui::Checkbox("Show Legacy IDs", &m_showLegacyFeatures);
+
+      static char showcaseFilter[96] = {};
+      static std::string showcaseCategory;
+      ImGui::SetNextItemWidth(-1.0f);
+      ImGui::InputTextWithHint("##ShowcaseFilter",
+                               "Filter showcase ID, feature, category...",
+                               showcaseFilter, sizeof(showcaseFilter));
+
+      std::vector<std::string> showcaseCategories;
+      for (const FeatureShowcaseEntry &entry : m_featureShowcase) {
+        const std::string category =
+            entry.category.empty() ? "Uncategorized" : entry.category;
+        if (std::find(showcaseCategories.begin(), showcaseCategories.end(),
+                      category) == showcaseCategories.end())
+          showcaseCategories.push_back(category);
+      }
+      std::sort(showcaseCategories.begin(), showcaseCategories.end());
+      if (!showcaseCategory.empty() &&
+          std::find(showcaseCategories.begin(), showcaseCategories.end(),
+                    showcaseCategory) == showcaseCategories.end())
+        showcaseCategory.clear();
+
+      ImGui::SetNextItemWidth(220.0f);
+      const char *categoryPreview = showcaseCategory.empty()
+                                        ? "All categories"
+                                        : showcaseCategory.c_str();
+      if (ImGui::BeginCombo("##ShowcaseCategory", categoryPreview)) {
+        if (ImGui::Selectable("All categories", showcaseCategory.empty()))
+          showcaseCategory.clear();
+        for (const std::string &category : showcaseCategories) {
+          const bool selected = category == showcaseCategory;
+          if (ImGui::Selectable(category.c_str(), selected))
+            showcaseCategory = category;
+          if (selected)
+            ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+      }
+      const std::string normalizedShowcaseFilter =
+          LowerAscii(showcaseFilter);
+      const auto entryMatchesFilter =
+          [&normalizedShowcaseFilter](const FeatureShowcaseEntry &entry) {
+            if (normalizedShowcaseFilter.empty())
+              return true;
+            const std::string searchable = LowerAscii(
+                entry.id + " " + entry.category + " " + entry.feature + " " +
+                entry.defaultValue + " " + entry.detail);
+            return searchable.find(normalizedShowcaseFilter) !=
+                   std::string::npos;
+          };
 
       ImGui::BeginChild("##ShowcaseFeatureList", ImVec2(0.0f, 0.0f), true);
-      for (const FeatureShowcaseEntry &entry : m_featureShowcase) {
-        const FeatureRoute route = RouteForShowcaseId(entry.id);
-        if (route == FeatureRoute::Legacy && !m_showLegacyFeatures)
+      for (const std::string &category : showcaseCategories) {
+        if (!showcaseCategory.empty() && category != showcaseCategory)
           continue;
 
-        bool *toggle = nullptr;
-        if (entry.id == "shadows")
-          toggle = &scene.ShadowSettings().shadowsEnabled;
-        else if (entry.id == "ssao")
-          toggle = &scene.ShadowSettings().ssaoEnabled;
-        else if (entry.id == "bloom")
-          toggle = &scene.PostProcessSettings().bloomEnabled;
-        else if (entry.id == "fxaa")
-          toggle = &scene.PostProcessSettings().fxaaEnabled;
-        else if (entry.id == "camera_orbit")
-          toggle = &m_cameraNavigationEnabled;
-        else if (runtime && entry.id == "rain")
-          toggle = runtime->rainEnabled;
-        else if (runtime && entry.id == "time_of_day")
-          toggle = runtime->automaticTime;
-        else if (runtime && entry.id == "particles")
-          toggle = runtime->particlesEnabled;
-        else if (runtime && entry.id == "collision_debug")
-          toggle = runtime->collisionDebug;
-
-        ImGui::PushID(entry.id.c_str());
-        if (toggle) {
-          ImGui::Checkbox("##RuntimeToggle", toggle);
-        } else {
-          switch (route) {
-          case FeatureRoute::SceneObjects:
-            if (ImGui::SmallButton("Scene")) {
-              m_featureInventoryMessage =
-                  "Use the always-visible Scene Objects and Inspector panels "
-                  "to edit or disable this entity/material feature.";
-            }
-            break;
-          case FeatureRoute::Environment:
-            if (ImGui::SmallButton("Open"))
-              m_requestedSystemsTab = 1;
-            break;
-          case FeatureRoute::Rendering:
-            if (ImGui::SmallButton("Open"))
-              m_requestedSystemsTab = 2;
-            break;
-          case FeatureRoute::World:
-            if (ImGui::SmallButton("Open"))
-              m_requestedSystemsTab = 3;
-            break;
-          case FeatureRoute::Vfx:
-            if (ImGui::SmallButton("Open"))
-              m_requestedSystemsTab = 4;
-            break;
-          case FeatureRoute::Camera:
-            if (ImGui::SmallButton("Open"))
-              m_requestedSystemsTab = 5;
-            break;
-          case FeatureRoute::Overworld:
-            if (runtime && runtime->playOverworld) {
-              if (ImGui::SmallButton("Run"))
-                runtime->playOverworld();
-            } else {
-              ImGui::TextDisabled("World");
-            }
-            break;
-          case FeatureRoute::Boss:
-            if (runtime && runtime->playBossArena) {
-              if (ImGui::SmallButton("Run"))
-                runtime->playBossArena();
-            } else {
-              ImGui::TextDisabled("Boss");
-            }
-            break;
-          case FeatureRoute::Observed:
-            if (runtime && runtime->playOverworld) {
-              if (ImGui::SmallButton("View"))
-                runtime->playOverworld();
-            } else {
-              ImGui::TextDisabled("Core");
-            }
-            break;
-          case FeatureRoute::Legacy:
-            ImGui::TextColored(ImVec4(0.65f, 0.65f, 0.68f, 1.0f),
-                               "Legacy");
-            break;
-          case FeatureRoute::Unmapped:
-            ImGui::TextColored(ImVec4(1.0f, 0.30f, 0.25f, 1.0f),
-                               "UNMAPPED");
+        bool categoryHasVisibleEntry = false;
+        for (const FeatureShowcaseEntry &entry : m_featureShowcase) {
+          const std::string entryCategory =
+              entry.category.empty() ? "Uncategorized" : entry.category;
+          if (entryCategory == category && entryMatchesFilter(entry)) {
+            categoryHasVisibleEntry = true;
             break;
           }
         }
+        if (!categoryHasVisibleEntry)
+          continue;
 
-        ImGui::SameLine();
-        const ImVec4 routeColor =
-            route == FeatureRoute::Legacy
-                ? ImVec4(0.62f, 0.62f, 0.65f, 1.0f)
-                : (route == FeatureRoute::Unmapped
-                       ? ImVec4(1.0f, 0.30f, 0.25f, 1.0f)
-                       : ImVec4(0.78f, 0.86f, 0.96f, 1.0f));
-        ImGui::TextColored(routeColor, "%s", entry.feature.c_str());
-        if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("ID: %s\nCategory: %s\nDefault: %s\n%s",
-                            entry.id.c_str(), entry.category.c_str(),
-                            entry.defaultValue.c_str(), entry.detail.c_str());
+        ImGui::PushID(category.c_str());
+        ImGui::SeparatorText(category.c_str());
+        for (size_t index = 0; index < m_featureShowcase.size(); ++index) {
+          const FeatureShowcaseEntry &entry = m_featureShowcase[index];
+          const std::string entryCategory =
+              entry.category.empty() ? "Uncategorized" : entry.category;
+          if (entryCategory != category || !entryMatchesFilter(entry))
+            continue;
+
+          const FeatureRoute route = RouteForShowcaseId(entry.id);
+          bool *toggle = nullptr;
+          if (iblEnabled &&
+              (entry.id == "ibl" || entry.id == "ibl_irradiance"))
+            toggle = iblEnabled;
+          else if (entry.id == "shadows" || entry.id == "shadow_controls")
+            toggle = &scene.ShadowSettings().shadowsEnabled;
+          else if (entry.id == "ssao")
+            toggle = &scene.ShadowSettings().ssaoEnabled;
+          else if (entry.id == "bloom" || entry.id == "bloom_mip_chain")
+            toggle = &scene.PostProcessSettings().bloomEnabled;
+          else if (entry.id == "fxaa")
+            toggle = &scene.PostProcessSettings().fxaaEnabled;
+          else if (entry.id == "motion_blur")
+            toggle = &scene.PostProcessSettings().motionBlurEnabled;
+          else if (entry.id == "dof" || entry.id == "depth_of_field")
+            toggle = &scene.PostProcessSettings().dofEnabled;
+          else if (entry.id == "camera_orbit")
+            toggle = &m_cameraNavigationEnabled;
+          else if (runtime &&
+                   (entry.id == "rain" || entry.id == "world_rain"))
+            toggle = runtime->rainEnabled;
+          else if (runtime && entry.id == "time_of_day")
+            toggle = runtime->automaticTime;
+          else if (runtime && (entry.id == "particles" ||
+                               entry.id == "vfx_particle_system"))
+            toggle = runtime->particlesEnabled;
+          else if (runtime && entry.id == "imported_collision")
+            toggle = runtime->modelMeshCollision;
+          else if (runtime && (entry.id == "collision_debug" ||
+                               entry.id == "editor_collision_debug"))
+            toggle = runtime->collisionDebug;
+
+          ImGui::PushID(static_cast<int>(index));
+          const bool hybridDxrEntry = entry.id == "hybrid_dxr";
+          if (hybridDxrEntry) {
+            const bool bridgeReady =
+                runtime && runtime->getReflectionMode &&
+                runtime->setReflectionMode;
+            if (!bridgeReady) {
+              ImGui::TextDisabled("Unavailable");
+            } else {
+              const int mode = runtime->getReflectionMode();
+              const char *modeLabel = mode == 0   ? "Off"
+                                      : mode == 2 ? "Hybrid DXR"
+                                                  : "SSR";
+              const bool dxrSupported =
+                  runtime->dxrSupported && runtime->dxrSupported();
+              ImGui::SetNextItemWidth(118.0f);
+              if (ImGui::BeginCombo("##ReflectionMode", modeLabel)) {
+                static constexpr const char *kModeLabels[] = {
+                    "Off", "SSR", "Hybrid DXR"};
+                for (int requestedMode = 0; requestedMode < 3;
+                     ++requestedMode) {
+                  const bool disableChoice =
+                      requestedMode == 2 && !dxrSupported;
+                  if (disableChoice)
+                    ImGui::BeginDisabled();
+                  if (ImGui::Selectable(kModeLabels[requestedMode],
+                                        mode == requestedMode)) {
+                    const bool accepted =
+                        runtime->setReflectionMode(requestedMode);
+                    if (!accepted) {
+                      m_featureInventoryMessage =
+                          "Hybrid DXR is unavailable; runtime retained the "
+                          "SSR fallback.";
+                    }
+                  }
+                  if (mode == requestedMode)
+                    ImGui::SetItemDefaultFocus();
+                  if (disableChoice)
+                    ImGui::EndDisabled();
+                }
+                ImGui::EndCombo();
+              }
+            }
+          } else if (toggle) {
+            ImGui::Checkbox("##RuntimeToggle", toggle);
+            if (entry.id == "ibl_irradiance" && ImGui::IsItemHovered())
+              ImGui::SetTooltip(
+                  "Global IBL runtime control: irradiance, prefilter and "
+                  "BRDF LUT contribution.");
+          } else {
+            switch (route) {
+            case FeatureRoute::SceneObjects:
+              if (ImGui::SmallButton("Scene")) {
+                m_featureInventoryMessage =
+                    "Use the always-visible Scene Objects and Inspector "
+                    "panels for this scene/material feature.";
+              }
+              break;
+            case FeatureRoute::Environment:
+              if (ImGui::SmallButton("Open"))
+                m_requestedSystemsTab = 1;
+              break;
+            case FeatureRoute::Rendering:
+              if (ImGui::SmallButton("Open"))
+                m_requestedSystemsTab = 2;
+              break;
+            case FeatureRoute::World:
+              if (ImGui::SmallButton("Open"))
+                m_requestedSystemsTab = 3;
+              break;
+            case FeatureRoute::Vfx:
+              if (ImGui::SmallButton("Open"))
+                m_requestedSystemsTab = 4;
+              break;
+            case FeatureRoute::Camera:
+              if (ImGui::SmallButton("Open"))
+                m_requestedSystemsTab = 5;
+              break;
+            case FeatureRoute::Overworld:
+              if (runtime && runtime->playOverworld) {
+                if (ImGui::SmallButton("Run"))
+                  runtime->playOverworld();
+              } else {
+                ImGui::TextDisabled("Overworld");
+              }
+              break;
+            case FeatureRoute::Tavern:
+              if (runtime && runtime->playTavern) {
+                if (ImGui::SmallButton("Run"))
+                  runtime->playTavern();
+              } else {
+                ImGui::TextDisabled("Tavern");
+              }
+              break;
+            case FeatureRoute::Boss:
+              if (runtime && runtime->playBossArena) {
+                if (ImGui::SmallButton("Run"))
+                  runtime->playBossArena();
+              } else {
+                ImGui::TextDisabled("Boss");
+              }
+              break;
+            case FeatureRoute::Observed:
+              ImGui::TextDisabled("Observed");
+              break;
+            case FeatureRoute::Legacy:
+              ImGui::TextColored(ImVec4(0.65f, 0.65f, 0.68f, 1.0f),
+                                 "Legacy");
+              break;
+            case FeatureRoute::Unmapped:
+              ImGui::TextColored(ImVec4(1.0f, 0.30f, 0.25f, 1.0f),
+                                 "UNMAPPED");
+              break;
+            }
+          }
+
+          ImGui::SameLine();
+          const ImVec4 routeColor =
+              route == FeatureRoute::Legacy
+                  ? ImVec4(0.62f, 0.62f, 0.65f, 1.0f)
+                  : (route == FeatureRoute::Unmapped
+                         ? ImVec4(1.0f, 0.30f, 0.25f, 1.0f)
+                         : ImVec4(0.78f, 0.86f, 0.96f, 1.0f));
+          ImGui::TextColored(routeColor, "%s", entry.feature.c_str());
+          if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("ID: %s\nCategory: %s\nDefault: %s\n%s",
+                              entry.id.c_str(), entry.category.c_str(),
+                              entry.defaultValue.c_str(), entry.detail.c_str());
+          }
+
+          if (hybridDxrEntry) {
+            const auto modeLabel = [](int mode) {
+              return mode == 0   ? "Off"
+                     : mode == 2 ? "Hybrid DXR"
+                                 : "SSR";
+            };
+            const int requestedMode =
+                runtime && runtime->getReflectionMode
+                    ? runtime->getReflectionMode()
+                    : 1;
+            const int activeMode =
+                runtime && runtime->getActiveReflectionMode
+                    ? runtime->getActiveReflectionMode()
+                    : requestedMode;
+            const bool supported =
+                runtime && runtime->dxrSupported && runtime->dxrSupported();
+            const bool dxilReady = runtime && runtime->dxrShaderAvailable &&
+                                   runtime->dxrShaderAvailable();
+            const bool sceneReady = runtime && runtime->dxrSceneReady &&
+                                    runtime->dxrSceneReady();
+            const D3D12_RAYTRACING_TIER tier =
+                runtime && runtime->dxrTier
+                    ? runtime->dxrTier()
+                    : D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
+            const char *tierLabel =
+                tier >= D3D12_RAYTRACING_TIER_1_1
+                    ? "1.1"
+                    : (tier >= D3D12_RAYTRACING_TIER_1_0 ? "1.0"
+                                                         : "Unavailable");
+            const uint32_t tlasInstances =
+                runtime && runtime->dxrInstanceCount
+                    ? runtime->dxrInstanceCount()
+                    : 0;
+            const uint32_t blasCount = runtime && runtime->dxrBlasCount
+                                           ? runtime->dxrBlasCount()
+                                           : 0;
+            ImGui::Indent(18.0f);
+            ImGui::Text("Requested %s | Active %s", modeLabel(requestedMode),
+                        modeLabel(activeMode));
+            if (requestedMode != activeMode) {
+              ImGui::TextColored(ImVec4(1.0f, 0.62f, 0.25f, 1.0f),
+                                 "SSR fallback is active for this frame.");
+            }
+            ImGui::TextColored(
+                supported ? ImVec4(0.35f, 0.90f, 0.45f, 1.0f)
+                          : ImVec4(1.0f, 0.45f, 0.30f, 1.0f),
+                "Tier %s | DXIL %s | Scene %s | TLAS %u | BLAS %u",
+                tierLabel, dxilReady ? "Ready" : "Missing",
+                sceneReady ? "Ready" : "Pending", tlasInstances, blasCount);
+            if (runtime && runtime->dxrStatus) {
+              const std::string status =
+                  MakeAsciiUiText(runtime->dxrStatus());
+              if (!status.empty())
+                ImGui::TextWrapped("%s", status.c_str());
+            }
+            ImGui::Unindent(18.0f);
+          }
+          ImGui::PopID();
         }
         ImGui::PopID();
       }
@@ -2344,6 +2807,8 @@ void SceneEditor::DrawFeatureCoveragePanel(
       ImGui::Checkbox("Experimental", &m_showExperimentalFeatures);
       ImGui::SameLine();
       ImGui::Checkbox("Unavailable", &m_showUnavailableFeatures);
+      ImGui::SameLine();
+      ImGui::Checkbox("Legacy", &m_showLegacyFeatures);
 
       const std::string filter = LowerAscii(m_featureFilter);
       ImGui::BeginChild("##CompleteFeatureInventory", ImVec2(0.0f, 0.0f),
@@ -2406,10 +2871,11 @@ void SceneEditor::DrawFeatureCoveragePanel(
 
     if (ImGui::BeginTabItem("Limits")) {
       ImGui::TextWrapped(
-          "VILLIEN Editor exposes every feature.md row for audit, but only "
-          "safe runtime controls receive a checkbox. Renderer foundations "
-          "and gameplay state machines are inspected through real views, not "
-          "disabled with unsafe or simulated switches.");
+          "VILLIEN Editor exposes the formal catalog and every feature.md "
+          "inventory row for audit, but only safe runtime controls receive a "
+          "checkbox. Renderer foundations and gameplay state machines are "
+          "inspected through real views, not disabled with unsafe or "
+          "simulated switches.");
       ImGui::Separator();
       ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.25f, 1.0f),
                          "NOT IMPLEMENTED");
@@ -2422,7 +2888,8 @@ void SceneEditor::DrawFeatureCoveragePanel(
       if (iblEnabled) {
         ImGui::Separator();
         ImGui::Checkbox("Image Based Lighting", iblEnabled);
-        ImGui::TextDisabled("Additional root control not present in Lab IDs.");
+        ImGui::TextDisabled(
+            "Same global runtime control used by the IBL Showcase entry.");
       }
       ImGui::EndTabItem();
     }

@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <sstream>
 
 using namespace DirectX;
 using json = nlohmann::json;
@@ -98,11 +99,230 @@ float TriangleArea2D(const XMFLOAT2 &a, const XMFLOAT2 &b,
                   (b.y - a.y) * (c.x - a.x)) * 0.5f;
 }
 
+constexpr uint32_t kGroundSegments = 96;
+constexpr float kGroundReliefScale = 1.25f;
+constexpr float kGroundHalfExtent = OverworldScene::kFloorSizeMeters * 0.5f;
+constexpr float kGroundVertexSpacing =
+    OverworldScene::kFloorSizeMeters / static_cast<float>(kGroundSegments);
+
+struct GroundFlatBox {
+  float centerX;
+  float centerZ;
+  float halfX;
+  float halfZ;
+  float yawDegrees;
+  float feather;
+};
+
+struct GroundFlatDisc {
+  float centerX;
+  float centerZ;
+  float innerRadius;
+  float outerRadius;
+};
+
+float SmoothStep(float edge0, float edge1, float value) {
+  if (edge1 <= edge0)
+    return value >= edge1 ? 1.0f : 0.0f;
+  const float t = std::clamp((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+  return t * t * (3.0f - 2.0f * t);
+}
+
+float FlatBoxKeepFactor(float worldX, float worldZ, const GroundFlatBox &box) {
+  const float yaw = box.yawDegrees * XM_PI / 180.0f;
+  const float c = std::cos(yaw);
+  const float s = std::sin(yaw);
+  const float dx = worldX - box.centerX;
+  const float dz = worldZ - box.centerZ;
+  const float localX = dx * c + dz * s;
+  const float localZ = -dx * s + dz * c;
+  const float outsideX = std::max(std::abs(localX) - box.halfX, 0.0f);
+  const float outsideZ = std::max(std::abs(localZ) - box.halfZ, 0.0f);
+  const float outsideDistance =
+      std::sqrt(outsideX * outsideX + outsideZ * outsideZ);
+  return SmoothStep(0.0f, box.feather, outsideDistance);
+}
+
+float FlatDiscKeepFactor(float worldX, float worldZ,
+                         const GroundFlatDisc &disc) {
+  const float dx = worldX - disc.centerX;
+  const float dz = worldZ - disc.centerZ;
+  return SmoothStep(disc.innerRadius, disc.outerRadius,
+                    std::sqrt(dx * dx + dz * dz));
+}
+
+float EvaluateGroundProfile(float worldX, float worldZ) {
+  // 低周波を異なる方向へ重ね、歩行を妨げない緩やかな起伏を作る。
+  const float baseHeight =
+      kGroundReliefScale *
+      (0.095f * std::sin(0.28f * worldX + 0.17f * worldZ + 0.6f) +
+       0.065f * std::sin(-0.19f * worldX + 0.31f * worldZ - 1.1f) +
+       0.030f * std::sin(0.53f * worldX - 0.41f * worldZ + 2.0f));
+
+  // 城壁と水堀の基礎は水平を維持し、水面から地形が突き出ないようにする。
+  const float edgeDistance = std::max(std::abs(worldX), std::abs(worldZ));
+  float keepFactor = 1.0f - SmoothStep(22.0f, 24.8f, edgeDistance);
+
+  // 中央の石畳は完全な平面にせず、周囲より穏やかな勾配だけを残す。
+  const float pathBlend = SmoothStep(1.0f, 3.2f, std::abs(worldX));
+  keepFactor *= std::lerp(0.30f, 1.0f, pathBlend);
+
+  // 大型建築の基礎を平坦化する。JSON の authored Y は別途保持する。
+  static constexpr GroundFlatBox flatBoxes[] = {
+      {-15.0f, -12.0f, 4.6f, 3.8f, 0.0f, 3.2f},
+      {-18.0f, 16.0f, 5.2f, 1.5f, -24.0f, 3.2f},
+      {12.0f, 12.0f, 2.6f, 1.6f, 180.0f, 3.2f},
+      {-13.5f, 7.5f, 2.0f, 1.3f, 150.0f, 3.2f},
+      {4.0f, 12.0f, 1.7f, 2.7f, 180.0f, 3.2f},
+      {-8.5f, 11.0f, 1.6f, 2.5f, 142.0f, 3.2f},
+      {10.0f, 3.0f, 1.5f, 2.3f, 218.0f, 3.2f},
+      {-12.0f, -3.5f, 1.55f, 2.4f, 38.0f, 3.2f},
+      {8.0f, -9.0f, 1.4f, 2.1f, 205.0f, 3.2f},
+      {0.0f, 24.7f, 5.2f, 1.8f, 0.0f, 2.4f},
+  };
+  for (const GroundFlatBox &box : flatBoxes)
+    keepFactor = std::min(keepFactor, FlatBoxKeepFactor(worldX, worldZ, box));
+
+  // 水溜まり、開始地点、ワープ地点、Tavern 帰還地点は安定した足場にする。
+  static constexpr GroundFlatDisc flatDiscs[] = {
+      {0.0f, 0.0f, 3.4f, 6.5f},
+      {0.0f, -18.0f, 1.6f, 4.8f},
+      {0.0f, 22.0f, 1.8f, 4.6f},
+      {-15.0f, -18.35f, 1.4f, 4.0f},
+  };
+  for (const GroundFlatDisc &disc : flatDiscs)
+    keepFactor = std::min(keepFactor, FlatDiscKeepFactor(worldX, worldZ, disc));
+
+  return baseHeight * keepFactor;
+}
+
+LoadedMesh BuildGroundMesh() {
+  LoadedMesh mesh = ProceduralMesh::CreateTessellatedPlane(
+      OverworldScene::kFloorSizeMeters, OverworldScene::kFloorSizeMeters,
+      kGroundSegments, kGroundSegments);
+  constexpr float normalDelta = kGroundVertexSpacing * 0.5f;
+
+  for (MeshVertex &vertex : mesh.vertices) {
+    const float x = vertex.pos[0];
+    const float z = vertex.pos[2];
+    vertex.pos[1] = OverworldScene::GroundHeightAt(x, z);
+
+    const float hLeft = OverworldScene::GroundHeightAt(x - normalDelta, z);
+    const float hRight = OverworldScene::GroundHeightAt(x + normalDelta, z);
+    const float hDown = OverworldScene::GroundHeightAt(x, z - normalDelta);
+    const float hUp = OverworldScene::GroundHeightAt(x, z + normalDelta);
+    const float slopeX = (hRight - hLeft) / (2.0f * normalDelta);
+    const float slopeZ = (hUp - hDown) / (2.0f * normalDelta);
+
+    XMVECTOR normal =
+        XMVector3Normalize(XMVectorSet(-slopeX, 1.0f, -slopeZ, 0.0f));
+    XMVECTOR tangent =
+        XMVector3Normalize(XMVectorSet(1.0f, slopeX, 0.0f, 0.0f));
+    XMFLOAT3 normalValue{};
+    XMFLOAT3 tangentValue{};
+    XMStoreFloat3(&normalValue, normal);
+    XMStoreFloat3(&tangentValue, tangent);
+    vertex.normal[0] = normalValue.x;
+    vertex.normal[1] = normalValue.y;
+    vertex.normal[2] = normalValue.z;
+    vertex.tangent[0] = tangentValue.x;
+    vertex.tangent[1] = tangentValue.y;
+    vertex.tangent[2] = tangentValue.z;
+    vertex.tangent[3] = 1.0f;
+  }
+
+  return mesh;
+}
+
+bool ValidateGroundSurface(std::string &failure, float &outMinHeight,
+                           float &outMaxHeight, float &outMaxSlope) {
+  outMinHeight = 1000.0f;
+  outMaxHeight = -1000.0f;
+  outMaxSlope = 0.0f;
+  constexpr float probeStep = 0.5f;
+
+  for (float z = -kGroundHalfExtent; z <= kGroundHalfExtent; z += probeStep) {
+    for (float x = -kGroundHalfExtent; x <= kGroundHalfExtent; x += probeStep) {
+      const float height = OverworldScene::GroundHeightAt(x, z);
+      if (!std::isfinite(height)) {
+        failure = "ground sample is not finite";
+        return false;
+      }
+      outMinHeight = std::min(outMinHeight, height);
+      outMaxHeight = std::max(outMaxHeight, height);
+      const float slopeX =
+          std::abs(OverworldScene::GroundHeightAt(x + probeStep, z) - height) /
+          probeStep;
+      const float slopeZ =
+          std::abs(OverworldScene::GroundHeightAt(x, z + probeStep) - height) /
+          probeStep;
+      outMaxSlope = std::max(outMaxSlope, std::max(slopeX, slopeZ));
+    }
+  }
+
+  if (outMaxHeight - outMinHeight < 0.25f) {
+    failure = "ground range is too flat";
+    return false;
+  }
+  if (std::max(std::abs(outMinHeight), std::abs(outMaxHeight)) > 0.25f) {
+    failure = "ground height exceeded the safe range";
+    return false;
+  }
+  if (outMaxSlope > 0.14f) {
+    failure = "ground slope exceeded the walkable limit";
+    return false;
+  }
+
+  static constexpr XMFLOAT2 flatProbes[] = {
+      {0.0f, 0.0f},      {0.0f, -18.0f},  {0.0f, 22.0f}, {-15.0f, -12.0f},
+      {-15.0f, -18.35f}, {-18.0f, 16.0f}, {0.0f, 25.5f},
+  };
+  for (const XMFLOAT2 &probe : flatProbes) {
+    if (std::abs(OverworldScene::GroundHeightAt(probe.x, probe.y)) > 0.001f) {
+      failure = "protected ground anchor is not flat";
+      return false;
+    }
+  }
+  return true;
+}
+
 } // namespace
 
+float OverworldScene::GroundHeightAt(float worldX, float worldZ) {
+  // 描画 mesh と同じ格子・対角線で補間し、player grounding の高さを一致させる。
+  const float clampedX =
+      std::clamp(worldX, -kGroundHalfExtent, kGroundHalfExtent);
+  const float clampedZ =
+      std::clamp(worldZ, -kGroundHalfExtent, kGroundHalfExtent);
+  const float gridX = (clampedX + kGroundHalfExtent) / kGroundVertexSpacing;
+  const float gridZ = (clampedZ + kGroundHalfExtent) / kGroundVertexSpacing;
+  const uint32_t cellX =
+      std::min(static_cast<uint32_t>(std::floor(gridX)), kGroundSegments - 1);
+  const uint32_t cellZ =
+      std::min(static_cast<uint32_t>(std::floor(gridZ)), kGroundSegments - 1);
+  const float localX =
+      std::clamp(gridX - static_cast<float>(cellX), 0.0f, 1.0f);
+  const float localZ =
+      std::clamp(gridZ - static_cast<float>(cellZ), 0.0f, 1.0f);
+  const float x0 = -kGroundHalfExtent + cellX * kGroundVertexSpacing;
+  const float z0 = -kGroundHalfExtent + cellZ * kGroundVertexSpacing;
+  const float x1 = x0 + kGroundVertexSpacing;
+  const float z1 = z0 + kGroundVertexSpacing;
+  const float topLeft = EvaluateGroundProfile(x0, z0);
+  const float topRight = EvaluateGroundProfile(x1, z0);
+  const float bottomLeft = EvaluateGroundProfile(x0, z1);
+  const float bottomRight = EvaluateGroundProfile(x1, z1);
+
+  if (localX >= localZ) {
+    return topLeft * (1.0f - localX) + topRight * (localX - localZ) +
+           bottomRight * localZ;
+  }
+  return topLeft * (1.0f - localZ) + bottomLeft * (localZ - localX) +
+         bottomRight * localX;
+}
+
 void OverworldScene::Initialize(DxContext &dx) {
-  LoadedMesh floorMesh =
-      ProceduralMesh::CreatePlane(kFloorSizeMeters, kFloorSizeMeters);
+  LoadedMesh floorMesh = BuildGroundMesh();
 
   LoadedImage baseColor;
   LoadedImage normal;
@@ -147,6 +367,26 @@ void OverworldScene::Initialize(DxContext &dx) {
 
   m_floorMeshId = dx.CreateMeshResources(floorMesh, images, floorMaterial);
 
+  std::string groundSurfaceFailure;
+  float groundMinHeight = 0.0f;
+  float groundMaxHeight = 0.0f;
+  float groundMaxSlope = 0.0f;
+  const bool groundSurfaceValid = ValidateGroundSurface(
+      groundSurfaceFailure, groundMinHeight, groundMaxHeight, groundMaxSlope);
+  if (groundSurfaceValid) {
+    std::ostringstream message;
+    message << "[OverworldScene] ground heightfield validated: "
+            << floorMesh.vertices.size() << " vertices, height ["
+            << groundMinHeight << ", " << groundMaxHeight << "], max slope "
+            << groundMaxSlope << ".\n";
+    OutputDebugStringA(message.str().c_str());
+  } else {
+    const std::string message =
+        "[OverworldScene] FAILED: ground heightfield validation: " +
+        groundSurfaceFailure + ".\n";
+    OutputDebugStringA(message.c_str());
+  }
+
   const LoadedMesh waterMesh =
       ProceduralMesh::CreateTessellatedPlane(1.0f, 1.0f, 256, 256);
   Material waterMaterial{};
@@ -158,7 +398,6 @@ void OverworldScene::Initialize(DxContext &dx) {
   waterMaterial.proceduralTypeId = 0.0f;
   waterMaterial.vertexDeformTypeId = 6.0f;
   m_waterMeshId = dx.CreateMeshResources(waterMesh, {}, waterMaterial);
-
 
   const LoadedMesh castleWallMesh = ProceduralMesh::CreateCube(1.0f);
 
@@ -343,29 +582,25 @@ void OverworldScene::Initialize(DxContext &dx) {
       dx.CreateMeshResources(tavernCubeMesh, {}, tavernGlowMaterial);
 
   m_ready =
-      (m_floorMeshId != UINT32_MAX && m_castleWallMeshId != UINT32_MAX &&
-       m_waterMeshId != UINT32_MAX &&
+      (groundSurfaceValid && m_floorMeshId != UINT32_MAX &&
+       m_castleWallMeshId != UINT32_MAX && m_waterMeshId != UINT32_MAX &&
        m_castleMerlonMeshId != UINT32_MAX &&
        m_castleTowerMeshId != UINT32_MAX &&
        m_bossWarpMarkerMeshId != UINT32_MAX &&
-       m_pathStoneMeshId != UINT32_MAX &&
-       m_lanternPostMeshId != UINT32_MAX &&
-       m_lanternCapMeshId != UINT32_MAX &&
-       m_lanternGlowMeshId != UINT32_MAX &&
+       m_pathStoneMeshId != UINT32_MAX && m_lanternPostMeshId != UINT32_MAX &&
+       m_lanternCapMeshId != UINT32_MAX && m_lanternGlowMeshId != UINT32_MAX &&
        m_waystoneMeshId != UINT32_MAX &&
        m_reflectionMonolithMirrorMeshId != UINT32_MAX &&
        m_reflectionMonolithFrameMeshId != UINT32_MAX &&
-       m_tavernWallMeshId != UINT32_MAX &&
-       m_tavernRoofMeshId != UINT32_MAX &&
-       m_tavernDoorMeshId != UINT32_MAX &&
-       m_tavernGlowMeshId != UINT32_MAX);
+       m_tavernWallMeshId != UINT32_MAX && m_tavernRoofMeshId != UINT32_MAX &&
+       m_tavernDoorMeshId != UINT32_MAX && m_tavernGlowMeshId != UINT32_MAX);
 
   if (m_ready) {
-    OutputDebugStringA(
-        "[OverworldScene] 60m x 60m floor, water moat, and castle walls initialized.\n");
+    OutputDebugStringA("[OverworldScene] 60m terrain, water moat, and castle "
+                       "walls initialized.\n");
   } else {
-    OutputDebugStringA(
-        "[OverworldScene] FAILED: floor or castle wall mesh was not created.\n");
+    OutputDebugStringA("[OverworldScene] FAILED: floor or castle wall mesh was "
+                       "not created.\n");
   }
 
   ReloadPlacements(dx);
@@ -479,10 +714,11 @@ void OverworldScene::BuildFrame(FrameData &frame) const {
                   kCastleWallHalfExtentMeters);
 
   for (const StageObject &object : m_stageObjects) {
+    const float groundY = GroundHeightAt(object.position.x, object.position.z);
     const XMMATRIX world =
         XMMatrixScaling(object.scale.x, object.scale.y, object.scale.z) *
         XMMatrixRotationY(object.yawRadians) *
-        XMMatrixTranslation(object.position.x, object.position.y,
+        XMMatrixTranslation(object.position.x, object.position.y + groundY,
                             object.position.z);
     frame.opaqueItems.push_back({object.meshId, world});
   }
@@ -523,13 +759,14 @@ void OverworldScene::BuildFrame(FrameData &frame) const {
   const float warpBob = std::sin(frame.gameTime * 2.8f) * 0.22f;
   const float warpSpin = frame.gameTime * 1.2f;
   const XMMATRIX warpMarkerWorld =
-      XMMatrixScaling(1.35f, 1.35f, 1.35f) *
-      XMMatrixRotationX(XM_PI) * XMMatrixRotationY(warpSpin) *
-      XMMatrixTranslation(warpPos.x, 2.30f + warpBob, warpPos.z);
+      XMMatrixScaling(1.35f, 1.35f, 1.35f) * XMMatrixRotationX(XM_PI) *
+      XMMatrixRotationY(warpSpin) *
+      XMMatrixTranslation(warpPos.x, warpPos.y + 2.30f + warpBob, warpPos.z);
   frame.transparentItems.push_back({m_bossWarpMarkerMeshId, warpMarkerWorld});
 
   GPUPointLight warpLight{};
-  warpLight.position = {warpPos.x, 1.0f + warpBob * 0.35f, warpPos.z};
+  warpLight.position = {warpPos.x, warpPos.y + 1.0f + warpBob * 0.35f,
+                        warpPos.z};
   warpLight.range = 5.0f;
   warpLight.color = {0.18f, 0.85f, 1.0f};
   warpLight.intensity = 1.8f;
@@ -537,28 +774,25 @@ void OverworldScene::BuildFrame(FrameData &frame) const {
 }
 
 void OverworldScene::AppendWorldPolishProps(FrameData &frame) const {
-  if (m_pathStoneMeshId == UINT32_MAX ||
-      m_lanternPostMeshId == UINT32_MAX ||
-      m_lanternCapMeshId == UINT32_MAX ||
-      m_lanternGlowMeshId == UINT32_MAX ||
+  if (m_pathStoneMeshId == UINT32_MAX || m_lanternPostMeshId == UINT32_MAX ||
+      m_lanternCapMeshId == UINT32_MAX || m_lanternGlowMeshId == UINT32_MAX ||
       m_waystoneMeshId == UINT32_MAX) {
     return;
   }
 
   auto pushOpaque = [&frame](uint32_t meshId, float sx, float sy, float sz,
                              float x, float y, float z, float yawRadians) {
-    const XMMATRIX world =
-        XMMatrixScaling(sx, sy, sz) * XMMatrixRotationY(yawRadians) *
-        XMMatrixTranslation(x, y, z);
+    const XMMATRIX world = XMMatrixScaling(sx, sy, sz) *
+                           XMMatrixRotationY(yawRadians) *
+                           XMMatrixTranslation(x, y, z);
     frame.opaqueItems.push_back({meshId, world});
   };
 
   auto pushTransparent = [&frame](uint32_t meshId, float sx, float sy, float sz,
-                                  float x, float y, float z,
-                                  float yawRadians) {
-    const XMMATRIX world =
-        XMMatrixScaling(sx, sy, sz) * XMMatrixRotationY(yawRadians) *
-        XMMatrixTranslation(x, y, z);
+                                  float x, float y, float z, float yawRadians) {
+    const XMMATRIX world = XMMatrixScaling(sx, sy, sz) *
+                           XMMatrixRotationY(yawRadians) *
+                           XMMatrixTranslation(x, y, z);
     frame.transparentItems.push_back({meshId, world});
   };
 
@@ -569,7 +803,9 @@ void OverworldScene::AppendWorldPolishProps(FrameData &frame) const {
     const float yaw = std::sin(t * XM_2PI * 2.1f) * 0.22f;
     const float width = 1.20f + 0.24f * (i % 3 == 0 ? 1.0f : 0.0f);
     const float depth = 0.58f + 0.16f * (i % 2 == 0 ? 1.0f : 0.0f);
-    pushOpaque(m_pathStoneMeshId, width, 0.075f, depth, x, 0.055f, z, yaw);
+    const float groundY = GroundHeightAt(x, z);
+    pushOpaque(m_pathStoneMeshId, width, 0.075f, depth, x, groundY + 0.055f, z,
+               yaw);
   }
 
   struct LanternPlacement {
@@ -582,25 +818,26 @@ void OverworldScene::AppendWorldPolishProps(FrameData &frame) const {
       {-4.3f, -14.0f, 0.18f, 0.62f}, {4.2f, -10.0f, -0.22f, 0.58f},
       {-4.7f, -5.4f, 0.08f, 0.54f},  {4.6f, -1.0f, -0.18f, 0.54f},
       {-4.5f, 4.2f, 0.20f, 0.60f},   {4.7f, 9.0f, -0.12f, 0.62f},
-      {-4.1f, 14.8f, 0.16f, 0.66f},   {4.0f, 19.2f, -0.20f, 0.74f},
+      {-4.1f, 14.8f, 0.16f, 0.66f},  {4.0f, 19.2f, -0.20f, 0.74f},
   };
 
   for (const LanternPlacement &lantern : lanterns) {
+    const float groundY = GroundHeightAt(lantern.x, lantern.z);
     if (!m_shrineLanternMeshIds.empty()) {
       for (uint32_t meshId : m_shrineLanternMeshIds) {
-        pushOpaque(meshId, 0.78f, 0.78f, 0.78f, lantern.x, 0.0f,
-                   lantern.z, lantern.yaw);
+        pushOpaque(meshId, 0.78f, 0.78f, 0.78f, lantern.x, groundY, lantern.z,
+                   lantern.yaw);
       }
     } else {
-      pushOpaque(m_lanternPostMeshId, 0.15f, 1.62f, 0.15f, lantern.x, 0.82f,
-                 lantern.z, lantern.yaw);
-      pushOpaque(m_lanternCapMeshId, 0.62f, 0.18f, 0.62f, lantern.x, 1.68f,
-                 lantern.z, lantern.yaw + 0.35f);
+      pushOpaque(m_lanternPostMeshId, 0.15f, 1.62f, 0.15f, lantern.x,
+                 groundY + 0.82f, lantern.z, lantern.yaw);
+      pushOpaque(m_lanternCapMeshId, 0.62f, 0.18f, 0.62f, lantern.x,
+                 groundY + 1.68f, lantern.z, lantern.yaw + 0.35f);
     }
     pushTransparent(m_lanternGlowMeshId, 0.24f, 0.20f, 0.24f, lantern.x,
-                    0.92f, lantern.z, lantern.yaw);
+                    groundY + 0.92f, lantern.z, lantern.yaw);
     GPUPointLight light{};
-    light.position = {lantern.x, 0.92f, lantern.z};
+    light.position = {lantern.x, groundY + 0.92f, lantern.z};
     light.range = 4.6f;
     light.color = {1.0f, 0.58f, 0.22f};
     light.intensity = lantern.intensity * 2.8f;
@@ -614,13 +851,16 @@ void OverworldScene::AppendWorldPolishProps(FrameData &frame) const {
     float height;
   };
   const WaystonePlacement waystones[] = {
-      {-7.8f, 6.2f, 0.45f, 1.35f}, {7.4f, 7.5f, -0.38f, 1.15f},
-      {-2.2f, 18.2f, 0.18f, 1.50f}, {2.2f, 18.2f, -0.18f, 1.50f},
+      {-7.8f, 6.2f, 0.45f, 1.35f},
+      {7.4f, 7.5f, -0.38f, 1.15f},
+      {-2.2f, 18.2f, 0.18f, 1.50f},
+      {2.2f, 18.2f, -0.18f, 1.50f},
   };
 
   for (const WaystonePlacement &stone : waystones) {
+    const float groundY = GroundHeightAt(stone.x, stone.z);
     pushOpaque(m_waystoneMeshId, 0.48f, stone.height, 0.28f, stone.x,
-               stone.height * 0.5f, stone.z, stone.yaw);
+               groundY + stone.height * 0.5f, stone.z, stone.yaw);
   }
 }
 
@@ -724,11 +964,11 @@ void OverworldScene::AppendTavernPlaceholder(FrameData &frame) const {
 }
 
 XMFLOAT3 OverworldScene::PlayerSpawnPosition() const {
-  return {0.0f, 0.0f, -18.0f};
+  return {0.0f, GroundHeightAt(0.0f, -18.0f), -18.0f};
 }
 
 XMFLOAT3 OverworldScene::BossWarpPosition() const {
-  return {0.0f, 0.0f, 22.0f};
+  return {0.0f, GroundHeightAt(0.0f, 22.0f), 22.0f};
 }
 
 bool OverworldScene::IsPlayerInsideBossWarp(
@@ -736,16 +976,15 @@ bool OverworldScene::IsPlayerInsideBossWarp(
   const XMFLOAT3 warpPos = BossWarpPosition();
   const float dx = playerPosition.x - warpPos.x;
   const float dz = playerPosition.z - warpPos.z;
-  return dx * dx + dz * dz <=
-         kBossWarpRadiusMeters * kBossWarpRadiusMeters;
+  return dx * dx + dz * dz <= kBossWarpRadiusMeters * kBossWarpRadiusMeters;
 }
 
 XMFLOAT3 OverworldScene::TavernEntrancePosition() const {
-  return {-15.0f, 0.0f, -15.55f};
+  return {-15.0f, GroundHeightAt(-15.0f, -15.55f), -15.55f};
 }
 
 XMFLOAT3 OverworldScene::TavernReturnPosition() const {
-  return {-15.0f, 0.0f, -18.35f};
+  return {-15.0f, GroundHeightAt(-15.0f, -18.35f), -18.35f};
 }
 
 bool OverworldScene::IsPlayerNearTavernEntrance(
@@ -889,7 +1128,7 @@ void OverworldScene::AppendCollisionDebugLines(
     FrameData &frame,
     const std::vector<CollisionSystem::Collider> &collisionColliders) const {
   const XMFLOAT4 wallColor = {1.0f, 0.12f, 0.05f, 1.0f};
-  constexpr float y = 0.08f;
+  constexpr float lineOffsetY = 0.08f;
 
   auto rotate2 = [](float x, float z, float yaw) {
     const float c = std::cos(yaw);
@@ -898,7 +1137,10 @@ void OverworldScene::AppendCollisionDebugLines(
   };
   auto toWorld = [&](const CollisionSystem::Collider &c, float x, float z) {
     const XMFLOAT2 r = rotate2(x, z, c.yawRadians);
-    return XMFLOAT3{c.center.x + r.x, y, c.center.z + r.y};
+    const float worldX = c.center.x + r.x;
+    const float worldZ = c.center.z + r.y;
+    return XMFLOAT3{worldX, GroundHeightAt(worldX, worldZ) + lineOffsetY,
+                    worldZ};
   };
   auto pushLoop = [&](const std::vector<XMFLOAT3> &points,
                       const XMFLOAT4 &color) {
@@ -919,8 +1161,10 @@ void OverworldScene::AppendCollisionDebugLines(
       points.reserve(segments);
       for (int i = 0; i < segments; ++i) {
         const float t = (static_cast<float>(i) / segments) * XM_2PI;
-        points.push_back({collider.center.x + std::cos(t) * r, y,
-                          collider.center.z + std::sin(t) * r});
+        const float worldX = collider.center.x + std::cos(t) * r;
+        const float worldZ = collider.center.z + std::sin(t) * r;
+        points.push_back(
+            {worldX, GroundHeightAt(worldX, worldZ) + lineOffsetY, worldZ});
       }
       pushLoop(points, wallColor);
     } else if (collider.shape == CollisionSystem::ShapeType::Triangle) {
@@ -941,12 +1185,15 @@ void OverworldScene::AppendCollisionDebugLines(
 
 void OverworldScene::AppendStageCollisionDebugLines(FrameData &frame) const {
   const XMFLOAT4 meshColor = {0.1f, 0.75f, 1.0f, 1.0f};
-  constexpr float y = 0.10f;
+  constexpr float lineOffsetY = 0.10f;
 
   for (const CollisionSystem::MeshTriangle &tri : m_stageCollisionTriangles) {
-    const XMFLOAT3 a = {tri.a.x, y, tri.a.y};
-    const XMFLOAT3 b = {tri.b.x, y, tri.b.y};
-    const XMFLOAT3 c = {tri.c.x, y, tri.c.y};
+    const XMFLOAT3 a = {tri.a.x, GroundHeightAt(tri.a.x, tri.a.y) + lineOffsetY,
+                        tri.a.y};
+    const XMFLOAT3 b = {tri.b.x, GroundHeightAt(tri.b.x, tri.b.y) + lineOffsetY,
+                        tri.b.y};
+    const XMFLOAT3 c = {tri.c.x, GroundHeightAt(tri.c.x, tri.c.y) + lineOffsetY,
+                        tri.c.y};
     PushDebugLine(frame, a, b, meshColor);
     PushDebugLine(frame, b, c, meshColor);
     PushDebugLine(frame, c, a, meshColor);
