@@ -90,6 +90,8 @@ set(VILLIEN_SOURCES
     src/Win32Window.h
     src/Win32Window.cpp
     src/Input.h
+    src/AudioSystem.h
+    src/AudioSystem.cpp
 
     # DirectX 12 基盤
     src/DxContext.h
@@ -261,6 +263,7 @@ foreach(VILLIEN_TARGET IN ITEMS SoloAssignment VillienEditor)
         dxgi
         d3dcompiler
         dbghelp
+        winmm
         xinput
         imgui
         tinyexr

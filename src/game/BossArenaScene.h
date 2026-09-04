@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AudioSystem.h"
 #include "DxContext.h"
 #include "Input.h"
 #include "RenderPass.h"
@@ -31,12 +32,16 @@ public:
 
   void Initialize(DxContext &dx);
   void Reset(PlayerAnimationPreview &player);
+  void SetAudioPlaybackEnabled(bool enabled);
+  void StopAudio();
   void Update(float dt, const Input &input, PlayerAnimationPreview &player);
   void BuildFrame(FrameData &frame) const;
   void ApplyTechShowcase(FrameData &frame) const;
   RestartDestination DrawHud(int viewportWidth, int viewportHeight);
 
   bool IsReady() const { return m_ready; }
+  bool AudioReady() const { return m_audio.IsLoaded(m_bossBgmSound); }
+  bool AudioPlaying() const { return m_audio.IsLooping(m_bossBgmSound); }
   float ArenaHalfExtent() const { return kArenaHalfExtent; }
   bool IsPhoneOverlayActive() const {
     return m_phoneOpen || m_phoneSlide > 0.05f;
@@ -206,6 +211,8 @@ private:
   std::array<std::unique_ptr<ShrineFogEmitter>, 12> m_sideFogEmitters;
   std::array<std::unique_ptr<RiverElectricEmitter>, 7>
       m_readyRiverElectricEmitters;
+  AudioSystem m_audio;
+  AudioSystem::SoundHandle m_bossBgmSound = AudioSystem::InvalidSound;
   bool m_ready = false;
 
   AttackType m_attack = AttackType::MeteorAoE;

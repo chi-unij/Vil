@@ -160,6 +160,9 @@ float GeometrySmith(float NdotV, float NdotL, float roughness)
 float2 ParallaxOcclusionMap(float2 uv, float3 viewDirTS, float heightScale,
                             float minLayers, float maxLayers)
 {
+    minLayers = clamp(minLayers, 1.0f, 64.0f);
+    maxLayers = clamp(maxLayers, minLayers, 128.0f);
+
     // More layers at grazing angles where parallax is most visible.
     float numLayers = lerp(maxLayers, minLayers, abs(viewDirTS.z));
     float layerDepth = 1.0f / numLayers;

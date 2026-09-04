@@ -16,7 +16,7 @@
   https://sketchfab.com/3d-models/medieval-tavern-asset-pack-95da3564dbd0489d9854ae89a7a51752
 - **Japanese Shrine Lantern** — Sam Feng / CC BY-NC 4.0
   https://sketchfab.com/3d-models/japanese-shrine-lantern-8c19d6525acf441b9cf3c1fd91598ff6
-  本作品では就職活動用の非商用ポートフォリオ素材として使用しています。
+  本作品では非商用の学校課題・ポートフォリオ素材として使用しています。
 - **Mixamo characters** — Ch27（NPC1）、Remy / Adobe Mixamo
   https://helpx.adobe.com/creative-cloud/faq/mixamo-faq.html
 - **Mixamo animations** — Breathing Idle、Walk、Run、Taking Item、Sitting Idle / Adobe Mixamo

@@ -1040,6 +1040,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     bossArenaScene.Initialize(dx);
     bossArenaScene.Reset(playerPreview);
     TraceAppEvent("startup: boss arena ready");
+    TraceAppEvent(bossArenaScene.AudioReady()
+                      ? "startup: Boss BGM ready"
+                      : "startup: Boss BGM unavailable");
     OverworldScene overworldScene;
     overworldScene.Initialize(dx);
     if (overworldScene.IsReady()) {
@@ -1054,6 +1057,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     TraceAppEvent(tavernScene.ImportedArtReady()
                       ? "startup: reconstructed tavern art ready"
                       : "startup: tavern procedural fallback ready");
+    TraceAppEvent(tavernScene.AudioReady()
+                      ? "startup: five Tavern sounds ready"
+                      : "startup: Tavern sound set incomplete");
     std::vector<OverworldScene::CollisionShapeConfig> overworldCollisionShapes =
         overworldScene.BuildDefaultCollisionShapes();
     std::vector<CollisionSystem::Collider> overworldCollisionColliders =
@@ -1169,6 +1175,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
             : (overworldRequested
                    ? AppMode::Game
                    : (launchEditor ? AppMode::Editor : AppMode::Title));
+    bool bossBgmPlaybackReported = false;
     bool requestQuit = false;
     const auto failTavernManagementSmoke = [&](const std::string &reason) {
       if (!tavernManagementSmokeRequested || tavernManagementSmokeFailed)
@@ -1286,6 +1293,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                         : "tavern transition: enter third-person fallback");
     };
     const auto returnFromTavern = [&]() {
+      tavernScene.StopAudio();
       appMode = AppMode::Game;
       showSettings = false;
       playerPreview.SetPosition(overworldScene.TavernReturnPosition());
@@ -1754,6 +1762,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
     SetStartupStage(70);
     TraceAppEvent("startup: entering main loop");
     while (window.PumpMessages()) {
+      bool enteredTavernThisFrame = false;
       bossMirrorPickupActionPoseThisFrame = false;
       bossMirrorPickupTriggeredThisFrame = false;
       if (resizeCtx.pendingResize) {
@@ -1788,9 +1797,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
       const float worldClockDelta =
           dt * (appMode == AppMode::Tavern ? tavernClockScale : 1.0f);
       const bool tavernManagementPaused =
-          appMode == AppMode::Tavern && tavernScene.ManagementMenuOpen();
+          appMode == AppMode::Tavern &&
+          (tavernScene.ManagementMenuOpen() ||
+           tavernScene.LayoutPlacementActive());
       if ((appMode == AppMode::Game || appMode == AppMode::Tavern) &&
-          gameTimeAuto && !tavernManagementPaused) {
+          gameTimeAuto && !showSettings && !tavernManagementPaused) {
         gameTimeOfDayHours =
             std::fmod(gameTimeOfDayHours +
                           worldClockDelta * gameHoursPerSecond,
@@ -2280,7 +2291,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                 "TakingItem one-shot retriggered without a pickup event");
           }
         }
-      } else if (appMode == AppMode::Tavern && !uiWantsKeyboard &&
+      } else if (appMode == AppMode::Tavern && !showSettings &&
+                 !uiWantsKeyboard &&
                  !gameFreeCameraEnabled) {
         if (tavernManagementSmokeRequested || tavernSuppliesSmokeRequested ||
             tavernUpgradesSmokeRequested ||
@@ -2312,10 +2324,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         if (!tavernFirstPersonEnabled)
           cam.SetYawPitch(tavernScene.CameraYaw(), tavernScene.CameraPitch());
       } else if ((appMode == AppMode::Game || appMode == AppMode::BossArena) &&
+                 !showSettings &&
                  ((!uiWantsKeyboard && !gameFreeCameraEnabled) ||
                   bossMirrorPickupSmokeRequested)) {
         bool inBossArena = appMode == AppMode::BossArena;
-        bool enteredTavern = false;
         const float activeGameplayDt =
             bossMirrorPickupSmokeRequested ? 0.75f : dt;
         const bool actionWasActiveBeforeUpdate =
@@ -2350,7 +2362,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
               overworldScene.IsPlayerNearTavernEntrance(
                   playerPreview.Position())) {
             enterTavernMode();
-            enteredTavern = true;
+            enteredTavernThisFrame = true;
           } else if (!inBossArena && overworldScene.IsPlayerInsideBossWarp(
                                          playerPreview.Position())) {
             TraceAppEvent("overworld warp: boss arena");
@@ -2362,7 +2374,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         }
         bossMirrorPickupActionPoseThisFrame =
             actionWasActiveBeforeUpdate && playerPreview.IsActionPlaying();
-        if (!enteredTavern) {
+        if (!enteredTavernThisFrame) {
           if (inBossArena)
             bossArenaScene.Update(activeGameplayDt, input, playerPreview);
           if (inBossArena && bossMirrorPickupSmokeRequested &&
@@ -2491,7 +2503,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
 #endif
       }
 
-      if (appMode == AppMode::Title) {
+      if (appMode == AppMode::Title && !showSettings) {
         switch (titleScreen.Draw(static_cast<int>(window.Width()),
                                  static_cast<int>(window.Height()))) {
         case TitleScreen::Action::Start:
@@ -2532,7 +2544,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
 
       if (appMode == AppMode::Game || appMode == AppMode::Tavern ||
           appMode == AppMode::BossArena) {
-        gameRuntimeSeconds += dt;
+        if (!showSettings)
+          gameRuntimeSeconds += dt;
       }
 
       // ---- Settings window (Phase 12.6) ----
@@ -2827,6 +2840,20 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         }
       }
 
+      // 自動 smoke では音を鳴らさず、通常の BossArena 滞在中だけ BGM
+      // をループする。
+      const bool bossBgmShouldPlay =
+          appMode == AppMode::BossArena && !bossMirrorPickupSmokeRequested;
+      bossArenaScene.SetAudioPlaybackEnabled(bossBgmShouldPlay);
+      if (bossBgmShouldPlay && !bossBgmPlaybackReported) {
+        TraceAppEvent(bossArenaScene.AudioPlaying()
+                          ? "boss audio: BGM loop started"
+                          : "boss audio: BGM loop failed");
+        bossBgmPlaybackReported = true;
+      } else if (!bossBgmShouldPlay) {
+        bossBgmPlaybackReported = false;
+      }
+
       if (appMode == AppMode::Game && !showSettings &&
           overworldScene.IsPlayerNearTavernEntrance(playerPreview.Position())) {
         DrawTavernEntrancePrompt(static_cast<int>(window.Width()),
@@ -2848,15 +2875,20 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
                                                tavernSuppliesSmokeRequested ||
                                                tavernUpgradesSmokeRequested;
         bool effectiveTavernInteractPressed =
-            tavernInputSmokeRequested ? false : tavernInteractPressed;
+            tavernInputSmokeRequested || showSettings || enteredTavernThisFrame
+                ? false
+                : tavernInteractPressed;
         bool effectiveTavernPrimaryActionDown =
-            tavernInputSmokeRequested ? false : lbNow;
+            tavernInputSmokeRequested || showSettings ? false : lbNow;
         bool effectiveTavernRestartPressed =
-            tavernInputSmokeRequested ? false : tavernRestartPressed;
+            tavernInputSmokeRequested || showSettings ? false
+                                                       : tavernRestartPressed;
         TavernScene::ManagementInput effectiveManagementInput =
-            tavernInputSmokeRequested ? TavernScene::ManagementInput{}
-                                      : tavernManagementInput;
-        float tavernUpdateDelta = dt * (automateTavern ? 12.0f : 1.0f);
+            tavernInputSmokeRequested || showSettings
+                ? TavernScene::ManagementInput{}
+                : tavernManagementInput;
+        float tavernUpdateDelta =
+            showSettings ? 0.0f : dt * (automateTavern ? 12.0f : 1.0f);
         if (tavernManagementSmokeRequested && !tavernManagementSmokeFailed &&
             !tavernManagementSmokeCompleted) {
           tavernUpdateDelta = 0.25f;
@@ -3060,9 +3092,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
             effectiveTavernRestartPressed, effectiveManagementInput,
             automateTavern);
         const TavernScene::Action hudAction =
-            tavernScene.DrawHud(static_cast<int>(window.Width()),
-                                static_cast<int>(window.Height()),
-                                tavernFirstPersonEnabled);
+            showSettings
+                ? TavernScene::Action::None
+                : tavernScene.DrawHud(static_cast<int>(window.Width()),
+                                      static_cast<int>(window.Height()),
+                                      tavernFirstPersonEnabled);
         if (tavernManagementSmokeRequested && !tavernManagementSmokeFailed &&
             !tavernManagementSmokeCompleted) {
           const TavernScene::ManagementUiDiagnostics &diagnostics =
@@ -4000,6 +4034,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         frame.exposure = 0.95f;
         frame.bloomIntensity = 0.35f;
       } else if (appMode == AppMode::Game) {
+        frame.gridEnabled = false;
         overworldScene.BuildFrame(frame);
         const size_t playerOpaqueItemBegin = frame.opaqueItems.size();
         const size_t playerTransparentItemBegin =
@@ -4109,11 +4144,13 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
             std::max(frame.bloomIntensity, bossPhaseTwo ? 1.02f : 0.88f);
         bossArenaScene.ApplyTechShowcase(frame);
       } else if (scenePlayMode) {
+        frame.gridEnabled = true;
         // Keep the complete shell visible during play, including Stop.
         editorScene.BuildFrameData(frame);
         sceneEditor.DrawUI(editorScene, dx, cam.View(), cam.Proj(), &iblEnabled,
                            &editStage, &cam, &editorRuntimeBindings, true);
       } else {
+        frame.gridEnabled = true;
         sceneEditor.DrawUI(editorScene, dx, cam.View(), cam.Proj(), &iblEnabled,
                            &editStage, &cam, &editorRuntimeBindings, false);
         editorScene.BuildFrameData(frame);
@@ -4212,14 +4249,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR commandLine, int nCmdShow) {
         ImGui::PopStyleVar();
       }
 
-      // Toggle IBL descriptors on/off (mesh renderer + deferred lighting).
-      if (iblEnabled) {
-        dx.GetMeshRenderer().SetIBLDescriptors(iblGenerator.IBLTableGpuBase());
-        dx.SetIblTableGpu(iblGenerator.IBLTableGpuBase());
-      } else {
-        dx.GetMeshRenderer().SetIBLDescriptors({});
-        dx.SetIblTableGpu({});
-      }
+      // IBL を無効化しても shader が参照する descriptor table は有効に保つ。
+      dx.GetMeshRenderer().SetIBLDescriptors(iblGenerator.IBLTableGpuBase());
+      dx.SetIblTableGpu(iblGenerator.IBLTableGpuBase());
       // IBL intensity: gate by iblEnabled toggle, otherwise use scene value.
       if (!iblEnabled)
         frame.lighting.iblIntensity = 0.0f;

@@ -763,6 +763,16 @@ std::string ResolveTavernAssetPath(const std::string &path) {
   return path;
 }
 
+std::filesystem::path
+ResolveTavernAudioPath(const std::filesystem::path &path) {
+  namespace fs = std::filesystem;
+
+  const fs::path sourceFromBuild = fs::path("..") / ".." / ".." / path;
+  if (fs::exists(sourceFromBuild))
+    return sourceFromBuild;
+  return path;
+}
+
 bool LoadTavernModelMeshIds(DxContext &dx, const std::string &path,
                             std::vector<uint32_t> &outMeshIds) {
   const std::string resolvedPath = ResolveTavernAssetPath(path);
@@ -1680,6 +1690,26 @@ void TavernScene::Initialize(DxContext &dx) {
             m_stewMeshId != UINT32_MAX && m_metalMeshId != UINT32_MAX &&
             m_waterMeshId != UINT32_MAX && m_orderBubbleMeshId != UINT32_MAX &&
             m_orderBubbleBorderMeshId != UINT32_MAX;
+
+  m_audio.Shutdown();
+  const auto loadTavernSound = [this](const char8_t *path, float volume) {
+    return m_audio.LoadSound(
+        ResolveTavernAudioPath(std::filesystem::path(path)), volume);
+  };
+  m_entryBellSound =
+      loadTavernSound(u8"Assets/SE/入店するときのベル.mp3", 0.70f);
+  m_beerPourSound = loadTavernSound(u8"Assets/SE/beer-pouring.mp3", 0.52f);
+  m_washDishSound = loadTavernSound(u8"Assets/SE/wash-dish.mp3", 0.48f);
+  m_footstepSound = loadTavernSound(u8"Assets/SE/footstep.mp3", 0.22f);
+  m_tavernAmbienceSound =
+      loadTavernSound(u8"Assets/SE/tavern_ambience_inside_laughter.mp3", 0.24f);
+  m_audioReady =
+      m_audio.IsLoaded(m_entryBellSound) && m_audio.IsLoaded(m_beerPourSound) &&
+      m_audio.IsLoaded(m_washDishSound) && m_audio.IsLoaded(m_footstepSound) &&
+      m_audio.IsLoaded(m_tavernAmbienceSound);
+  OutputDebugStringA(
+      m_audioReady ? "[TavernScene] five Tavern sounds ready\n"
+                   : "[TavernScene] WARNING: Tavern sound set incomplete\n");
   Reset();
 }
 
@@ -1857,7 +1887,63 @@ void TavernScene::Reset(float startingHour) {
   ResetShiftRuntime(startingHour);
 }
 
+void TavernScene::StopAudio() {
+  m_audio.StopAll();
+  m_audioPlayerPositionInitialized = false;
+  m_pourAudioActive = false;
+  m_washAudioActive = false;
+}
+
+int TavernScene::OccupiedTableCount() const {
+  int occupiedTables = 0;
+  for (int tableIndex = 0; tableIndex < CustomerTableCount(); ++tableIndex) {
+    switch (m_tables[tableIndex].state) {
+    case TableState::WaitingOrder:
+    case TableState::WaitingAle:
+    case TableState::WaitingFood:
+    case TableState::WaitingMixed:
+    case TableState::Eating:
+      ++occupiedTables;
+      break;
+    case TableState::Empty:
+    case TableState::Arriving:
+    case TableState::Leaving:
+    case TableState::Dirty:
+      break;
+    }
+  }
+  return occupiedTables;
+}
+
+void TavernScene::UpdatePassiveAudio(const XMFLOAT3 &playerPosition,
+                                     bool playbackEnabled) {
+  if (!playbackEnabled) {
+    m_audio.SetLooping(m_footstepSound, false);
+    m_audio.SetLooping(m_tavernAmbienceSound, false);
+    m_audio.SetLooping(m_beerPourSound, false);
+    m_audio.SetLooping(m_washDishSound, false);
+    m_audioPlayerPositionInitialized = false;
+    m_pourAudioActive = false;
+    m_washAudioActive = false;
+    return;
+  }
+
+  const float travelled =
+      m_audioPlayerPositionInitialized
+          ? DistanceXZ(m_previousAudioPlayerPosition, playerPosition)
+          : 0.0f;
+  // Teleport／scene transition は足音として扱わない。
+  const bool walking = m_audioPlayerPositionInitialized && travelled > 0.004f &&
+                       travelled < 0.75f && !PlayerMovementLocked();
+  m_audio.SetLooping(m_footstepSound, walking);
+  m_previousAudioPlayerPosition = playerPosition;
+  m_audioPlayerPositionInitialized = true;
+  m_audio.SetLooping(m_tavernAmbienceSound, OccupiedTableCount() > 1);
+}
+
 void TavernScene::ResetShiftRuntime(float startingHour) {
+  StopAudio();
+  m_audioPlaybackSuppressed = false;
   m_shiftState = ShiftState::Running;
   SetBusinessHour(startingHour);
   m_spawnTimers = {2.0f, 0.0f, 0.0f, 0.0f};
@@ -1940,6 +2026,8 @@ void TavernScene::SpawnCustomer(int tableIndex) {
   table.complaintPlayed = false;
   table.speech = "すみません！";
   table.speechTimer = 2.0f;
+  if (!m_audioPlaybackSuppressed)
+    m_audio.PlayOneShot(m_entryBellSound);
 }
 
 void TavernScene::DismissEntranceCustomer(int tableIndex, bool penalize) {
@@ -2697,6 +2785,8 @@ void TavernScene::BeginPouring() {
   m_aleOverflow = 0.0f;
   m_pourQuality = 0.0f;
   m_workActionStarted = false;
+  m_audio.SetLooping(m_beerPourSound, false);
+  m_pourAudioActive = false;
   if (m_tutorialStep == TutorialStep::StartPour)
     m_tutorialStep = TutorialStep::PourAle;
 }
@@ -2704,6 +2794,8 @@ void TavernScene::BeginPouring() {
 void TavernScene::FinishPouring() {
   if (m_workState != WorkState::PouringAle)
     return;
+  m_audio.SetLooping(m_beerPourSound, false);
+  m_pourAudioActive = false;
   if (AleStock() <= 0) {
     m_workState = WorkState::None;
     m_workActionStarted = false;
@@ -2896,18 +2988,21 @@ void TavernScene::CollectDirtyDish(int tableIndex) {
 }
 
 void TavernScene::BeginWashing() {
-  if ((m_heldItem != HeldItem::DirtyMug &&
-       m_heldItem != HeldItem::DirtyBowl) ||
+  if ((m_heldItem != HeldItem::DirtyMug && m_heldItem != HeldItem::DirtyBowl) ||
       m_workState != WorkState::None)
     return;
   m_workState = WorkState::WashingDish;
   m_washProgress = 0.0f;
   m_workActionStarted = false;
+  m_audio.SetLooping(m_washDishSound, false);
+  m_washAudioActive = false;
 }
 
 void TavernScene::FinishWashing() {
   if (m_workState != WorkState::WashingDish)
     return;
+  m_audio.SetLooping(m_washDishSound, false);
+  m_washAudioActive = false;
   m_workState = WorkState::None;
   m_heldItem = m_heldItem == HeldItem::DirtyBowl ? HeldItem::CleanBowl
                                                  : HeldItem::EmptyMug;
@@ -3344,8 +3439,9 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
                     bool automateGameplay) {
   m_playerPosition = playerPosition;
   const float dt = std::clamp(deltaSeconds, 0.0f, 0.25f);
-  if (m_customerAnimationInstances.size() !=
-      CustomerAnimationInstanceCount)
+  m_audioPlaybackSuppressed = automateGameplay;
+  UpdatePassiveAudio(playerPosition, !m_audioPlaybackSuppressed);
+  if (m_customerAnimationInstances.size() != CustomerAnimationInstanceCount)
     ResetCustomerAnimationInstances();
   for (int tableIndex = 0; tableIndex < CustomerTableCount(); ++tableIndex) {
     const TableState tableState = m_tables[tableIndex].state;
@@ -3628,6 +3724,10 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
       const bool shouldPour =
           automateGameplay ? m_aleFill < 0.90f : primaryActionDown;
       if (shouldPour) {
+        if (!automateGameplay && !m_pourAudioActive) {
+          m_audio.SetLooping(m_beerPourSound, true);
+          m_pourAudioActive = true;
+        }
         m_primaryActionActive = true;
         m_workActionStarted = true;
         const float nextFill = m_aleFill + dt * 0.34f;
@@ -3642,10 +3742,17 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
     } else if (m_workState == WorkState::WashingDish) {
       const bool shouldWash = automateGameplay || primaryActionDown;
       if (shouldWash) {
+        if (!automateGameplay && !m_washAudioActive) {
+          m_audio.SetLooping(m_washDishSound, true);
+          m_washAudioActive = true;
+        }
         m_workActionStarted = true;
         m_washProgress = std::min(1.0f, m_washProgress + dt / 1.20f);
         if (m_washProgress >= 1.0f)
           FinishWashing();
+      } else if (m_washAudioActive) {
+        m_audio.SetLooping(m_washDishSound, false);
+        m_washAudioActive = false;
       }
     }
   }
@@ -3737,6 +3844,8 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
       }
     }
     UpdateEntranceCustomers(dt);
+    if (!m_audioPlaybackSuppressed)
+      m_audio.SetLooping(m_tavernAmbienceSound, OccupiedTableCount() > 1);
   }
 
   if (m_shiftState == ShiftState::Closing && !HasActiveCustomers())
@@ -3744,6 +3853,10 @@ TavernScene::Update(float deltaSeconds, const XMFLOAT3 &playerPosition,
 
   if (!automateGameplay && interactPressed && m_interactionCooldown <= 0.0f) {
     if (m_workState != WorkState::None) {
+      m_audio.SetLooping(m_beerPourSound, false);
+      m_audio.SetLooping(m_washDishSound, false);
+      m_pourAudioActive = false;
+      m_washAudioActive = false;
       m_workState = WorkState::None;
       m_workActionStarted = false;
       m_aleFill = 0.0f;

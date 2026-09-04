@@ -49,7 +49,9 @@ float2 PSMain(VSOut i) : SV_Target
     float2 prevNdc = prevClip.xy / prevClip.w;
 
     // Velocity in UV space (NDC [-1,1] -> UV [0,1] = * 0.5).
-    float2 velocity = (ndc - prevNdc) * 0.5;
+    // NDC は Y-up、texture UV は Y-down のため Y 成分だけ反転する。
+    float2 velocity = float2(ndc.x - prevNdc.x,
+                             prevNdc.y - ndc.y) * 0.5;
 
     return velocity;
 }

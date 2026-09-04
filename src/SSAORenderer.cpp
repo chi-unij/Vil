@@ -10,6 +10,7 @@
 #include "ShaderCompiler.h"
 
 #include <DirectXPackedVector.h>
+#include <algorithm>
 #include <cstring>
 #include <d3dcompiler.h>
 #include <random>
@@ -390,13 +391,13 @@ void SSAORenderer::ExecuteSSAO(DxContext &dx, const XMMATRIX &proj,
   XMMATRIX invProj = XMMatrixInverse(nullptr, proj);
   XMStoreFloat4x4(&cb.invProj, XMMatrixTranspose(invProj));
   XMStoreFloat4x4(&cb.viewMat, XMMatrixTranspose(view));
-  cb.params = {radius, bias, power, static_cast<float>(kernelSize)};
+  const int safeKernelSize = std::clamp(kernelSize, 1, kMaxKernelSize);
+  cb.params = {radius, bias, power, static_cast<float>(safeKernelSize)};
   cb.screenSize = {static_cast<float>(dx.SsaoWidth()),
                    static_cast<float>(dx.SsaoHeight()),
                    static_cast<float>(dx.Width()),
                    static_cast<float>(dx.Height())};
-  int count = (kernelSize > kMaxKernelSize) ? kMaxKernelSize : kernelSize;
-  for (int i = 0; i < count; ++i)
+  for (int i = 0; i < safeKernelSize; ++i)
     cb.kernel[i] = m_kernel[i];
 
   void *cbCpu = nullptr;

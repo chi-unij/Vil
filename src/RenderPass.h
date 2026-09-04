@@ -80,7 +80,8 @@ struct FrameData {
 
   // Runtime debug line overlay.
   std::vector<DebugLine> debugLines;
-  bool gridEnabled = true;
+  // グリッドとRGB軸はエディタ専用。ゲーム側は明示的に有効化しない。
+  bool gridEnabled = false;
 
   // Particles
   bool particlesEnabled = false;

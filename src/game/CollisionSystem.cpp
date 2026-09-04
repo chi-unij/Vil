@@ -197,6 +197,10 @@ bool ResolveCircleAgainstTrianglePoints(float &x, float &z, float radius,
     nx /= dist;
     nz /= dist;
     push = inside ? (radius + dist) : (radius - dist);
+    if (inside) {
+      nx = -nx;
+      nz = -nz;
+    }
   } else {
     const float ex = bestB.x - bestA.x;
     const float ez = bestB.y - bestA.y;

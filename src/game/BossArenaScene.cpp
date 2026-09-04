@@ -219,6 +219,16 @@ std::string ResolveBossArenaAssetPath(const std::string &path) {
   return path;
 }
 
+std::filesystem::path
+ResolveBossArenaAudioPath(const std::filesystem::path &path) {
+  namespace fs = std::filesystem;
+
+  const fs::path sourceFromBuild = fs::path("..") / ".." / ".." / path;
+  if (fs::exists(sourceFromBuild))
+    return sourceFromBuild;
+  return path;
+}
+
 bool LoadBossArenaModelMeshIds(DxContext &dx, const std::string &path,
                                std::vector<uint32_t> &outMeshIds) {
   const std::string resolvedPath = ResolveBossArenaAssetPath(path);
@@ -598,34 +608,39 @@ void BossArenaScene::Initialize(DxContext &dx) {
         96, XMVectorSet(electricPos.x, electricPos.y, electricPos.z, 0.0f));
   }
 
-  m_ready = (m_floorMeshId != UINT32_MAX && m_bossMeshId != UINT32_MAX &&
-             m_aoeTelegraphMeshId != UINT32_MAX &&
-             m_laserTelegraphMeshId != UINT32_MAX &&
-             m_knockbackTelegraphMeshId != UINT32_MAX &&
-             m_sanctuaryDomeMeshId != UINT32_MAX &&
-             m_flameMeshId != UINT32_MAX &&
-             m_pathGlowMeshId != UINT32_MAX &&
-             m_attackSmokeMeshId != UINT32_MAX &&
-             m_spiritVeilMeshId != UINT32_MAX &&
-             m_laserRiftMeshId != UINT32_MAX &&
-             m_moonDiscMeshId != UINT32_MAX &&
-             m_moonRayMeshId != UINT32_MAX &&
-             m_bossSealMeshId != UINT32_MAX &&
-             m_counterRibbonMeshId != UINT32_MAX &&
-             m_pathStoneMeshId != UINT32_MAX &&
-             m_pathEdgeMeshId != UINT32_MAX &&
-             m_toriiWoodMeshId != UINT32_MAX &&
-             m_mossBankMeshId != UINT32_MAX &&
-             m_lanternPostMeshId != UINT32_MAX &&
-             m_lanternCapMeshId != UINT32_MAX &&
-             m_lanternGlowMeshId != UINT32_MAX &&
-             m_lanternHaloMeshId != UINT32_MAX &&
-             m_riverWaterMeshId != UINT32_MAX &&
-             m_mirrorChargeMeshId != UINT32_MAX &&
-             m_mirrorShardMeshId != UINT32_MAX &&
-             m_bossDamageShardMeshId != UINT32_MAX &&
-             m_ofudaMeshId != UINT32_MAX);
+  m_ready =
+      (m_floorMeshId != UINT32_MAX && m_bossMeshId != UINT32_MAX &&
+       m_aoeTelegraphMeshId != UINT32_MAX &&
+       m_laserTelegraphMeshId != UINT32_MAX &&
+       m_knockbackTelegraphMeshId != UINT32_MAX &&
+       m_sanctuaryDomeMeshId != UINT32_MAX && m_flameMeshId != UINT32_MAX &&
+       m_pathGlowMeshId != UINT32_MAX && m_attackSmokeMeshId != UINT32_MAX &&
+       m_spiritVeilMeshId != UINT32_MAX && m_laserRiftMeshId != UINT32_MAX &&
+       m_moonDiscMeshId != UINT32_MAX && m_moonRayMeshId != UINT32_MAX &&
+       m_bossSealMeshId != UINT32_MAX && m_counterRibbonMeshId != UINT32_MAX &&
+       m_pathStoneMeshId != UINT32_MAX && m_pathEdgeMeshId != UINT32_MAX &&
+       m_toriiWoodMeshId != UINT32_MAX && m_mossBankMeshId != UINT32_MAX &&
+       m_lanternPostMeshId != UINT32_MAX && m_lanternCapMeshId != UINT32_MAX &&
+       m_lanternGlowMeshId != UINT32_MAX && m_lanternHaloMeshId != UINT32_MAX &&
+       m_riverWaterMeshId != UINT32_MAX && m_mirrorChargeMeshId != UINT32_MAX &&
+       m_mirrorShardMeshId != UINT32_MAX &&
+       m_bossDamageShardMeshId != UINT32_MAX && m_ofudaMeshId != UINT32_MAX);
+
+  m_audio.Shutdown();
+  m_bossBgmSound =
+      m_audio.LoadSound(ResolveBossArenaAudioPath(
+                            std::filesystem::path(u8"Assets/SE/boss-bgm.mp3")),
+                        0.42f);
+  OutputDebugStringA(m_audio.IsLoaded(m_bossBgmSound)
+                         ? "[BossArenaScene] Boss BGM ready\n"
+                         : "[BossArenaScene] WARNING: Boss BGM unavailable\n");
 }
+
+void BossArenaScene::SetAudioPlaybackEnabled(bool enabled) {
+  m_audio.SetLooping(m_bossBgmSound, enabled);
+}
+
+void BossArenaScene::StopAudio() { m_audio.SetLooping(m_bossBgmSound, false); }
 
 void BossArenaScene::Reset(PlayerAnimationPreview &player) {
   m_attack = AttackType::MeteorAoE;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AudioSystem.h"
 #include "DxContext.h"
 #include "RenderPass.h"
 #include "game/CollisionSystem.h"
@@ -128,8 +129,10 @@ public:
   Action DrawHud(int viewportWidth, int viewportHeight,
                  bool firstPersonView = false);
   void DrawDebugPanel(float &timeOfDayHours, bool &automaticTime);
+  void StopAudio();
 
   bool IsReady() const { return m_ready; }
+  bool AudioReady() const { return m_audioReady; }
   bool ImportedArtReady() const { return m_importedArtReady; }
   bool ImportedCustomerReady() const {
     for (const TavernCustomerPreview &customer : m_customerNpcs) {
@@ -378,9 +381,12 @@ private:
   void SpawnCustomer(int tableIndex);
   void ResetCustomerAnimationInstances();
   static std::size_t TableCustomerAnimationIndex(int tableIndex,
-                                                  int guestIndex);
+                                                 int guestIndex);
   static std::size_t EntranceCustomerAnimationIndex(int tableIndex);
   void UpdateEntranceCustomers(float dt);
+  void UpdatePassiveAudio(const DirectX::XMFLOAT3 &playerPosition,
+                          bool playbackEnabled);
+  int OccupiedTableCount() const;
   void DismissEntranceCustomer(int tableIndex, bool penalize);
   void TakeOrder(int tableIndex);
   void PickUpEmptyMug();
@@ -479,6 +485,14 @@ private:
   std::array<TavernCustomerPreview, CustomerModelCount> m_customerNpcs{};
   std::vector<CustomerAnimationInstance> m_customerAnimationInstances;
 
+  AudioSystem m_audio;
+  AudioSystem::SoundHandle m_entryBellSound = AudioSystem::InvalidSound;
+  AudioSystem::SoundHandle m_beerPourSound = AudioSystem::InvalidSound;
+  AudioSystem::SoundHandle m_washDishSound = AudioSystem::InvalidSound;
+  AudioSystem::SoundHandle m_footstepSound = AudioSystem::InvalidSound;
+  AudioSystem::SoundHandle m_tavernAmbienceSound = AudioSystem::InvalidSound;
+  DirectX::XMFLOAT3 m_previousAudioPlayerPosition{};
+
   ShiftState m_shiftState = ShiftState::Running;
   std::array<TableSlot, 4> m_tables{};
   std::array<EntranceCustomer, 4> m_entranceCustomers{};
@@ -535,6 +549,11 @@ private:
   bool m_cycleAwaitingWash = false;
   bool m_primaryActionActive = false;
   bool m_lastPourPerfect = false;
+  bool m_audioPlayerPositionInitialized = false;
+  bool m_pourAudioActive = false;
+  bool m_washAudioActive = false;
+  bool m_audioPlaybackSuppressed = false;
+  bool m_audioReady = false;
   bool m_table3Unlocked = false;
   bool m_tavernExpanded = false;
   bool m_table4Unlocked = false;

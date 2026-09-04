@@ -4,7 +4,8 @@
 cbuffer FxaaCB : register(b0)
 {
     float2 gRcpFrame;  // 1/width, 1/height
-    float2 gPad;
+    float  gFxaaEnabled;
+    float  gPad;
 };
 
 Texture2D<float4> gInput : register(t0);
@@ -38,6 +39,10 @@ float4 PSMain(VSOut i) : SV_Target
 {
     float2 uv = i.uv;
     float2 rcp = gRcpFrame;
+
+    // DOF / Motion Blur のみ有効な場合も最終結果を backbuffer へ転送する。
+    if (gFxaaEnabled < 0.5f)
+        return float4(gInput.SampleLevel(gSamp, uv, 0).rgb, 1.0f);
 
     // Sample center + 4 neighbors (luminance from alpha).
     float lumaM  = gInput.SampleLevel(gSamp, uv, 0).a;

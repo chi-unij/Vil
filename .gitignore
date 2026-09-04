@@ -46,6 +46,7 @@ Desktop.ini
 /dist/
 /output/
 /tmp/
+/submission_media/
 /app_trace_log.txt
 /dxr_smoke_debug_log.txt
 /tavern_smoke_debug_log.txt
@@ -59,6 +60,9 @@ Desktop.ini
 
 # Local agent settings
 .claude/settings.local.json
+
+# Local note-taking workspace
+/.obsidian/
 
 # Private planning and interview notes
 interview.md

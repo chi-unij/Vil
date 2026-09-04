@@ -520,7 +520,9 @@ void PostProcessRenderer::ExecuteTonemap(DxContext &dx,
 
 void PostProcessRenderer::ExecuteFXAA(DxContext &dx,
                                       const PostProcessParams &params) {
-  if (!params.fxaaEnabled)
+  const bool needsFinalComposite =
+      params.fxaaEnabled || params.motionBlurEnabled || params.dofEnabled;
+  if (!needsFinalComposite)
     return;
 
   auto *cmd = dx.CmdList();
@@ -536,7 +538,8 @@ void PostProcessRenderer::ExecuteFXAA(DxContext &dx,
   } cb;
   cb.rcpFrameX = 1.0f / static_cast<float>(dx.Width());
   cb.rcpFrameY = 1.0f / static_cast<float>(dx.Height());
-  cb.pad0 = cb.pad1 = 0.0f;
+  cb.pad0 = params.fxaaEnabled ? 1.0f : 0.0f;
+  cb.pad1 = 0.0f;
 
   cmd->SetGraphicsRoot32BitConstants(0, 4, &cb, 0);
   // Read from LDR2 if motion blur is active, DOF target if DOF is active,
@@ -608,10 +611,8 @@ void PostProcessRenderer::ExecuteMotionBlur(DxContext &dx,
     float pad0, pad1;
   } cb;
   cb.strength = params.motionBlurStrength;
-  cb.invSampleCount =
-      1.0f / static_cast<float>((params.motionBlurSamples > 0)
-                                     ? params.motionBlurSamples
-                                     : 1);
+  const int sampleCount = std::clamp(params.motionBlurSamples, 1, 64);
+  cb.invSampleCount = 1.0f / static_cast<float>(sampleCount);
   cb.pad0 = cb.pad1 = 0.0f;
 
   cmd->SetGraphicsRoot32BitConstants(0, 4, &cb, 0);
